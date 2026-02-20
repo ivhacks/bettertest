@@ -31,17 +31,21 @@ def run(worker: str, image: str, command: str) -> int:
     )
     resp.raise_for_status()
     event = None
-    for line in resp.iter_lines(decode_unicode=True):
-        if line.startswith("event: "):
-            event = line[7:]
-        elif line.startswith("data: "):
-            data = line[6:]
-            if event == "error":
-                raise Exception(f"worker error: {data}")
-            if event == "log":
-                print(data)
-            if event == "done":
-                exit_code = int(data)
-                print(f"\nexit code: {exit_code}")
-                return exit_code
+    try:
+        for line in resp.iter_lines(decode_unicode=True):
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                data = line[6:]
+                if event == "error":
+                    raise Exception(f"worker error: {data}")
+                if event == "log":
+                    print(data)
+                if event == "done":
+                    exit_code = int(data)
+                    print(f"\nexit code: {exit_code}")
+                    return exit_code
+    except requests.exceptions.ChunkedEncodingError:
+        print("error: lost connection to worker", file=sys.stderr)
+        sys.exit(1)
     raise Exception("stream ended without done event")
