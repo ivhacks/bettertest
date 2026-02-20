@@ -1,14 +1,28 @@
 # enrollment
 
-instructions for setting up bettertest on a server for a given repo. assumes the server has ssh access, docker, python3, and systemd.
+instructions for setting up bettertest on a server for a given repo.
+
+## prerequisites
+
+the server needs:
+- ssh access
+- systemd
+- a user with sudo
+
+these are NOT guaranteed to be present — install them if missing:
+- **docker**: `sudo dnf install -y docker && sudo systemctl enable --now docker && sudo usermod -aG docker USER`
+- **git**: `sudo dnf install -y git`
+
+python is NOT needed on the server. it's only needed inside the docker image.
 
 ## overview
 
 you're setting up a server to run tests for a repo. by the end:
 - the bettertest binary is installed on the server and running as both worker and boss via systemd
-- the repo is cloned locally and has a `.bettertest/` dir with a `pipedef.py` and `Dockerfile`
+- the repo is cloned on the server with a `.bettertest/` dir containing `pipedef.py`
+- a `Dockerfile` exists in the repo root
 - the docker image is built on the server
-- the boss is serving the frontend and running tests (both from the server)
+- the boss is serving the frontend and running tests
 
 ## 1. get the bettertest binary
 
@@ -110,8 +124,8 @@ the Dockerfile lives at `~/REPO_NAME/Dockerfile` (not inside `.bettertest/`). it
 ```dockerfile
 FROM fedora:latest
 
-# install system deps
-RUN dnf install -y python3 git && dnf clean all
+# install system deps your project needs
+RUN dnf install -y python3 git curl && dnf clean all
 
 # install uv (fast python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -128,12 +142,13 @@ RUN pytest test/test_something.py -v --tb=short
 ```
 
 key points:
-- base on `fedora:latest` unless user specifies otherwise
+- base on `fedora:latest` unless user specifies otherwise. pin the version (e.g. `fedora:43`) for reproducibility
 - clone the repo fresh inside the image (don't COPY — the image needs to be buildable on the server)
 - install project deps
-- run a few fast, reliable tests as `RUN` steps — this both validates the image and caches pip/uv downloads in docker layers
-- tests that are flaky or have failures go with `|| true` so the build doesn't fail
+- run a few fast, reliable tests as `RUN` steps — this both validates the image and caches pip/uv downloads in docker layers. only use tests you're confident will pass, or the build will fail
+- tests that are flaky or have known failures: either skip them in the Dockerfile entirely, or use `|| true` so the build doesn't fail. prefer skipping — `|| true` still wastes build time
 - if the repo needs secrets (api keys etc), `COPY secrets.yaml .` before the install step and scp the secrets file to the server first
+- add system deps as needed — some python packages need C libraries (e.g. `libpq-devel` for psycopg2, `python3-tkinter` for matplotlib). check the project's install docs or look at what `uv sync` complains about
 
 ## 7. write the pipedef
 
@@ -172,31 +187,54 @@ key points:
 - group tests by speed/reliability: fast reliable stuff first, slow/flaky stuff later
 - every task method calls `run(WORKER, IMAGE, "command")` — that's it
 - to discover what tests exist: clone the repo, look at the test directory, read `pyproject.toml` or `pytest.ini` for test config
+- you can split a single test file into multiple tasks (one per test class or even per test method) for more parallelism. see soundscrape's pipedef for an example of this
 
-## 8. build the docker image on the server
+## 8. copy files to the server
+
+the pipedef needs to exist on the server (the boss reads it). the Dockerfile also needs to be there for the docker build.
+
+```sh
+scp ~/REPO_NAME/.bettertest/pipedef.py USER@HOST:~/REPO_NAME/.bettertest/pipedef.py
+scp ~/REPO_NAME/Dockerfile USER@HOST:~/REPO_NAME/Dockerfile
+```
+
+if the repo needs secrets:
+```sh
+scp ~/REPO_NAME/secrets.yaml USER@HOST:~/REPO_NAME/secrets.yaml
+```
+
+## 9. build the docker image on the server
 
 ```sh
 ssh USER@HOST "cd ~/REPO_NAME && docker build -t IMAGE_NAME ."
 ```
 
-this will take a while the first time. subsequent builds use cached layers.
+this will take a while the first time (pulling base image, installing deps). subsequent builds use cached layers. if it fails, check which `RUN pytest` step broke and either fix it or remove that step from the Dockerfile.
 
-## 9. start the services
+## 10. start the services
 
 ```sh
-ssh USER@HOST "sudo systemctl start bettertest-worker && sudo systemctl start bettertest-boss"
+ssh USER@HOST "sudo systemctl start bettertest-worker"
 ```
 
-verify:
+verify the worker is up before starting the boss:
 ```sh
-# worker health check
 ssh USER@HOST "curl -s http://localhost:9009/health"
-
-# boss should be serving the frontend
-curl http://HOST:9001
+# should print: ok
 ```
 
-## 10. verify a test runs
+then start the boss:
+```sh
+ssh USER@HOST "sudo systemctl start bettertest-boss"
+```
+
+verify the frontend is reachable:
+```sh
+curl -s -o /dev/null -w "%{http_code}" http://HOST:9001
+# should print: 200
+```
+
+## 11. verify a test runs
 
 ```sh
 ssh USER@HOST "curl -N -X POST http://localhost:9009/run -H 'Content-Type: application/json' -d '{\"image\":\"IMAGE_NAME\",\"command\":\"echo hi\"}'"
@@ -216,3 +254,24 @@ should stream back SSE events ending with `event: done` and `data: 0`.
 | dockerfile | `~/REPO_NAME/Dockerfile` |
 | worker port | 9009 |
 | boss port | 9001 |
+
+## updating after code changes
+
+to redeploy the bettertest binary:
+```sh
+scp target/release/bettertest USER@HOST:~/bettertest
+ssh USER@HOST "sudo systemctl stop bettertest-worker bettertest-boss && sudo cp ~/bettertest /usr/local/bin/bettertest && sudo systemctl start bettertest-worker bettertest-boss"
+```
+
+to rebuild the docker image after repo changes (e.g. new deps):
+```sh
+ssh USER@HOST "cd ~/REPO_NAME && docker build -t IMAGE_NAME ."
+```
+no need to restart services — the worker pulls the image by name on each run.
+
+to update the pipedef (e.g. new tests added):
+```sh
+scp ~/REPO_NAME/.bettertest/pipedef.py USER@HOST:~/REPO_NAME/.bettertest/pipedef.py
+ssh USER@HOST "sudo systemctl restart bettertest-boss"
+```
+the boss needs a restart to pick up pipedef changes.
