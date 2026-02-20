@@ -1,0 +1,18 @@
+[package]
+name = "bettertest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "*"
+bollard = "*"
+tokio = { version = "*", features = ["rt-multi-thread", "macros", "sync", "process"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+rust-embed = "*"
+mime_guess = "*"
+futures = "*"
+clap = { version = "*", features = ["derive"] }
+tokio-stream = "*"
+async-stream = "*"
+bettertest-common = { path = "../common" }

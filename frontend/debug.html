@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head><title>SSE debug</title></head>
+<body>
+<button onclick="startRun()">start run</button>
+<pre id="log" style="font-size:12px;max-height:90vh;overflow:auto;"></pre>
+<script>
+const log = document.getElementById('log');
+function addLog(msg) {
+    log.textContent += new Date().toISOString() + ' ' + msg + '\n';
+    log.scrollTop = log.scrollHeight;
+}
+async function startRun() {
+    addLog('creating run...');
+    const resp = await fetch('/api/run', {method: 'POST'});
+    const data = await resp.json();
+    addLog('run created: ' + JSON.stringify(data));
+    const es = new EventSource('/api/run/' + data.run_id + '/events');
+    es.addEventListener('run_started', e => addLog('run_started: ' + e.data));
+    es.addEventListener('stage_started', e => addLog('stage_started: ' + e.data));
+    es.addEventListener('task_result', e => {
+        const d = JSON.parse(e.data);
+        const status = d.passed ? 'PASS' : 'FAIL';
+        addLog(`task_result: ${status} ${d.stage}.${d.task}`);
+        if (d.output && d.output.trim()) {
+            addLog('  output: ' + d.output.substring(0, 500));
+        }
+    });
+    es.addEventListener('run_done', e => { addLog('run_done'); es.close(); });
+    es.onerror = e => addLog('ERROR: eventsource error');
+}
+</script>
+</body>
+</html>

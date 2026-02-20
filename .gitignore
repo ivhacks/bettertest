@@ -1,0 +1,18 @@
+# build artifacts
+/target
+/dist
+/frontend/dist
+
+# cargo
+Cargo.lock
+
+# secrets
+secrets.yaml
+*.secret
+.env
+
+# python
+__pycache__
+*.pyc
+.venv
+.claude/

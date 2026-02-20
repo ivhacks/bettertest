@@ -1,0 +1,15 @@
+[package]
+name = "bettertest-frontend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+yew = { version = "*", features = ["csr"] }
+js-sys = "*"
+gloo-net = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+wasm-bindgen-futures = "*"
+web-sys = { version = "*", features = ["EventSource", "MessageEvent", "Window", "Location"] }
+wasm-bindgen = "*"
+bettertest-common = { path = "../common" }
