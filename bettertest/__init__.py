@@ -1,3 +1,5 @@
+import sys
+
 import requests
 
 
@@ -16,10 +18,9 @@ class Stage(metaclass=_StageMeta):
 def _check_worker(worker: str):
     try:
         requests.get(f"{worker}/health", timeout=3)
-    except requests.ConnectionError:
-        raise Exception(f"worker at {worker} is not reachable — is it running?")
-    except requests.Timeout:
-        raise Exception(f"worker at {worker} timed out — is it running?")
+    except (requests.ConnectionError, requests.Timeout):
+        print(f"error: worker at {worker} is not reachable — is it running?", file=sys.stderr)
+        sys.exit(1)
 
 
 def run(worker: str, image: str, command: str) -> int:

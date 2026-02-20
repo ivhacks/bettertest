@@ -363,8 +363,8 @@ sudo ip link set vnetX master virbr0
 - **purpose:** bettertest worker node
 - **has:** docker, bettertest binary at ~/bettertest
 - **fedora image pulled:** fedora:latest
-- **systemd service:** bettertest-worker (auto-starts on boot)
-- **to check worker:** `curl -N -X POST http://192.168.122.234:9009/run -H 'Content-Type: application/json' -d '{"image":"fedora:latest","command":"echo hi"}'`
+- **systemd service:** bettertest-worker (auto-starts on boot), binary at `/usr/local/bin/bettertest`
+- **to check worker:** `curl http://192.168.122.234:9009/health` (should return "ok")
 
 # Building & deploying
 

@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     extract::State,
     response::sse::{Event, Sse},
-    routing::post,
+    routing::{get, post},
 };
 use bollard::Docker;
 use bollard::query_parameters::CreateContainerOptions;
@@ -88,6 +88,7 @@ pub async fn run() {
     let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
 
     let app = Router::new()
+        .route("/health", get(|| async { "ok" }))
         .route("/run", post(handle_run))
         .with_state(docker);
 
