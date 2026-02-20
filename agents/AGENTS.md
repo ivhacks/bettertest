@@ -16,9 +16,11 @@ the same pipedef works identically whether triggered by the boss or run manually
 
 boss/worker communication architecture (single binary multi-port vs two instances etc) is TBD.
 
-## worker enrollment
+## enrollment — setting up bettertest on a server
 
-enrolling a worker = pointing the enroll script at a machine. enrollment is idempotent—running it again on an already-enrolled worker is a no-op (or updates to latest).
+**read `enrollment.md` for the full step-by-step guide.** it covers everything: installing the binary, systemd services, writing a Dockerfile and pipedef for the target repo, building the image, and starting the boss + worker.
+
+enrolling a new worker = pointing the enroll script (this doesn't yet exist) at a machine. enrollment is idempotent—running it again on an already-enrolled worker is a no-op (or updates to latest).
 
 **ideal goal**: only prerequisite is SSH + linux. enrollment handles everything else (installing docker, python, the bettertest binary, setting up systemd service to start on boot).
 
