@@ -1,26 +1,22 @@
 # bettertest
 
-a ci system designed for the age of ai-generated code. tests are the only specification that matters — if tests pass, the code is correct.
+ci that doesn't suck.
 
-bettertest runs your tests fast, in parallel, inside docker containers, and gives you instant visual feedback in a web ui. pipeline definitions are imperative python scripts, not yaml.
+no yaml allowed, all my homies hate yaml
 
 ## getting started
 
-clone this repo, then tell your ai coding assistant:
+clone this repo, cd in, then tell your ai agent:
 
-> clone bettertest and build it
+> set up bettertest on `ssh user@my-server.whatever` for https://github.com/me/myproject
 
-then give it a server and a repo:
-
-> set up bettertest on `ssh user@my-server.space` for https://github.com/me/myproject
-
-the agent will build the binary, deploy it to the server, write a Dockerfile and pipedef for your repo, build the docker image, and start everything up. see `agents/enrollment.md` for the full manual process.
+the agent will build the binary, deploy it to the server, write a Dockerfile and pipedef for your repo, build the docker image, and start everything up. see `agents/enrollment.md` for the full process.
 
 ## architecture
 
 bettertest is a single rust binary that runs in two modes:
 
-- **worker** (`bettertest --worker`): exposes an HTTP API on port 9009. runs commands inside docker containers and streams results back via SSE. this is where docker lives.
+- **worker** (`bettertest --worker`): exposes an HTTP API on port 9009. runs tasks inside docker containers and streams results back via SSE.
 - **boss** (`bettertest --boss --pipedef path/to/pipedef.py`): hosts the web frontend on port 9001 and coordinates test runs. parses the pipedef to discover stages and tasks, then shells out to python to run them against a worker.
 
 same binary, two processes. they can run on the same server or different servers — the worker doesn't know or care who's calling it.
@@ -29,7 +25,7 @@ the frontend is a yew/wasm app that gets compiled and embedded into the binary a
 
 ### pipedefs
 
-a pipedef is an imperative python script that defines what tests to run:
+a pipedef is an imperative, strictly type-checked python script that defines what tasks to run in a pipeline:
 
 ```python
 from bettertest import Stage, run
@@ -47,7 +43,7 @@ class TestUnit(Stage):
         run(WORKER, IMAGE, "pytest -xvs test/test_utils.py")
 ```
 
-stages run sequentially. tasks within a stage run in parallel. that's the whole model.
+stages run sequentially. tasks within a stage run in parallel.
 
 ## building
 
