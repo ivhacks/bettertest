@@ -406,3 +406,193 @@ cargo run -p bettertest --release -- --boss --pipedef /path/to/your_pipedef.py
 ```
 
 then open http://localhost:9001
+
+# DigitalOcean VM Management
+
+API key must be in `DIGITALOCEAN_API_KEY` env var. If not already set, ask user for it and run:
+```sh
+export DIGITALOCEAN_API_KEY="the_key_they_give_you"
+```
+## Get user's SSH public key
+```sh
+cat ~/.ssh/id_*.pub
+```
+## Create a droplet
+
+### Step 1: Add SSH key to account (only needed once per key)
+```sh
+curl -s -X POST "https://api.digitalocean.com/v2/account/keys" \
+  -H "Authorization: Bearer $DIGITALOCEAN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "KEY_NAME", "public_key": "THE_PUBLIC_KEY"}'
+```
+Save the returned `id` for step 2.
+### Step 2: Create droplet (VM)
+```sh
+curl -s -X POST "https://api.digitalocean.com/v2/droplets" \
+  -H "Authorization: Bearer $DIGITALOCEAN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "DROPLET_NAME",
+    "region": "nyc1",
+    "size": "SIZE_SLUG",
+    "image": "fedora-42-x64",
+    "ssh_keys": [SSH_KEY_ID]
+  }'
+```
+Save the returned droplet `id`.
+### Step 3: Get IP address (poll until response contains an IP)
+```sh
+curl -s "https://api.digitalocean.com/v2/droplets/DROPLET_ID" \
+  -H "Authorization: Bearer $DIGITALOCEAN_API_KEY"
+```
+Look for `"ip_address":"x.x.x.x"` in the `networks.v4` array where `"type":"public"`.
+### Step 4: Connect
+```bash
+ssh root@IP_ADDRESS
+```
+## Delete a droplet
+```sh
+curl -X DELETE "https://api.digitalocean.com/v2/droplets/DROPLET_ID" \
+  -H "Authorization: Bearer $DIGITALOCEAN_API_KEY"
+```
+## Size slugs (cpu/ram/disk are bundled)
+
+| Slug | vCPUs | RAM | Disk | $/month |
+|------|-------|-----|------|---------|
+| s-1vcpu-512mb-10gb | 1 | 512MB | 10GB | $4 |
+| s-1vcpu-1gb | 1 | 1GB | 25GB | $6 |
+| s-1vcpu-2gb | 1 | 2GB | 50GB | $12 |
+| s-2vcpu-2gb | 2 | 2GB | 60GB | $18 |
+| s-2vcpu-4gb | 2 | 4GB | 80GB | $24 |
+| s-4vcpu-8gb | 4 | 8GB | 160GB | $48 |
+| s-8vcpu-16gb | 8 | 16GB | 320GB | $96 |
+Use `s-1vcpu-1gb` for small tasks, `s-2vcpu-4gb` for medium, `s-4vcpu-8gb` for large.
+## Images
+- `fedora-42-x64` (default)
+- `rockylinux-10-x64`, `rockylinux-9-x64`
+- `almalinux-10-x64`, `almalinux-9-x64`
+- `centos-stream-10-x64`, `centos-stream-9-x64`
+- `ubuntu-24-04-x64`, `debian-12-x64`
+## Regions
+`sfo3`, `nyc1`, `nyc3`, `tor1`, `lon1`, `ams3`, `fra1`, `sgp1`, `syd1` - use `sfo3` as default or nearest to user.
+## Run commands on the VM
+```sh
+ssh root@IP_ADDRESS "command here"
+```
+Always return to local shell after each command - never stay in a long-running remote prompt. The user should be able to see each command.
+
+
+# Porkbun DNS Management
+
+API keys must be in `PORKBUN_API_KEY` and `PORKBUN_SECRET_KEY` env vars. If not set, ask user for them and run:
+```sh
+export PORKBUN_API_KEY="pk1_..."
+export PORKBUN_SECRET_KEY="sk1_..."
+```
+
+All endpoints use POST to `https://api.porkbun.com/api/json/v3/`. Every request body must include:
+```json
+{
+  "apikey": "$PORKBUN_API_KEY",
+  "secretapikey": "$PORKBUN_SECRET_KEY"
+}
+```
+
+## Enable API access for a domain
+If you get `"Domain is not opted in to API access"`, instruct the user:
+- Click "Details" on your domain in the domain list
+- Toggle "API Access"  on
+
+## List domains in account
+```sh
+curl -s -X POST "https://api.porkbun.com/api/json/v3/domain/listAll" \
+  -H "Content-Type: application/json" \
+  -d '{"apikey": "'"$PORKBUN_API_KEY"'", "secretapikey": "'"$PORKBUN_SECRET_KEY"'"}'
+```
+
+## View DNS records
+```sh
+curl -s -X POST "https://api.porkbun.com/api/json/v3/dns/retrieve/DOMAIN" \
+  -H "Content-Type: application/json" \
+  -d '{"apikey": "'"$PORKBUN_API_KEY"'", "secretapikey": "'"$PORKBUN_SECRET_KEY"'"}'
+```
+
+## Delete a DNS record
+New domains have default ALIAS and CNAME records pointing to `pixie.porkbun.com`. Delete these before adding your own.
+```sh
+curl -s -X POST "https://api.porkbun.com/api/json/v3/dns/delete/DOMAIN/RECORD_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"apikey": "'"$PORKBUN_API_KEY"'", "secretapikey": "'"$PORKBUN_SECRET_KEY"'"}'
+```
+
+## Add an A record (point domain to IP)
+```sh
+curl -s -X POST "https://api.porkbun.com/api/json/v3/dns/create/DOMAIN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "apikey": "'"$PORKBUN_API_KEY"'",
+    "secretapikey": "'"$PORKBUN_SECRET_KEY"'",
+    "type": "A",
+    "name": "",
+    "content": "IP_ADDRESS",
+    "ttl": 600
+  }'
+```
+The `name` field is the subdomain. Use `""` for root domain, `"www"` for www subdomain, etc.
+
+## Optional: Add CNAME for www subdomain
+If you want `www.DOMAIN` to work too:
+```sh
+curl -s -X POST "https://api.porkbun.com/api/json/v3/dns/create/DOMAIN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "apikey": "'"$PORKBUN_API_KEY"'",
+    "secretapikey": "'"$PORKBUN_SECRET_KEY"'",
+    "type": "CNAME",
+    "name": "www",
+    "content": "DOMAIN",
+    "ttl": 600
+  }'
+```
+Don't do this unless the user explicitly asks.
+
+# SSL Certificates with Certbot / Let's Encrypt
+
+Free SSL certs that auto-renew.
+
+## Install certbot
+```sh
+dnf install -y certbot
+```
+
+## Get a certificate
+Stop your webserver first (certbot needs port 80 temporarily):
+```sh
+certbot certonly --standalone -d DOMAIN --register-unsafely-without-email --agree-tos --non-interactive
+```
+
+Add more `-d SUBDOMAIN.DOMAIN` flags for additional subdomains.
+
+Start your webserver again after.
+
+## Certificate files location
+- **Certificate:** `/etc/letsencrypt/live/DOMAIN/fullchain.pem`
+- **Private key:** `/etc/letsencrypt/live/DOMAIN/privkey.pem`
+
+Point your webserver config to these files.
+
+## Auto-renewal
+```sh
+systemctl enable --now certbot-renew.timer
+```
+
+Certs renew automatically when <30 days from expiry.
+
+## Other commands
+```sh
+certbot certificates          # list certs
+certbot renew                 # manual renewal
+certbot delete --cert-name DOMAIN  # delete cert
+```
+
