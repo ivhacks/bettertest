@@ -1,8 +1,6 @@
 # build artifacts
 /target
 /dist
-/frontend/dist/*
-!/frontend/dist/.gitkeep
 
 # cargo
 Cargo.lock
