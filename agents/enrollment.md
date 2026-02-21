@@ -29,7 +29,7 @@ you're setting up a server to run tests for a repo. by the end:
 build it locally (requires trunk + rust):
 
 ```sh
-cd /home/iv/bettertest && cd frontend && trunk build && cd .. && cargo build -p bettertest --release
+cd /home/iv/bettertest && ./build.sh
 ```
 
 binary is at `target/release/bettertest`.

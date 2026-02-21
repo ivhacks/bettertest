@@ -1,27 +1,33 @@
 use std::convert::Infallible;
 
+use aide::axum::{ApiRouter, routing::{get_with, post_with}};
+use aide::NoApi;
 use axum::{
-    Json, Router,
+    Json,
     extract::State,
     response::sse::{Event, Sse},
-    routing::{get, post},
 };
 use bollard::Docker;
 use bollard::query_parameters::CreateContainerOptions;
 use bollard::secret::ContainerCreateBody;
 use futures::StreamExt;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_stream::wrappers::ReceiverStream;
 
 type EventStream = Sse<ReceiverStream<Result<Event, Infallible>>>;
 
-#[derive(Deserialize)]
-struct RunRequest {
+#[derive(Deserialize, JsonSchema)]
+pub struct RunRequest {
     image: String,
     command: String,
 }
 
-async fn handle_run(State(docker): State<Docker>, Json(req): Json<RunRequest>) -> EventStream {
+async fn health() -> &'static str {
+    "ok"
+}
+
+async fn handle_run(State(docker): State<Docker>, Json(req): Json<RunRequest>) -> NoApi<EventStream> {
     let (tx, rx) = tokio::sync::mpsc::channel(16);
 
     tokio::spawn(async move {
@@ -81,15 +87,21 @@ async fn handle_run(State(docker): State<Docker>, Json(req): Json<RunRequest>) -
         docker.remove_container(&id, None).await.ok();
     });
 
-    Sse::new(ReceiverStream::new(rx))
+    NoApi(Sse::new(ReceiverStream::new(rx)))
+}
+
+pub fn api_routes() -> ApiRouter<Docker> {
+    ApiRouter::new()
+        .api_route("/health", get_with(health, |op| op))
+        .api_route("/run", post_with(handle_run, |op| op))
 }
 
 pub async fn run() {
     let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
 
-    let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/run", post(handle_run))
+    let mut api = aide::openapi::OpenApi::default();
+    let app = api_routes()
+        .finish_api(&mut api)
         .with_state(docker);
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();

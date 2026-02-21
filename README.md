@@ -47,31 +47,21 @@ stages run sequentially. tasks within a stage run in parallel.
 
 ## building
 
-### frontend
-
-requires [trunk](https://trunkrs.dev/):
+requires [trunk](https://trunkrs.dev/) and rust.
 
 ```sh
-cd frontend && trunk build
+./build.sh
 ```
 
-output goes to `frontend/dist/`. this must be built before the server binary, since the binary embeds the frontend assets.
+binary lands at `target/release/bettertest`. the script builds the frontend wasm first, then the server binary (which embeds the frontend assets).
 
-### server (boss + worker binary)
+to regenerate OpenAPI specs after changing the API:
 
 ```sh
-cargo build -p bettertest --release
+./regen-api-specs.sh
 ```
 
-binary lands at `target/release/bettertest`.
-
-### both at once
-
-```sh
-cd frontend && trunk build && cd .. && cargo build -p bettertest --release
-```
-
-### worker
+### deploying the worker
 
 the worker is the same binary as the boss. deploy it to any linux machine with docker:
 

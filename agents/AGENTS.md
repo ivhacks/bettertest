@@ -373,7 +373,7 @@ sudo ip link set vnetX master virbr0
 ## build the binary locally
 
 ```sh
-cd frontend && trunk build && cd .. && cargo build -p bettertest --release
+./build.sh
 ```
 
 binary lands at `target/release/bettertest`. there's also a `Dockerfile` for reproducible builds if you need it:

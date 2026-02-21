@@ -15,4 +15,7 @@ futures = "*"
 clap = { version = "*", features = ["derive"] }
 tokio-stream = "*"
 async-stream = "*"
+aide = { version = "*", features = ["axum", "axum-json"] }
+schemars = "0.9"
+serde_yaml = "*"
 bettertest-common = { path = "../common" }

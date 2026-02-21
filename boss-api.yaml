@@ -1,0 +1,117 @@
+openapi: 3.1.0
+info:
+  title: bettertest boss API
+  version: 0.1.0
+paths:
+  /api/state:
+    get:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateResponse'
+  /api/run:
+    post:
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunCreated'
+  /api/run/{id}/events:
+    get: {}
+components:
+  schemas:
+    PipelineDto:
+      type: object
+      properties:
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/StageDto'
+      required:
+      - stages
+    PipelineRunState:
+      type: object
+      properties:
+        active:
+          type: boolean
+        run_id:
+          type: integer
+          format: uint32
+          minimum: 0
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/StageRunState'
+      required:
+      - run_id
+      - active
+      - stages
+    RunCreated:
+      type: object
+      properties:
+        run_id:
+          type: integer
+          format: uint32
+          minimum: 0
+      required:
+      - run_id
+    StageDto:
+      type: object
+      properties:
+        name:
+          type: string
+        tasks:
+          type: array
+          items:
+            type: string
+      required:
+      - name
+      - tasks
+    StageRunState:
+      type: object
+      properties:
+        name:
+          type: string
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskRunState'
+      required:
+      - name
+      - tasks
+    StateResponse:
+      type: object
+      properties:
+        pipeline:
+          $ref: '#/components/schemas/PipelineDto'
+        run:
+          anyOf:
+          - $ref: '#/components/schemas/PipelineRunState'
+          - type: 'null'
+      required:
+      - pipeline
+    TaskRunState:
+      type: object
+      properties:
+        name:
+          type: string
+        output:
+          type: string
+          default: ''
+        state:
+          $ref: '#/components/schemas/TaskState'
+      required:
+      - name
+      - state
+    TaskState:
+      type: string
+      enum:
+      - Pending
+      - Running
+      - Pass
+      - Fail
