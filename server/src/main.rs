@@ -22,7 +22,9 @@ async fn main() {
         (true, true) => panic!("pick one bro: --boss or --worker, not both"),
         (false, false) => panic!("need either --boss or --worker"),
         (true, false) => {
-            let pipedef = args.pipedef.expect("--boss requires --pipedef <path>");
+            let pipedef = args
+                .pipedef
+                .expect("--boss requires --pipedef <path>");
             boss::run(&pipedef).await
         }
         (false, true) => worker::run().await,

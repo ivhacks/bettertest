@@ -109,7 +109,10 @@ pub fn update_state(
         }
         Msg::StageStarted { stage_name } => {
             if let Some(r) = run
-                && let Some(stage) = r.stages.iter_mut().find(|s| s.name == stage_name)
+                && let Some(stage) = r
+                    .stages
+                    .iter_mut()
+                    .find(|s| s.name == stage_name)
             {
                 for task in &mut stage.tasks {
                     task.state = TaskState::Running;
@@ -123,8 +126,14 @@ pub fn update_state(
             passed,
         } => {
             if let Some(r) = run
-                && let Some(stage) = r.stages.iter_mut().find(|s| s.name == stage_name)
-                && let Some(task) = stage.tasks.iter_mut().find(|t| t.name == task_name)
+                && let Some(stage) = r
+                    .stages
+                    .iter_mut()
+                    .find(|s| s.name == stage_name)
+                && let Some(task) = stage
+                    .tasks
+                    .iter_mut()
+                    .find(|t| t.name == task_name)
             {
                 task.state = if passed {
                     TaskState::Pass
@@ -344,7 +353,9 @@ impl Component for App {
                 let Ok(resp) = Request::post("/api/run").send().await else {
                     return;
                 };
-                let Ok(body) = resp.text().await else { return };
+                let Ok(body) = resp.text().await else {
+                    return;
+                };
                 let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) else {
                     return;
                 };

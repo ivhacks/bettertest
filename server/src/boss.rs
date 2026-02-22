@@ -150,7 +150,10 @@ pub struct RunCreated {
 }
 
 async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
-    let run_id = state.run_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let run_id = state
+        .run_counter
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
     let (tx, _) = broadcast::channel::<SseEvent>(256);
 
     let run_state = initial_run_state(&state.pipeline, run_id);
@@ -171,7 +174,11 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
         for stage in &pipeline.stages {
             {
                 let mut st = active_run.state.lock().await;
-                if let Some(s) = st.stages.iter_mut().find(|s| s.name == stage.name) {
+                if let Some(s) = st
+                    .stages
+                    .iter_mut()
+                    .find(|s| s.name == stage.name)
+                {
                     for task in &mut s.tasks {
                         task.state = TaskState::Running;
                     }
@@ -227,8 +234,10 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
                             while let Some(line) = line_rx.recv().await {
                                 {
                                     let mut st = active_run.state.lock().await;
-                                    if let Some(s) =
-                                        st.stages.iter_mut().find(|s| s.name == stage_name)
+                                    if let Some(s) = st
+                                        .stages
+                                        .iter_mut()
+                                        .find(|s| s.name == stage_name)
                                         && let Some(t) =
                                             s.tasks.iter_mut().find(|t| t.name == task_name)
                                     {
@@ -253,7 +262,10 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
                         }
                         Err(e) => {
                             let mut st = active_run.state.lock().await;
-                            if let Some(s) = st.stages.iter_mut().find(|s| s.name == stage_name)
+                            if let Some(s) = st
+                                .stages
+                                .iter_mut()
+                                .find(|s| s.name == stage_name)
                                 && let Some(t) = s.tasks.iter_mut().find(|t| t.name == task_name)
                             {
                                 t.output = e.to_string();
@@ -274,7 +286,10 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
 
                     {
                         let mut st = active_run.state.lock().await;
-                        if let Some(s) = st.stages.iter_mut().find(|s| s.name == stage_name)
+                        if let Some(s) = st
+                            .stages
+                            .iter_mut()
+                            .find(|s| s.name == stage_name)
                             && let Some(t) = s.tasks.iter_mut().find(|t| t.name == task_name)
                         {
                             t.state = if passed {
@@ -304,7 +319,9 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
             event: "run_done".into(),
             data: "{}".into(),
         });
-        active_run.active.store(false, Ordering::Relaxed);
+        active_run
+            .active
+            .store(false, Ordering::Relaxed);
     });
 
     Json(RunCreated { run_id })
@@ -316,7 +333,11 @@ async fn run_events(
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let active_run = {
         let guard = state.active_run.lock().await;
-        match guard.as_ref().filter(|r| r.run_id == run_id).cloned() {
+        match guard
+            .as_ref()
+            .filter(|r| r.run_id == run_id)
+            .cloned()
+        {
             Some(r) => r,
             None => return Err(StatusCode::NOT_FOUND),
         }
@@ -418,11 +439,15 @@ pub async fn run(pipedef_path: &Path) {
         active_run: Mutex::new(None),
     });
 
-    let app = api_routes().merge(static_routes()).with_state(state);
+    let app = api_routes()
+        .merge(static_routes())
+        .with_state(state);
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();
-    socket.bind("0.0.0.0:9001".parse().unwrap()).unwrap();
+    socket
+        .bind("0.0.0.0:9001".parse().unwrap())
+        .unwrap();
     let listener = socket.listen(1024).unwrap();
     println!("bettertest boss running on http://localhost:9001");
     axum::serve(listener, app).await.unwrap();

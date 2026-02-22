@@ -42,7 +42,9 @@ async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> EventStream 
             Ok(c) => c.id,
             Err(e) => {
                 let _ = tx
-                    .send(Ok(Event::default().event("error").data(e.to_string())))
+                    .send(Ok(Event::default()
+                        .event("error")
+                        .data(e.to_string())))
                     .await;
                 return;
             }
@@ -50,7 +52,9 @@ async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> EventStream 
 
         docker.start_container(&id, None).await.ok();
         let _ = tx
-            .send(Ok(Event::default().event("started").data(id.clone())))
+            .send(Ok(Event::default()
+                .event("started")
+                .data(id.clone())))
             .await;
 
         // stream logs (follow=true blocks until container exits)
@@ -63,7 +67,9 @@ async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> EventStream 
         let mut logs = docker.logs(&id, Some(log_opts));
         while let Some(Ok(log)) = logs.next().await {
             for line in log.to_string().lines() {
-                let _ = tx.send(Ok(Event::default().event("log").data(line))).await;
+                let _ = tx
+                    .send(Ok(Event::default().event("log").data(line)))
+                    .await;
             }
         }
 
@@ -90,14 +96,18 @@ async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> EventStream 
 pub async fn run() {
     let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
 
-    let router = Router::new().route("/health", get(health)).route(
-        "/run",
-        post(move |req: Json<RunRequest>| handle_run(docker, req)),
-    );
+    let router = Router::new()
+        .route("/health", get(health))
+        .route(
+            "/run",
+            post(move |req: Json<RunRequest>| handle_run(docker, req)),
+        );
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();
-    socket.bind("0.0.0.0:9009".parse().unwrap()).unwrap();
+    socket
+        .bind("0.0.0.0:9009".parse().unwrap())
+        .unwrap();
     let listener = socket.listen(1024).unwrap();
     println!("bettertest worker running on http://0.0.0.0:9009");
     axum::serve(listener, router).await.unwrap();
