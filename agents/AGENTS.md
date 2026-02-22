@@ -162,7 +162,7 @@ Should show `VT-x` (Intel) or `AMD-V` (AMD). If missing, user needs to enable in
 
 ### 2. Install packages
 ```sh
-sudo dnf install -y qemu-kvm libvirt virt-install virt-manager
+sudo dnf install -y qemu-kvm libvirt virt-install virt-manager libvirt-nss
 ```
 
 ### 3. Start libvirtd
@@ -182,7 +182,16 @@ echo 'export LIBVIRT_DEFAULT_URI="qemu:///system"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 6. Download Fedora cloud image
+### 6. Enable hostname resolution for VMs
+Add `libvirt_guest` to the hosts line in `/etc/nsswitch.conf` so VMs are resolvable by name:
+```sh
+sudo sed -i 's/^hosts:\s*files/hosts:      files libvirt_guest/' /etc/nsswitch.conf
+```
+Verify the line looks like: `hosts:      files libvirt_guest myhostname mdns4_minimal ...`
+
+This lets you `ping VM_NAME` and `ssh user@VM_NAME` instead of looking up IPs. Resolution is dynamic — if the VM's DHCP IP changes, it still resolves correctly.
+
+### 7. Download Fedora cloud image
 
 Find the latest version (look for highest number):
 ```sh
@@ -263,15 +272,19 @@ sudo virt-install \
   --noautoconsole
 ```
 
-### 4. Get IP and connect
+### 4. Confirm VM is reachable by hostname
 Wait ~15 seconds for the VM to boot and get a DHCP lease, then:
 ```sh
-sudo virsh domifaddr VM_NAME
-ssh -o StrictHostKeyChecking=no USERNAME@IP_ADDRESS
+ping -c 1 VM_NAME
 ```
-### 5. Confirm internet connectivity from within VM
+This should resolve to an IP in `192.168.122.0/24`. If it doesn't, check that `libvirt_guest` is in `/etc/nsswitch.conf` (see one-time setup step 6).
+
+### 5. Connect and confirm internet connectivity
 ```sh
-ssh USERNAME@IP_ADDRESS "ping -c 1 8.8.8.8"
+ssh -o StrictHostKeyChecking=no USERNAME@VM_NAME
+```
+```sh
+ssh USERNAME@VM_NAME "ping -c 1 8.8.8.8"
 ```
 
 ## VM commands
@@ -358,15 +371,15 @@ sudo ip link set vnetX master virbr0
 
 # Existing VMs
 
-## worker1
-- **IP:** 192.168.122.234 (DHCP, may change on reboot)
+## worker2
+- **hostname:** worker2 (resolvable via libvirt_guest NSS)
 - **user:** iv
 - **specs:** 4GB RAM, 2 vCPUs, 20GB disk
 - **purpose:** bettertest worker node
 - **has:** docker, bettertest binary at ~/bettertest
 - **fedora image pulled:** fedora:latest
 - **systemd service:** bettertest-worker (auto-starts on boot), binary at `/usr/local/bin/bettertest`
-- **to check worker:** `curl http://192.168.122.234:9009/health` (should return "ok")
+- **to check worker:** `curl http://worker2:9009/health` (should return "ok")
 
 # Building & deploying
 
@@ -391,10 +404,10 @@ the worker runs as a systemd service. to update:
 
 ```sh
 # copy binary to VM
-scp target/release/bettertest iv@WORKER_IP:/home/iv/bettertest
+scp target/release/bettertest iv@VM_NAME:/home/iv/bettertest
 
 # ssh in, stop service, replace binary, restart
-ssh iv@WORKER_IP "sudo systemctl stop bettertest-worker && sudo cp /home/iv/bettertest /usr/local/bin/bettertest && sudo systemctl start bettertest-worker"
+ssh iv@VM_NAME "sudo systemctl stop bettertest-worker && while pgrep -x bettertest > /dev/null; do sleep 0.1; done && sudo cp /home/iv/bettertest /usr/local/bin/bettertest && sudo systemctl start bettertest-worker"
 ```
 
 if the service doesn't exist yet (fresh VM), see `service.md` for setup.
