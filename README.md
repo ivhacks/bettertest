@@ -55,12 +55,6 @@ requires [trunk](https://trunkrs.dev/) and rust.
 
 binary lands at `target/release/bettertest`. the script builds the frontend wasm first, then the server binary (which embeds the frontend assets).
 
-to regenerate OpenAPI specs after changing the API:
-
-```sh
-./regen-api-specs.sh
-```
-
 ### deploying the worker
 
 the worker is the same binary as the boss. deploy it to any linux machine with docker:

@@ -1,22 +1,20 @@
 use std::convert::Infallible;
 
-use aide::axum::{ApiRouter, routing::{get_with, post_with}};
-use aide::NoApi;
 use axum::{
-    Json,
+    Json, Router,
     response::sse::{Event, Sse},
+    routing::{get, post},
 };
 use bollard::Docker;
 use bollard::query_parameters::CreateContainerOptions;
 use bollard::secret::ContainerCreateBody;
 use futures::StreamExt;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_stream::wrappers::ReceiverStream;
 
 type EventStream = Sse<ReceiverStream<Result<Event, Infallible>>>;
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize)]
 pub struct RunRequest {
     image: String,
     command: String,
@@ -26,7 +24,7 @@ async fn health() -> &'static str {
     "ok\n"
 }
 
-async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> NoApi<EventStream> {
+async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> EventStream {
     let (tx, rx) = tokio::sync::mpsc::channel(16);
 
     tokio::spawn(async move {
@@ -86,21 +84,19 @@ async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> NoApi<EventS
         docker.remove_container(&id, None).await.ok();
     });
 
-    NoApi(Sse::new(ReceiverStream::new(rx)))
+    Sse::new(ReceiverStream::new(rx))
 }
 
-pub fn api_routes(docker: Docker) -> ApiRouter {
-    ApiRouter::new()
-        .api_route("/health", get_with(health, |op| op))
-        .api_route("/run", post_with(move |req: Json<RunRequest>| handle_run(docker, req), |op| op))
+pub fn routes(docker: Docker) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/run", post(move |req: Json<RunRequest>| handle_run(docker, req)))
 }
 
 pub async fn run() {
     let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
 
-    let mut api = aide::openapi::OpenApi::default();
-    let app = api_routes(docker)
-        .finish_api(&mut api);
+    let app = routes(docker);
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();

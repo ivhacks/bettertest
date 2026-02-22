@@ -1,6 +1,3 @@
-use aide::axum::ApiRouter;
-use aide::axum::routing::{get_with, post_with};
-use aide::NoApi;
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
@@ -9,11 +6,10 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, Sse},
     },
-    routing::get,
+    routing::{get, post},
 };
 use bettertest_common::*;
 use rust_embed::Embed;
-use schemars::JsonSchema;
 use serde::Serialize;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -148,7 +144,7 @@ async fn get_state(State(state): State<Arc<BossState>>) -> Json<StateResponse> {
     })
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Serialize)]
 pub struct RunCreated {
     run_id: u32,
 }
@@ -321,7 +317,7 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
 async fn run_events(
     State(state): State<Arc<BossState>>,
     AxumPath(run_id): AxumPath<u32>,
-) -> NoApi<Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, StatusCode>> {
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let active_run = {
         let guard = state.active_run.lock().await;
         match guard
@@ -330,7 +326,7 @@ async fn run_events(
             .cloned()
         {
             Some(r) => r,
-            None => return NoApi(Err(StatusCode::NOT_FOUND)),
+            None => return Err(StatusCode::NOT_FOUND),
         }
     };
 
@@ -364,7 +360,7 @@ async fn run_events(
         }
     };
 
-    NoApi(Ok(Sse::new(stream)))
+    Ok(Sse::new(stream))
 }
 
 async fn serve_asset(path: &str) -> Response {
@@ -397,11 +393,11 @@ async fn static_files(AxumPath(path): AxumPath<String>) -> Response {
     serve_asset(&path).await
 }
 
-pub fn api_routes() -> ApiRouter<Arc<BossState>> {
-    ApiRouter::new()
-        .api_route("/api/state", get_with(get_state, |op| op))
-        .api_route("/api/run", post_with(create_run, |op| op))
-        .api_route("/api/run/{id}/events", get_with(run_events, |op| op))
+fn api_routes() -> Router<Arc<BossState>> {
+    Router::new()
+        .route("/api/state", get(get_state))
+        .route("/api/run", post(create_run))
+        .route("/api/run/{id}/events", get(run_events))
 }
 
 fn static_routes() -> Router<Arc<BossState>> {
@@ -430,9 +426,7 @@ pub async fn run(pipedef_path: &Path) {
         active_run: Mutex::new(None),
     });
 
-    let mut api = aide::openapi::OpenApi::default();
     let app = api_routes()
-        .finish_api(&mut api)
         .merge(static_routes())
         .with_state(state);
 
