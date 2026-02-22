@@ -19,7 +19,10 @@ def _check_worker(worker: str):
     try:
         requests.get(f"{worker}/health", timeout=3)
     except (requests.ConnectionError, requests.Timeout):
-        print(f"error: worker at {worker} is not reachable — is it running?", file=sys.stderr)
+        print(
+            f"error: worker at {worker} is not reachable — is it running?",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 

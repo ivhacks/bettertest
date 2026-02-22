@@ -87,21 +87,18 @@ async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> EventStream 
     Sse::new(ReceiverStream::new(rx))
 }
 
-pub fn routes(docker: Docker) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/run", post(move |req: Json<RunRequest>| handle_run(docker, req)))
-}
-
 pub async fn run() {
     let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
 
-    let app = routes(docker);
+    let router = Router::new().route("/health", get(health)).route(
+        "/run",
+        post(move |req: Json<RunRequest>| handle_run(docker, req)),
+    );
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();
     socket.bind("0.0.0.0:9009".parse().unwrap()).unwrap();
     let listener = socket.listen(1024).unwrap();
     println!("bettertest worker running on http://0.0.0.0:9009");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, router).await.unwrap();
 }

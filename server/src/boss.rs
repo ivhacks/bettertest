@@ -210,8 +210,7 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
                             let stdout = child.stdout.take().unwrap();
                             let tx = line_tx.clone();
                             tokio::spawn(async move {
-                                let mut lines =
-                                    tokio::io::BufReader::new(stdout).lines();
+                                let mut lines = tokio::io::BufReader::new(stdout).lines();
                                 while let Ok(Some(line)) = lines.next_line().await {
                                     let _ = tx.send(line);
                                 }
@@ -219,8 +218,7 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
 
                             let stderr = child.stderr.take().unwrap();
                             tokio::spawn(async move {
-                                let mut lines =
-                                    tokio::io::BufReader::new(stderr).lines();
+                                let mut lines = tokio::io::BufReader::new(stderr).lines();
                                 while let Ok(Some(line)) = lines.next_line().await {
                                     let _ = line_tx.send(line);
                                 }
@@ -251,14 +249,12 @@ async fn create_run(State(state): State<Arc<BossState>>) -> Json<RunCreated> {
                                 });
                             }
 
-                            child.wait().await.map_or(false, |s| s.success())
+                            child.wait().await.is_ok_and(|s| s.success())
                         }
                         Err(e) => {
                             let mut st = active_run.state.lock().await;
-                            if let Some(s) =
-                                st.stages.iter_mut().find(|s| s.name == stage_name)
-                                && let Some(t) =
-                                    s.tasks.iter_mut().find(|t| t.name == task_name)
+                            if let Some(s) = st.stages.iter_mut().find(|s| s.name == stage_name)
+                                && let Some(t) = s.tasks.iter_mut().find(|t| t.name == task_name)
                             {
                                 t.output = e.to_string();
                             }
@@ -320,11 +316,7 @@ async fn run_events(
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let active_run = {
         let guard = state.active_run.lock().await;
-        match guard
-            .as_ref()
-            .filter(|r| r.run_id == run_id)
-            .cloned()
-        {
+        match guard.as_ref().filter(|r| r.run_id == run_id).cloned() {
             Some(r) => r,
             None => return Err(StatusCode::NOT_FOUND),
         }
@@ -426,9 +418,7 @@ pub async fn run(pipedef_path: &Path) {
         active_run: Mutex::new(None),
     });
 
-    let app = api_routes()
-        .merge(static_routes())
-        .with_state(state);
+    let app = api_routes().merge(static_routes()).with_state(state);
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();
