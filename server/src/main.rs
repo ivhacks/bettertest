@@ -2,6 +2,7 @@ mod boss;
 mod worker;
 
 use aide::openapi::{Info, OpenApi};
+use bollard::Docker;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -47,7 +48,8 @@ fn dump_api_specs() {
         },
         ..Default::default()
     };
-    let _ = worker::api_routes().finish_api(&mut worker_api);
+    let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
+    let _ = worker::api_routes(docker).finish_api(&mut worker_api);
     let worker_yaml = serde_yaml::to_string(&worker_api).expect("failed to serialize worker api");
     std::fs::write("worker-api.yaml", &worker_yaml).expect("failed to write worker-api.yaml");
     println!("wrote worker-api.yaml");

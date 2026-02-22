@@ -4,7 +4,6 @@ use aide::axum::{ApiRouter, routing::{get_with, post_with}};
 use aide::NoApi;
 use axum::{
     Json,
-    extract::State,
     response::sse::{Event, Sse},
 };
 use bollard::Docker;
@@ -24,10 +23,10 @@ pub struct RunRequest {
 }
 
 async fn health() -> &'static str {
-    "ok"
+    "ok\n"
 }
 
-async fn handle_run(State(docker): State<Docker>, Json(req): Json<RunRequest>) -> NoApi<EventStream> {
+async fn handle_run(docker: Docker, Json(req): Json<RunRequest>) -> NoApi<EventStream> {
     let (tx, rx) = tokio::sync::mpsc::channel(16);
 
     tokio::spawn(async move {
@@ -90,19 +89,18 @@ async fn handle_run(State(docker): State<Docker>, Json(req): Json<RunRequest>) -
     NoApi(Sse::new(ReceiverStream::new(rx)))
 }
 
-pub fn api_routes() -> ApiRouter<Docker> {
+pub fn api_routes(docker: Docker) -> ApiRouter {
     ApiRouter::new()
         .api_route("/health", get_with(health, |op| op))
-        .api_route("/run", post_with(handle_run, |op| op))
+        .api_route("/run", post_with(move |req: Json<RunRequest>| handle_run(docker, req), |op| op))
 }
 
 pub async fn run() {
     let docker = Docker::connect_with_local_defaults().expect("failed to connect to docker");
 
     let mut api = aide::openapi::OpenApi::default();
-    let app = api_routes()
-        .finish_api(&mut api)
-        .with_state(docker);
+    let app = api_routes(docker)
+        .finish_api(&mut api);
 
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_reuseaddr(true).unwrap();
