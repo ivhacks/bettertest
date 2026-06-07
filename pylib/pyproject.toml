@@ -1,0 +1,25 @@
+[project]
+name = "bettertest"
+version = "0.1.0"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "S603",  # `subprocess` call: check for execution of untrusted input (literally the whole point of bettertest)    
+    "TRY002",
+    "TRY003",
+    "EM101",
+    "D104",
+    "D102",
+    "D103",
+    "D101",
+    
+    "COM812",
+    "D203",
+    "D211",
+    "D213"
+]

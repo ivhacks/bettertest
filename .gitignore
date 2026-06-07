@@ -1,0 +1,17 @@
+# build artifacts
+/target
+/target-cross
+/dist
+/frontend/dist
+
+# secrets
+secrets.yaml
+*.secret
+.env
+
+# python
+__pycache__
+*.pyc
+.venv
+.claude/
+pylib/src/bettertest.egg-info
