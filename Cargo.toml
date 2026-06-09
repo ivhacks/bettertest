@@ -6,3 +6,5 @@ resolver = "3"
 strip = true
 lto = true
 panic = "abort"
+opt-level = "z"
+codegen-units = 1
