@@ -1,3 +1,5 @@
+use axum::http::{StatusCode, header};
+use rust_embed::Embed;
 use std::convert::Infallible;
 use std::process::Stdio;
 use tokio::io::BufReader;
@@ -12,6 +14,10 @@ use axum::{
 };
 use serde::Deserialize;
 
+#[derive(Embed)]
+#[folder = "../frontend/dist/"]
+struct Asset;
+
 #[derive(Deserialize)]
 struct RunTaskRequest {
     command: String,
@@ -21,6 +27,7 @@ struct RunTaskRequest {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9009").await?;
     let router = Router::<()>::new()
+        .route("/", get(index))
         .route("/health", get(health))
         .route("/run-task", post(run_task));
     axum::serve(listener, router).await?;
@@ -86,4 +93,16 @@ async fn run_task(Json(req): Json<RunTaskRequest>) -> impl IntoResponse {
     });
 
     Sse::new(ReceiverStream::new(rx).map(Ok::<_, Infallible>))
+}
+
+async fn index() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        Asset::get("fake_index.html").unwrap().data.clone(),
+    )
+        .into_response()
 }
