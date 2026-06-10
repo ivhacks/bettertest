@@ -102,7 +102,7 @@ async fn index() -> impl IntoResponse {
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-cache"),
         ],
-        Asset::get("fake_index.html").unwrap().data.clone(),
+        Asset::get("fake_index.html").unwrap().data,
     )
         .into_response()
 }
