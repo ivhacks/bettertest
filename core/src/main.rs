@@ -1,4 +1,5 @@
 use axum::http::{StatusCode, header};
+use axum::response::Response;
 use rust_embed::Embed;
 use std::convert::Infallible;
 use std::process::Stdio;
@@ -9,14 +10,18 @@ use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 use axum::{
     Json, Router,
-    response::{IntoResponse, Sse, sse::Event},
+    extract::Path as AxumPath,
+    response::{
+        IntoResponse,
+        sse::{Event, Sse},
+    },
     routing::{get, post},
 };
 use serde::Deserialize;
 
 #[derive(Embed)]
 #[folder = "../frontend/dist/"]
-struct Asset;
+struct EmbeddedWebAssets;
 
 #[derive(Deserialize)]
 struct RunTaskRequest {
@@ -26,10 +31,13 @@ struct RunTaskRequest {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9009").await?;
+
     let router = Router::<()>::new()
         .route("/", get(index))
-        .route("/health", get(health))
-        .route("/run-task", post(run_task));
+        .route("/index.html", get(index))
+        .route("/api/health", get(health))
+        .route("/api/run-task", post(run_task))
+        .route("/{*path}", get(get_embedded_asset));
     axum::serve(listener, router).await?;
     Ok(())
 }
@@ -96,13 +104,24 @@ async fn run_task(Json(req): Json<RunTaskRequest>) -> impl IntoResponse {
 }
 
 async fn index() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        Asset::get("fake_index.html").unwrap().data,
-    )
-        .into_response()
+    embedded_file_response("index.html", "no-cache")
+}
+
+async fn get_embedded_asset(AxumPath(path): AxumPath<String>) -> Response {
+    embedded_file_response(path.as_str(), "public, max-age=31536000, immutable")
+}
+
+fn embedded_file_response(path: &str, cache: &str) -> Response {
+    match EmbeddedWebAssets::get(path) {
+        Some(content) => {
+            let mime = content.metadata.mimetype();
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, cache)],
+                content.data,
+            )
+                .into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
