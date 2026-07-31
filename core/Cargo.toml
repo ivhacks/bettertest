@@ -1,7 +1,11 @@
 [package]
-name = "bettertest"
+name = "bettertest-package"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "bettertest-crate"
+path = "src/main.rs"
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "macros", "tokio"] }
