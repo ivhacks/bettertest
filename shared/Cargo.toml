@@ -8,3 +8,4 @@ name = "bettertest_shared_crate"
 path = "src/lib.rs"
 
 [dependencies]
+serde = "1.0.229"

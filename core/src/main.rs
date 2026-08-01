@@ -19,6 +19,8 @@ use axum::{
 };
 use serde::Deserialize;
 
+use bettertest_shared_crate::*;
+
 #[derive(Embed)]
 #[folder = "../frontend/dist/"]
 struct EmbeddedWebAssets;
@@ -37,9 +39,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/index.html", get(index))
         .route("/api/health", get(health))
         .route("/api/run-task", post(run_task))
+        .route("/api/pipeline", get(static_dummy_pipeline))
         .route("/{*path}", get(get_embedded_asset));
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+#[axum::debug_handler]
+async fn static_dummy_pipeline() -> Json<PipelineResponse> {
+    Json(PipelineResponse {
+        name: "sausage sucker 9000 turbo GTS".to_string(),
+        stage_headers: vec![
+            "suck".to_string(),
+            "slurp".to_string(),
+            "slobber".to_string(),
+        ],
+        runs: vec![
+            Run {
+                id: 1,
+                active: false,
+                stages: vec![
+                    Stage {
+                        name: "suck".to_string(),
+                        tasks: vec![Task {
+                            name: "gurt".to_string(),
+                        }],
+                    },
+                    Stage {
+                        name: "slurp".to_string(),
+                        tasks: vec![Task {
+                            name: "gurt".to_string(),
+                        }],
+                    },
+                    Stage {
+                        name: "slobber".to_string(),
+                        tasks: vec![Task {
+                            name: "gurt".to_string(),
+                        }],
+                    },
+                ],
+            },
+            Run {
+                id: 2,
+                active: false,
+                stages: vec![
+                    Stage {
+                        name: "suck".to_string(),
+                        tasks: vec![Task {
+                            name: "gurt".to_string(),
+                        }],
+                    },
+                    Stage {
+                        name: "slurp".to_string(),
+                        tasks: vec![Task {
+                            name: "gurt".to_string(),
+                        }],
+                    },
+                    Stage {
+                        name: "slobber".to_string(),
+                        tasks: vec![Task {
+                            name: "gurt".to_string(),
+                        }],
+                    },
+                ],
+            },
+        ],
+        pipelines: vec!["build".to_string(), "inception".to_string()],
+    })
 }
 
 async fn health() -> &'static str {
