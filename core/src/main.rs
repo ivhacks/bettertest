@@ -73,9 +73,14 @@ async fn static_dummy_pipeline() -> Json<PipelineResponse> {
                     },
                     Stage {
                         name: "slobber".to_string(),
-                        tasks: vec![Task {
-                            name: "gurt".to_string(),
-                        }],
+                        tasks: vec![
+                            Task {
+                                name: "gurt".to_string(),
+                            },
+                            Task {
+                                name: "yo".to_string(),
+                            },
+                        ],
                     },
                 ],
             },
