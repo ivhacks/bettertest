@@ -1,18 +1,38 @@
 import subprocess
 from collections.abc import Callable
-from typing import Literal
+
+_current_image: str | None = None
 
 
-def task[S](fn: Callable[[S], None]) -> Callable[[S], None]:
-    return fn
+def task(worker: str, image: str | None = None):
+    def decorator(fn: Callable):
+        def run_set_globals():
+            global _current_image
+            _current_image = image
+            return fn()
+
+        return staticmethod(run_set_globals)
+
+    return decorator
 
 
 class Stage:
-    max_parallel_tasks: int = 1
-    image: str | None = None
-    execution_mode: Literal["isolated", "shared"] = "isolated"
-    vm: str | None = None
+    pass
 
-    def shell(self, command: str) -> None:
-        if self.image is None and self.vm is None:
-            subprocess.run(["/bin/sh", "-c", command], check=False)
+
+def run(command: str) -> None:
+    if _current_image is None:
+        raise RuntimeError("run() only inside a @task with an image")
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "/bin/sh",
+            _current_image,
+            "-c",
+            command,
+        ],
+        check=True,
+    )
