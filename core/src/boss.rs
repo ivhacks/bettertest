@@ -11,7 +11,7 @@ use axum::{
 use bettertest_shared_crate::*;
 use rust_embed::Embed;
 use serde::Deserialize;
-use std::{convert::Infallible, path::PathBuf, process::Stdio};
+use std::{convert::Infallible, error::Error, path::PathBuf, process::Stdio};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     net::TcpListener,
@@ -31,11 +31,10 @@ struct RunTaskRequest {
     command: String,
 }
 
-pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let parsed = crate::pipedef::parse(&pipedef);
-    let listener = TcpListener::bind("[::]:9009").await?;
-    println!("http://[::1]:9009/");
+const LISTEN_PORT: u16 = 9009;
 
+pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
+    let parsed = crate::pipedef::parse(&pipedef);
     let router = Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
@@ -45,6 +44,9 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/pipeline", get(get_pipeline))
         .route("/{*path}", get(get_embedded_asset))
         .with_state(parsed);
+
+    println!("Boss web UI: http://[::1]:{LISTEN_PORT}");
+    let listener = TcpListener::bind(("::", LISTEN_PORT)).await?;
     axum::serve(listener, router).await?;
     Ok(())
 }

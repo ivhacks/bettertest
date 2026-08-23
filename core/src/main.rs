@@ -4,7 +4,7 @@ mod pipedef;
 mod worker;
 
 use clap::*;
-use std::path::PathBuf;
+use std::{error::Error, path::PathBuf};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, arg_required_else_help = true)]
@@ -22,14 +22,13 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     match Args::parse().command {
         Command::Boss { pipedef } => boss::entry(pipedef).await?,
-        Command::Worker => worker::entry(),
+        Command::Worker => worker::entry().await?,
         Command::Dispatch { pipedef } => dispatch::entry(pipedef),
         Command::Unified { pipedef } => {
-            worker::entry();
-            boss::entry(pipedef).await?;
+            tokio::try_join!(worker::entry(), boss::entry(pipedef))?;
         }
     }
     Ok(())
