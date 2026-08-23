@@ -18,6 +18,7 @@ enum Command {
     Boss { pipedef: PathBuf },
     Worker,
     Dispatch { pipedef: PathBuf },
+    Unified { pipedef: PathBuf },
 }
 
 #[tokio::main]
@@ -26,6 +27,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Boss { pipedef } => boss::entry(pipedef).await?,
         Command::Worker => worker::entry(),
         Command::Dispatch { pipedef } => dispatch::entry(pipedef),
+        Command::Unified { pipedef } => {
+            worker::entry();
+            boss::entry(pipedef).await?;
+        }
     }
     Ok(())
 }
