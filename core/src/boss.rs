@@ -1,10 +1,9 @@
-use axum::http::{StatusCode, header};
-use axum::response::Response;
 use axum::{
     Json, Router,
-    extract::Path as AxumPath,
+    extract::{Path as AxumPath, State},
+    http::{StatusCode, header},
     response::{
-        IntoResponse,
+        IntoResponse, Response,
         sse::{Event, Sse},
     },
     routing::{get, post},
@@ -12,11 +11,14 @@ use axum::{
 use bettertest_shared_crate::*;
 use rust_embed::Embed;
 use serde::Deserialize;
-use std::convert::Infallible;
-use std::process::Stdio;
-use tokio::io::BufReader;
-use tokio::spawn;
-use tokio::{io::AsyncBufReadExt, process::Command, sync::mpsc};
+use std::{convert::Infallible, path::PathBuf, process::Stdio};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    net::TcpListener,
+    process::Command,
+    spawn,
+    sync::mpsc,
+};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use uuid::Uuid;
 
@@ -29,8 +31,10 @@ struct RunTaskRequest {
     command: String,
 }
 
-pub async fn entry() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9009").await?;
+pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = crate::pipedef::parse(&pipedef);
+    let listener = TcpListener::bind("[::]:9009").await?;
+    println!("http://[::1]:9009/");
 
     let router = Router::new()
         .route("/", get(index))
@@ -38,8 +42,9 @@ pub async fn entry() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/health", get(health))
         .route("/api/run-task", post(run_task))
         .route("/api/goofball", post(dummy_run))
-        .route("/api/pipeline", get(static_dummy_pipeline))
-        .route("/{*path}", get(get_embedded_asset));
+        .route("/api/pipeline", get(get_pipeline))
+        .route("/{*path}", get(get_embedded_asset))
+        .with_state(parsed);
     axum::serve(listener, router).await?;
     Ok(())
 }
@@ -49,71 +54,8 @@ async fn dummy_run() -> Json<RunResponse> {
     Json(new_run)
 }
 
-async fn static_dummy_pipeline() -> Json<PipelineResponse> {
-    Json(PipelineResponse {
-        name: "sausage sucker 9000 turbo GTS".to_string(),
-        stage_headers: vec![
-            "suck".to_string(),
-            "slurp".to_string(),
-            "slobber".to_string(),
-        ],
-        runs: vec![
-            Run {
-                id: 1,
-                active: false,
-                stages: vec![
-                    Stage {
-                        name: "suck".to_string(),
-                        tasks: vec![Task {
-                            name: "gurt".to_string(),
-                        }],
-                    },
-                    Stage {
-                        name: "slurp".to_string(),
-                        tasks: vec![Task {
-                            name: "gurt".to_string(),
-                        }],
-                    },
-                    Stage {
-                        name: "slobber".to_string(),
-                        tasks: vec![
-                            Task {
-                                name: "gurt".to_string(),
-                            },
-                            Task {
-                                name: "yo".to_string(),
-                            },
-                        ],
-                    },
-                ],
-            },
-            Run {
-                id: 2,
-                active: false,
-                stages: vec![
-                    Stage {
-                        name: "suck".to_string(),
-                        tasks: vec![Task {
-                            name: "gurt".to_string(),
-                        }],
-                    },
-                    Stage {
-                        name: "slurp".to_string(),
-                        tasks: vec![Task {
-                            name: "gurt".to_string(),
-                        }],
-                    },
-                    Stage {
-                        name: "slobber".to_string(),
-                        tasks: vec![Task {
-                            name: "gurt".to_string(),
-                        }],
-                    },
-                ],
-            },
-        ],
-        pipelines: vec!["build".to_string(), "inception".to_string()],
-    })
+async fn get_pipeline(State(pipeline): State<Pipeline>) -> Json<Pipeline> {
+    Json(pipeline)
 }
 
 async fn health() -> &'static str {

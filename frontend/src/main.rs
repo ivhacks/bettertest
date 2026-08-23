@@ -1,12 +1,10 @@
-use gloo::console::log;
-
 use bettertest_shared_crate::*;
-use gloo::{console::error, net::http::Request};
-use wasm_bindgen_futures::spawn_local;
+use gloo::{console::*, net::http::*};
+use wasm_bindgen_futures::*;
 use yew::prelude::*;
 
-struct PipelineGrid {
-    pipeline: Option<PipelineResponse>,
+struct PipelineView {
+    pipeline: Option<Pipeline>,
 }
 
 fn task_html(task: &Task) -> Html {
@@ -36,9 +34,9 @@ fn stage_html(stage: &Stage) -> Html {
     }
 }
 
-fn run_html(run: &Run) -> Html {
+fn pipeline_html(pipeline: &Pipeline) -> Html {
     let mut weights = Vec::new();
-    for stage in &run.stages {
+    for stage in &pipeline.stages {
         weights.push(1.0 + stage.tasks.len() as f32 / 2.0);
     }
 
@@ -52,18 +50,16 @@ fn run_html(run: &Run) -> Html {
         <div style={format!(
             "display:grid; column-gap:8px; grid-template-columns: {weights_str};"
         )}>
-            { for run.stages.iter().map(stage_html) }
+            { for pipeline.stages.iter().map(stage_html) }
         </div>
     }
 }
 
-impl Component for PipelineGrid {
-    type Message = PipelineResponse;
+impl Component for PipelineView {
+    type Message = Pipeline;
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        log!("here in update");
-
         let link = ctx.link().clone();
         spawn_local(async move {
             let result = async {
@@ -76,10 +72,7 @@ impl Component for PipelineGrid {
                     return Err(format!("HTTP {}", response.status()));
                 }
 
-                response
-                    .json::<PipelineResponse>()
-                    .await
-                    .map_err(|e| e.to_string())
+                response.json::<Pipeline>().await.map_err(|e| e.to_string())
             }
             .await;
 
@@ -92,24 +85,27 @@ impl Component for PipelineGrid {
     }
 
     fn update(&mut self, _: &Context<Self>, msg: Self::Message) -> bool {
-        log!("here in update");
-
         self.pipeline = Some(msg);
         true
     }
 
-    fn view(&self, _: &Context<Self>) -> Html {
+    fn view(&self, _ctx: &Context<Self>) -> Html {
         let Some(pipeline) = &self.pipeline else {
             return html! {};
         };
         html! {
-            <div style="width:100%;">
-                { for pipeline.runs.iter().map(run_html) }
+            <div>
+                // <button onclick={ctx.link().callback(|_| Msg::StartRun)}>
+                //     { "new run" }
+                // </button>
+                <div style="width:100%;">
+                    { pipeline_html(pipeline) }
+                </div>
             </div>
         }
     }
 }
 
 fn main() {
-    yew::Renderer::<PipelineGrid>::new().render();
+    yew::Renderer::<PipelineView>::new().render();
 }

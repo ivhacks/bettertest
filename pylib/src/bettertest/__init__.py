@@ -1,3 +1,4 @@
+import json
 import subprocess
 from collections.abc import Callable
 
@@ -6,18 +7,43 @@ _current_image: str | None = None
 
 def task(worker: str, image: str | None = None):
     def decorator(fn: Callable):
-        def run_set_globals():
+        def wrapped():
             global _current_image
             _current_image = image
             return fn()
 
-        return staticmethod(run_set_globals)
+        wrapped.bettertest_task = True  # ty: ignore[unresolved-attribute]
+        wrapped.bettertest_worker = worker  # ty: ignore[unresolved-attribute]
+        wrapped.bettertest_image = image  # ty: ignore[unresolved-attribute]
+        return staticmethod(wrapped)
 
     return decorator
 
 
 class Stage:
-    pass
+    @classmethod
+    def dump_json(cls) -> str:
+        tasks = []
+        for name, obj in cls.__dict__.items():
+            fn = obj.__func__ if isinstance(obj, staticmethod) else obj
+            if not getattr(fn, "bettertest_task", False):
+                continue
+            tasks.append(
+                {
+                    "name": name,
+                    "worker": fn.bettertest_worker,
+                    "image": fn.bettertest_image,
+                }
+            )
+        return json.dumps({"name": cls.__name__, "tasks": tasks})
+
+
+def dump_json() -> str:
+    return json.dumps(
+        {
+            "stages": [json.loads(cls.dump_json()) for cls in Stage.__subclasses__()],
+        }
+    )
 
 
 def run(command: str) -> None:
@@ -36,3 +62,17 @@ def run(command: str) -> None:
         ],
         check=True,
     )
+
+
+if __name__ == "__main__":
+    import importlib.util
+    import sys
+
+    sys.modules["bettertest"] = sys.modules["__main__"]
+    spec = importlib.util.spec_from_file_location("pipedef", sys.argv[1])
+    assert spec is not None
+    assert spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["pipedef"] = mod
+    spec.loader.exec_module(mod)
+    print(dump_json())

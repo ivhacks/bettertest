@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
@@ -15,12 +16,14 @@ mod tests_module {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
     pub name: String,
+    pub worker: String,
+    pub image: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stage {
     pub name: String,
     pub tasks: Vec<Task>,
@@ -39,4 +42,14 @@ pub struct PipelineResponse {
     pub stage_headers: Vec<String>,
     pub runs: Vec<Run>,
     pub pipelines: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RunResponse {
+    pub id: Uuid,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Pipeline {
+    pub stages: Vec<Stage>,
 }

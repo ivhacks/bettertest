@@ -1,8 +1,10 @@
 mod boss;
 mod dispatch;
+mod pipedef;
 mod worker;
 
-use clap::{Parser, Subcommand};
+use clap::*;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, arg_required_else_help = true)]
@@ -13,17 +15,17 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    Boss,
+    Boss { pipedef: PathBuf },
     Worker,
-    Dispatch,
+    Dispatch { pipedef: PathBuf },
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Args::parse().command {
-        Command::Boss => boss::entry().await?,
+        Command::Boss { pipedef } => boss::entry(pipedef).await?,
         Command::Worker => worker::entry(),
-        Command::Dispatch => dispatch::entry(),
+        Command::Dispatch { pipedef } => dispatch::entry(pipedef),
     }
     Ok(())
 }
