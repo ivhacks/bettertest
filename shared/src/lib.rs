@@ -29,19 +29,39 @@ pub struct Stage {
     pub tasks: Vec<Task>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Run {
-    pub id: u32,
-    pub active: bool,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Pipeline {
     pub stages: Vec<Stage>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct PipelineResponse {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskState {
+    Pending,
+    Running,
+    Pass,
+    Fail,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskRun {
+    pub id: Uuid,
     pub name: String,
-    pub stage_headers: Vec<String>,
-    pub runs: Vec<Run>,
-    pub pipelines: Vec<String>,
+    pub state: TaskState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StageRun {
+    pub name: String,
+    pub tasks: Vec<TaskRun>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Run {
+    pub id: Uuid,
+    pub number: i64,
+    pub active: bool,
+    pub stages: Vec<StageRun>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,7 +69,20 @@ pub struct RunResponse {
     pub id: Uuid,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct StateResponse {
+    pub pipeline: Pipeline,
+    pub runs: Vec<Run>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Pipeline {
-    pub stages: Vec<Stage>,
+pub struct TaskUpdate {
+    pub run_id: Uuid,
+    pub task_id: Uuid,
+    pub state: TaskState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunDone {
+    pub run_id: Uuid,
 }
