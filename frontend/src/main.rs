@@ -35,7 +35,7 @@ fn task_html(pipeline_task: &Task, run: &Run, stage_name: &str) -> Html {
         .find(|s| s.name == stage_name)
         .and_then(|s| s.tasks.iter().find(|t| t.name == pipeline_task.name))
     else {
-        return html! { <div class="cell pending"></div> };
+        return html! { <div class="cell pending" title={pipeline_task.name.clone()}></div> };
     };
     let class = match task.state {
         TaskState::Pending => "cell pending",
@@ -44,7 +44,7 @@ fn task_html(pipeline_task: &Task, run: &Run, stage_name: &str) -> Html {
         TaskState::Fail => "cell fail",
     };
     html! {
-        <a class={class} href={format!("/logs?task={}", task.id)}></a>
+        <a class={class} href={format!("/logs?task={}", task.id)} title={pipeline_task.name.clone()}></a>
     }
 }
 
