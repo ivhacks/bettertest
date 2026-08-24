@@ -29,6 +29,9 @@ fn cols(pipeline: &Pipeline) -> String {
 }
 
 fn task_html(pipeline_task: &Task, run: &Run, stage_name: &str) -> Html {
+    if pipeline_task.disabled {
+        return html! { <div class="cell disabled" title={pipeline_task.name.clone()}></div> };
+    }
     let Some(task) = run
         .stages
         .iter()

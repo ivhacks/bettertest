@@ -6,6 +6,8 @@ pub struct Task {
     pub name: String,
     pub worker: String,
     pub image: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

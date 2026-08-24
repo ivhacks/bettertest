@@ -5,7 +5,7 @@ from collections.abc import Callable
 current_image: str | None = None
 
 
-def task(worker: str, image: str | None = None):
+def task(worker: str, image: str | None = None, *, disabled: bool = False):
     def decorator(fn: Callable):
         def wrapped():
             global current_image
@@ -15,6 +15,7 @@ def task(worker: str, image: str | None = None):
         wrapped.bettertest_task = True  # ty: ignore[unresolved-attribute]
         wrapped.bettertest_worker = worker  # ty: ignore[unresolved-attribute]
         wrapped.bettertest_image = image  # ty: ignore[unresolved-attribute]
+        wrapped.bettertest_disabled = disabled  # ty: ignore[unresolved-attribute]
         return staticmethod(wrapped)
 
     return decorator
@@ -33,6 +34,7 @@ class Stage:
                     "name": name,
                     "worker": fn.bettertest_worker,
                     "image": fn.bettertest_image,
+                    "disabled": fn.bettertest_disabled,
                 }
             )
         return json.dumps({"name": cls.__name__, "tasks": tasks})

@@ -75,7 +75,7 @@ impl Db {
 
             // Insert tasks within each stage
             let mut tasks = Vec::new();
-            for task in &stage.tasks {
+            for task in stage.tasks.iter().filter(|t| !t.disabled) {
                 let task_id = Uuid::new_v4();
                 tx.execute(
                     "INSERT INTO tasks (id, stage_id, name, state) VALUES (?1, ?2, ?3, 'pending')",
