@@ -1,16 +1,29 @@
+use crate::embedded_scripts::*;
 use bettertest_shared_crate::*;
 use serde_json::*;
-use std::{path::*, process::*};
-
-const LIB: &str = include_str!("../../pylib/src/bettertest/__init__.py");
+use std::{io::Write, path::*, process::*};
 
 pub fn parse(path: &Path) -> Pipeline {
-    let output = Command::new("python3")
+    let pipedef = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read pipedef {}: {e}", path.display()));
+    let mut child = Command::new("python3")
         .arg("-c")
-        .arg(LIB)
-        .arg(path)
-        .output()
+        .arg(GLUE_SCRIPT)
+        .arg("parse")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("failed to run python3 — is it installed?");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&stdin_payload(&pipedef))
+        .unwrap();
+    let output = child
+        .wait_with_output()
+        .expect("failed to wait for pipedef parse");
 
     if !output.status.success() {
         panic!(

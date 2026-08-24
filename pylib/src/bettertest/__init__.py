@@ -49,7 +49,7 @@ def dump_json() -> str:
 def run(command: str) -> None:
     if _current_image is None:
         raise RuntimeError("run() only inside a @task with an image")
-    subprocess.run(
+    result = subprocess.run(
         [
             "docker",
             "run",
@@ -60,19 +60,7 @@ def run(command: str) -> None:
             "-c",
             command,
         ],
-        check=True,
+        check=False,
     )
-
-
-if __name__ == "__main__":
-    import importlib.util
-    import sys
-
-    sys.modules["bettertest"] = sys.modules["__main__"]
-    spec = importlib.util.spec_from_file_location("pipedef", sys.argv[1])
-    assert spec is not None
-    assert spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["pipedef"] = mod
-    spec.loader.exec_module(mod)
-    print(dump_json())
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)

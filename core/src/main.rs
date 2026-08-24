@@ -1,5 +1,7 @@
 mod boss;
 mod dispatch;
+mod dtos;
+mod embedded_scripts;
 mod pipedef;
 mod worker;
 
