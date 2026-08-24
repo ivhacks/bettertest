@@ -3,6 +3,6 @@ use serde_json::*;
 use std::path::*;
 
 pub fn entry(pipedef: PathBuf) {
-    let parsed = parse(&pipedef);
+    let parsed = parse(&pipedef).unwrap();
     println!("{}", to_string_pretty(&parsed).unwrap());
 }

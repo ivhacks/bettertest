@@ -11,15 +11,25 @@ use axum::{
 };
 use bettertest_shared_crate::*;
 use rust_embed::Embed;
-use std::{convert::Infallible, error::Error, path::PathBuf};
+use std::{
+    convert::Infallible,
+    error::Error,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread,
+};
 use tokio::{net::TcpListener, spawn, sync::broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use uuid::Uuid;
 
+struct CurrentPipedef {
+    pipeline: Pipeline,
+    source: String,
+}
+
 #[derive(Clone)]
 struct BossState {
-    pipeline: Pipeline,
-    pipedef_source: String,
+    current: Arc<Mutex<CurrentPipedef>>,
     db: Db,
     http: reqwest::Client,
     events: broadcast::Sender<(String, String)>,
@@ -40,12 +50,13 @@ impl BossState {
 }
 
 pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
-    let pipeline = crate::pipedef::parse(&pipedef);
-    let pipedef_source = std::fs::read_to_string(&pipedef).unwrap();
+    let pipeline = crate::pipedef::parse(&pipedef).unwrap();
+    let source = std::fs::read_to_string(&pipedef).unwrap();
     let (events, _) = broadcast::channel(64);
+    let current = Arc::new(Mutex::new(CurrentPipedef { pipeline, source }));
+    watch_pipedef(pipedef.clone(), current.clone(), events.clone());
     let state = BossState {
-        pipeline,
-        pipedef_source,
+        current,
         db: Db::open(),
         http: reqwest::Client::new(),
         events,
@@ -69,8 +80,9 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
 }
 
 async fn handle_get_state(State(state): State<BossState>) -> Json<StateResponse> {
+    let pipeline = state.current.lock().unwrap().pipeline.clone();
     Json(StateResponse {
-        pipeline: state.pipeline,
+        pipeline,
         runs: state.db.list_runs(),
     })
 }
@@ -94,7 +106,11 @@ async fn handle_get_events(
 }
 
 async fn handle_post_start_run(State(state): State<BossState>) -> Json<Run> {
-    let run = state.db.create_run(&state.pipeline);
+    let (pipeline, pipedef_source) = {
+        let current = state.current.lock().unwrap();
+        (current.pipeline.clone(), current.source.clone())
+    };
+    let run = state.db.create_run(&pipeline);
     state.emit("run", &run);
     let mut work = run.clone();
     spawn(async move {
@@ -107,8 +123,7 @@ async fn handle_post_start_run(State(state): State<BossState>) -> Json<Run> {
                 run.stages[si].tasks[ti].state = TaskState::Running;
                 state.db.set_task_running(task_id);
                 state.emit("run", &run);
-                let worker = &state
-                    .pipeline
+                let worker = &pipeline
                     .stages
                     .iter()
                     .find(|s| s.name == stage_name)
@@ -119,7 +134,7 @@ async fn handle_post_start_run(State(state): State<BossState>) -> Json<Run> {
                     .unwrap()
                     .worker;
                 let form = reqwest::multipart::Form::new()
-                    .text("pipedef", state.pipedef_source.clone())
+                    .text("pipedef", pipedef_source.clone())
                     .text("stage_name", stage_name)
                     .text("task_name", task_name);
                 let mut resp = state
@@ -188,6 +203,45 @@ async fn handle_get_index() -> impl IntoResponse {
 
 async fn handle_get_embedded_asset(AxumPath(path): AxumPath<String>) -> Response {
     embedded_file_response(path.as_str(), "public, max-age=31536000, immutable")
+}
+
+fn watch_pipedef(
+    path: PathBuf,
+    current: Arc<Mutex<CurrentPipedef>>,
+    events: broadcast::Sender<(String, String)>,
+) {
+    let path = path.canonicalize().unwrap();
+    let dir = path.parent().unwrap().to_path_buf();
+    thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(tx).unwrap();
+        notify::Watcher::watch(&mut watcher, &dir, notify::RecursiveMode::NonRecursive).unwrap();
+        for event in rx {
+            let event = event.unwrap();
+            let ours = event
+                .paths
+                .iter()
+                .any(|p| p == &path || p.canonicalize().ok().as_deref() == Some(path.as_path()));
+            if !ours {
+                continue;
+            }
+            match crate::pipedef::parse(&path) {
+                Ok(pipeline) => {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    let mut current = current.lock().unwrap();
+                    if current.source == source {
+                        continue;
+                    }
+                    current.pipeline = pipeline.clone();
+                    current.source = source;
+                    drop(current);
+                    let _ =
+                        events.send(("pipeline".into(), serde_json::to_string(&pipeline).unwrap()));
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+    });
 }
 
 fn embedded_file_response(path: &str, cache: &str) -> Response {

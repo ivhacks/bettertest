@@ -16,6 +16,7 @@ enum Msg {
     Loaded(StateResponse),
     StartRun,
     Run(Run),
+    Pipeline(Pipeline),
 }
 
 fn cols(pipeline: &Pipeline) -> String {
@@ -106,11 +107,19 @@ impl Component for PipelineView {
         source
             .add_event_listener_with_callback("run", on_run.as_ref().unchecked_ref())
             .unwrap();
+        let link = ctx.link().clone();
+        let on_pipeline = Closure::wrap(Box::new(move |e: MessageEvent| {
+            let pipeline = serde_json::from_str(&e.data().as_string().unwrap()).unwrap();
+            link.send_message(Msg::Pipeline(pipeline));
+        }) as Box<dyn FnMut(MessageEvent)>);
+        source
+            .add_event_listener_with_callback("pipeline", on_pipeline.as_ref().unchecked_ref())
+            .unwrap();
         Self {
             pipeline: None,
             runs: vec![],
             source,
-            listeners: vec![on_run],
+            listeners: vec![on_run, on_pipeline],
         }
     }
 
@@ -133,6 +142,10 @@ impl Component for PipelineView {
                 } else {
                     self.runs.insert(0, run);
                 }
+                true
+            }
+            Msg::Pipeline(pipeline) => {
+                self.pipeline = Some(pipeline);
                 true
             }
         }
