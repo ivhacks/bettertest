@@ -44,9 +44,32 @@ button {
 .cell {
     height: 28px;
     display: block;
+    text-decoration: none;
+    cursor: pointer;
 }
+.cell:hover { filter: brightness(1.25); }
 
 .cell.pass    { background: #22c55e; }
 .cell.fail    { background: #ef4444; }
 .cell.running { background: #f59e0b; }
 .cell.pending { background: #444; }
+
+.logs-page {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+.logs-page header h1 {
+    font-weight: 500;
+    font-size: 20px;
+}
+.logs-page header a {
+    color: inherit;
+}
+pre.logs {
+    font-family: ui-monospace, monospace;
+    white-space: pre-wrap;
+    flex: 1;
+    overflow: auto;
+    padding: 16px 0;
+}

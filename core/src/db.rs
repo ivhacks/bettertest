@@ -98,23 +98,22 @@ impl Db {
         Run {
             id: run_id,
             number,
-            active: true,
             stages,
         }
     }
 
     pub fn list_runs(&self) -> Vec<Run> {
         let conn = self.conn.lock().unwrap();
-        let run_rows: Vec<(String, i64, Option<i64>)> = conn
-            .prepare("SELECT id, number, finished_at FROM runs ORDER BY number DESC")
+        let run_rows: Vec<(String, i64)> = conn
+            .prepare("SELECT id, number FROM runs ORDER BY number DESC")
             .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
 
         let mut runs = Vec::new();
-        for (id, number, finished_at) in run_rows {
+        for (id, number) in run_rows {
             let stage_rows: Vec<(String, String)> = conn
                 .prepare("SELECT id, name FROM stages WHERE run_id = ?1 ORDER BY rowid")
                 .unwrap()
@@ -145,7 +144,6 @@ impl Db {
             runs.push(Run {
                 id: Uuid::parse_str(&id).unwrap(),
                 number,
-                active: finished_at.is_none(),
                 stages,
             });
         }
@@ -161,14 +159,42 @@ impl Db {
         .unwrap();
     }
 
-    pub fn set_task_finished(&self, task_id: Uuid, passed: bool, log_output: &str) {
+    pub fn set_task_finished(&self, task_id: Uuid, passed: bool) {
         let state = if passed { "pass" } else { "fail" };
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE tasks SET state = ?1, log_output = ?2, finished_at = ?3 WHERE id = ?4",
-            params![state, log_output, now_ms(), task_id.to_string()],
+            "UPDATE tasks SET state = ?1, finished_at = ?2 WHERE id = ?3",
+            params![state, now_ms(), task_id.to_string()],
         )
         .unwrap();
+    }
+
+    pub fn append_log(&self, task_id: Uuid, line: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE tasks SET log_output = CASE WHEN log_output = '' THEN ?1 ELSE log_output || char(10) || ?1 END WHERE id = ?2",
+            params![line, task_id.to_string()],
+        )
+        .unwrap();
+    }
+
+    pub fn task_log(&self, task_id: Uuid) -> TaskLog {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT tasks.name, tasks.log_output, stages.name
+             FROM tasks JOIN stages ON tasks.stage_id = stages.id
+             WHERE tasks.id = ?1",
+            params![task_id.to_string()],
+            |row| {
+                Ok(TaskLog {
+                    task_id,
+                    name: row.get(0)?,
+                    output: row.get(1)?,
+                    stage: row.get(2)?,
+                })
+            },
+        )
+        .unwrap()
     }
 
     pub fn set_run_finished(&self, run_id: Uuid) {

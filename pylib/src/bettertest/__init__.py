@@ -2,14 +2,14 @@ import json
 import subprocess
 from collections.abc import Callable
 
-_current_image: str | None = None
+current_image: str | None = None
 
 
 def task(worker: str, image: str | None = None):
     def decorator(fn: Callable):
         def wrapped():
-            global _current_image
-            _current_image = image
+            global current_image
+            current_image = image
             return fn()
 
         wrapped.bettertest_task = True  # ty: ignore[unresolved-attribute]
@@ -47,7 +47,7 @@ def dump_json() -> str:
 
 
 def run(command: str) -> None:
-    if _current_image is None:
+    if current_image is None:
         raise RuntimeError("run() only inside a @task with an image")
     result = subprocess.run(
         [
@@ -56,7 +56,7 @@ def run(command: str) -> None:
             "--rm",
             "--entrypoint",
             "/bin/sh",
-            _current_image,
+            current_image,
             "-c",
             command,
         ],

@@ -12,12 +12,9 @@ use axum::{
 use bettertest_shared_crate::*;
 use rust_embed::Embed;
 use std::{convert::Infallible, error::Error, path::PathBuf};
-use tokio::{
-    net::TcpListener,
-    spawn,
-    sync::{broadcast, mpsc},
-};
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio::{net::TcpListener, spawn, sync::broadcast};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use uuid::Uuid;
 
 #[derive(Clone)]
 struct BossState {
@@ -56,10 +53,11 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
     let router = Router::new()
         .route("/", get(handle_get_index))
         .route("/index.html", get(handle_get_index))
+        .route("/logs", get(handle_get_index))
         .route("/api/health", get(handle_get_health))
-        .route("/api/pipeline", get(handle_get_pipeline))
         .route("/api/state", get(handle_get_state))
         .route("/api/events", get(handle_get_events))
+        .route("/api/logs/{task}", get(handle_get_logs))
         .route("/api/run", post(handle_post_start_run))
         .route("/{*path}", get(handle_get_embedded_asset))
         .with_state(state);
@@ -70,10 +68,6 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn handle_get_pipeline(State(state): State<BossState>) -> Json<Pipeline> {
-    Json(state.pipeline)
-}
-
 async fn handle_get_state(State(state): State<BossState>) -> Json<StateResponse> {
     Json(StateResponse {
         pipeline: state.pipeline,
@@ -81,111 +75,107 @@ async fn handle_get_state(State(state): State<BossState>) -> Json<StateResponse>
     })
 }
 
+async fn handle_get_logs(
+    State(state): State<BossState>,
+    AxumPath(task): AxumPath<Uuid>,
+) -> Json<TaskLog> {
+    Json(state.db.task_log(task))
+}
+
 async fn handle_get_events(
     State(state): State<BossState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let mut rx = state.events.subscribe();
-    let (tx, out) = mpsc::channel(64);
-    spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok((event, data)) => {
-                    if tx
-                        .send(Event::default().event(event).data(data))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-    Sse::new(ReceiverStream::new(out).map(Ok::<_, Infallible>))
+    Sse::new(
+        BroadcastStream::new(state.events.subscribe()).filter_map(|item| match item {
+            Ok((event, data)) => Some(Ok(Event::default().event(event).data(data))),
+            Err(_) => None,
+        }),
+    )
 }
 
-async fn handle_post_start_run(State(state): State<BossState>) -> Json<RunResponse> {
+async fn handle_post_start_run(State(state): State<BossState>) -> Json<Run> {
     let run = state.db.create_run(&state.pipeline);
-    let id = run.id;
-    state.emit("run_started", &run);
-
+    state.emit("run", &run);
+    let mut work = run.clone();
     spawn(async move {
-        for stage in &run.stages {
-            for task in &stage.tasks {
-                state.db.set_task_running(task.id);
-                state.emit(
-                    "task",
-                    TaskUpdate {
-                        run_id: id,
-                        task_id: task.id,
-                        state: TaskState::Running,
-                    },
-                );
+        let run = &mut work;
+        for si in 0..run.stages.len() {
+            for ti in 0..run.stages[si].tasks.len() {
+                let task_id = run.stages[si].tasks[ti].id;
+                let task_name = run.stages[si].tasks[ti].name.clone();
+                let stage_name = run.stages[si].name.clone();
+                run.stages[si].tasks[ti].state = TaskState::Running;
+                state.db.set_task_running(task_id);
+                state.emit("run", &run);
                 let worker = &state
                     .pipeline
                     .stages
                     .iter()
-                    .find(|s| s.name == stage.name)
+                    .find(|s| s.name == stage_name)
                     .unwrap()
                     .tasks
                     .iter()
-                    .find(|t| t.name == task.name)
+                    .find(|t| t.name == task_name)
                     .unwrap()
                     .worker;
                 let form = reqwest::multipart::Form::new()
                     .text("pipedef", state.pipedef_source.clone())
-                    .text("stage_name", stage.name.clone())
-                    .text("task_name", task.name.clone());
-                let body = state
+                    .text("stage_name", stage_name)
+                    .text("task_name", task_name);
+                let mut resp = state
                     .http
                     .post(format!("{}/start-task", worker.trim_end_matches('/')))
                     .multipart(form)
                     .send()
                     .await
-                    .unwrap()
-                    .text()
-                    .await
                     .unwrap();
-                let mut log = String::new();
+                let mut buf = String::new();
                 let mut event = String::new();
                 let mut code = -1;
-                for line in body.lines() {
-                    if let Some(name) = line.strip_prefix("event:") {
-                        event = name.trim().to_string();
-                    } else if let Some(data) = line.strip_prefix("data:") {
-                        let data = data.trim_start();
-                        if event == "stdout" || event == "stderr" {
-                            if !log.is_empty() {
-                                log.push('\n');
+                loop {
+                    let Some(chunk) = resp.chunk().await.unwrap() else {
+                        break;
+                    };
+                    buf.push_str(std::str::from_utf8(&chunk).unwrap());
+                    while let Some(idx) = buf.find('\n') {
+                        let mut line: String = buf.drain(..=idx).collect();
+                        line.pop();
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                        if let Some(name) = line.strip_prefix("event:") {
+                            event = name.trim().to_string();
+                        } else if let Some(data) = line.strip_prefix("data:") {
+                            let data = data.trim_start();
+                            if event == "stdout" || event == "stderr" {
+                                state.db.append_log(task_id, data);
+                                state.emit(
+                                    "log",
+                                    LogLine {
+                                        task_id,
+                                        line: data.to_string(),
+                                    },
+                                );
+                            } else if event == "status" {
+                                code = data.parse().unwrap();
                             }
-                            log.push_str(data);
-                        } else if event == "status" {
-                            code = data.parse().unwrap();
                         }
                     }
                 }
                 let passed = code == 0;
-                state.db.set_task_finished(task.id, passed, &log);
-                state.emit(
-                    "task",
-                    TaskUpdate {
-                        run_id: id,
-                        task_id: task.id,
-                        state: if passed {
-                            TaskState::Pass
-                        } else {
-                            TaskState::Fail
-                        },
-                    },
-                );
+                run.stages[si].tasks[ti].state = if passed {
+                    TaskState::Pass
+                } else {
+                    TaskState::Fail
+                };
+                state.db.set_task_finished(task_id, passed);
+                state.emit("run", &run);
             }
         }
         state.db.set_run_finished(run.id);
-        state.emit("run_done", RunDone { run_id: id });
+        state.emit("run", &*run);
     });
-    Json(RunResponse { id })
+    Json(run)
 }
 
 async fn handle_get_health() -> &'static str {

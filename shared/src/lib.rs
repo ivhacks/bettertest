@@ -1,21 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests_module {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
     pub name: String,
@@ -60,13 +45,7 @@ pub struct StageRun {
 pub struct Run {
     pub id: Uuid,
     pub number: i64,
-    pub active: bool,
     pub stages: Vec<StageRun>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RunResponse {
-    pub id: Uuid,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,13 +55,15 @@ pub struct StateResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TaskUpdate {
-    pub run_id: Uuid,
+pub struct LogLine {
     pub task_id: Uuid,
-    pub state: TaskState,
+    pub line: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RunDone {
-    pub run_id: Uuid,
+pub struct TaskLog {
+    pub task_id: Uuid,
+    pub stage: String,
+    pub name: String,
+    pub output: String,
 }
