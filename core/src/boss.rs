@@ -120,17 +120,7 @@ async fn handle_post_start_run(State(state): State<BossState>) -> Json<Run> {
                 let task_id = run.stages[si].tasks[ti].id;
                 let task_name = run.stages[si].tasks[ti].name.clone();
                 let stage_name = run.stages[si].name.clone();
-                let disabled = pipeline
-                    .stages
-                    .iter()
-                    .find(|s| s.name == stage_name)
-                    .unwrap()
-                    .tasks
-                    .iter()
-                    .find(|t| t.name == task_name)
-                    .unwrap()
-                    .disabled;
-                if disabled {
+                if run.stages[si].tasks[ti].state == TaskState::Disabled {
                     continue;
                 }
                 run.stages[si].tasks[ti].state = TaskState::Running;

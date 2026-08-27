@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id          TEXT PRIMARY KEY, -- UUID
   stage_id    TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE, -- UUID
   name        TEXT NOT NULL,
-  state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'pass', 'fail')),
+  state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'pass', 'fail', 'disabled')),
   log_output  TEXT NOT NULL DEFAULT '',
   started_at  INTEGER,
   finished_at INTEGER

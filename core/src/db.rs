@@ -27,6 +27,7 @@ fn parse_state(s: &str) -> TaskState {
         "running" => TaskState::Running,
         "pass" => TaskState::Pass,
         "fail" => TaskState::Fail,
+        "disabled" => TaskState::Disabled,
         other => panic!("unknown task state: {other}"),
     }
 }
@@ -75,17 +76,27 @@ impl Db {
 
             // Insert tasks within each stage
             let mut tasks = Vec::new();
-            for task in stage.tasks.iter().filter(|t| !t.disabled) {
+            for task in &stage.tasks {
                 let task_id = Uuid::new_v4();
+                let (state, state_str) = if task.disabled {
+                    (TaskState::Disabled, "disabled")
+                } else {
+                    (TaskState::Pending, "pending")
+                };
                 tx.execute(
-                    "INSERT INTO tasks (id, stage_id, name, state) VALUES (?1, ?2, ?3, 'pending')",
-                    params![task_id.to_string(), stage_id.to_string(), task.name],
+                    "INSERT INTO tasks (id, stage_id, name, state) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        task_id.to_string(),
+                        stage_id.to_string(),
+                        task.name,
+                        state_str
+                    ],
                 )
                 .unwrap();
                 tasks.push(TaskRun {
                     id: task_id,
                     name: task.name.clone(),
-                    state: TaskState::Pending,
+                    state,
                 });
             }
             stages.push(StageRun {

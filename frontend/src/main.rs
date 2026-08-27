@@ -29,9 +29,6 @@ fn cols(pipeline: &Pipeline) -> String {
 }
 
 fn task_html(pipeline_task: &Task, run: &Run, stage_name: &str) -> Html {
-    if pipeline_task.disabled {
-        return html! { <div class="cell disabled" title={pipeline_task.name.clone()}></div> };
-    }
     let Some(task) = run
         .stages
         .iter()
@@ -40,11 +37,15 @@ fn task_html(pipeline_task: &Task, run: &Run, stage_name: &str) -> Html {
     else {
         return html! { <div class="cell pending" title={pipeline_task.name.clone()}></div> };
     };
+    if task.state == TaskState::Disabled {
+        return html! { <div class="cell disabled" title={pipeline_task.name.clone()}></div> };
+    }
     let class = match task.state {
         TaskState::Pending => "cell pending",
         TaskState::Running => "cell running",
         TaskState::Pass => "cell pass",
         TaskState::Fail => "cell fail",
+        TaskState::Disabled => "cell disabled",
     };
     html! {
         <a class={class} href={format!("/logs?task={}", task.id)} title={pipeline_task.name.clone()}></a>

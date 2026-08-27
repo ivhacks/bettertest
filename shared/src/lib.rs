@@ -28,6 +28,7 @@ pub enum TaskState {
     Running,
     Pass,
     Fail,
+    Disabled,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
