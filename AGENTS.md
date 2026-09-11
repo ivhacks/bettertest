@@ -36,3 +36,6 @@ Python for pipedefs, Rust for the binary, Yew/wasm for the UI, docker on the wor
 - Frontend HTML tests assert **exact** HTML strings, not `contains()`.
 - Don't make simple fixes to complicated problems, or complicated fixes to simple ones.
 - Pedagogical crate/bin names (`bettertest-package` / `bettertest-crate`) are temporary; don't spread them further.
+
+## Verification evidence
+Every PR must have verification evidence (VE) in the comments. This is collected material that proves that you've run and tested the change in the PR and it works as intended. This might be logs, captured API requests or responses, or screenshots. It must be complete enough that the reviewer has no need to pull the PR and run it themself and would gather no new information by doing so. You MUST actually capture real data for VE, you can't just hallucinate it.
