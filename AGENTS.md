@@ -1,115 +1,38 @@
-# AGENTS.md
+# bettertest
 
-This repo's Forgejo is on **van** (`van.local`), not GitHub. GitHub still exists as a second remote.
+## Problem
 
-## Independent agent (gork)
+AI generates code faster than humans can verify it. YAML CI is slow, complex, and built for human operators. Tests are the only formal spec that matters: they say what the code does in a form people can actually read. Code can be slop — AI slop, legacy slop — as long as tests pass. That is the leverage point. Fearless refactoring, AI-generated code shipped now and cleaned later, a decade of spaghetti modernized, all of it only works if tests exist and they run.
 
-You may optionally work as Linux user **gork** instead of the repo owner. That account is a separate Forgejo user (`gork`, `gork@iv.codes`) so commits and PRs are an independent agent, not iv.
+## Technical approach
 
-On this machine (lappy):
+A single Rust binary (`bettertest-crate` from crate `bettertest-package`) with clap subcommands:
 
-- Linux user: `gork`
-- Home: `/home/gork`
-- Checkout: `/home/gork/bettertest`
-- Switch: `sudo -u gork -H bash` or `sudo -u gork -H <command>`
-- `iv` can sudo to `gork` with no password (`/etc/sudoers.d/gork-agent`)
-- Git identity: `gork` / `gork@iv.codes`
-- SSH key: `/home/gork/.ssh/id_ed25519`
+- `boss <pipedef>` — `:9009`. Embeds `frontend/dist`, sqlite, watches the pipedef file. Routes: `GET /api/health`, `GET /api/state`, `GET /api/events` (SSE), `GET /api/logs/{task}`, `POST /api/run`. On run, walks stages/tasks in order, multipart-POSTs each to `{task.worker}/start-task`, parses SSE stdout/stderr/status, writes the db, broadcasts `run`/`log`.
+- `worker` — `:9010`. `GET /health`, `POST /start-task`. Spawns `python3 -c GLUE start <stage> <task>`, stdin JSON `{bettertest, pipedef}`, pumps child stdio as SSE.
+- `dispatch <pipedef>` — parse and print. Does not hit a worker.
+- `unified <pipedef>` — `tokio::try_join!(worker, boss)`.
 
-When acting as gork, do not use iv's Forgejo credentials, iv's SSH keys, or an SSH login to `van@van.local`. If git or the API cannot authenticate as gork, ask the human. Do not work around it.
+**Pipedefs** are imperative Python. `class` = stage, `@task(worker, image)` methods = tasks. `@task` returns a `staticmethod`. `run(cmd)` is `docker run --rm --entrypoint /bin/sh IMAGE -c cmd`. Sample: `pipedefs/glizzy.py`.
 
-## Forgejo
+**Parse is not AST.** Rust embeds `pylib` + `core/scripts/glue.py` via `include_str!`. Glue execs the library into `sys.modules["bettertest"]`, execs the pipedef, then `dump_json()` (or calls the task). Pipedefs do `from bettertest import ...` only because glue stuffed the module first.
 
-- Web: http://van.local:3000
-- API: http://van.local:3000/api/v1
-- Canonical URL (`ROOT_URL`) is `http://van.local:3000/`. Using `localhost` or an IP makes the app show a mismatch banner.
-- Registration is off. Sign-in is required to view the site in a browser.
-- No mailer. Email is still a required unique field on every user; dummy addresses like `name@van.local` are fine. Login is username + password.
-- van is an ASUS VivoBook running Fedora, set up as an always-on server (no suspend on lid close). Keep it plugged in; the battery is dead.
+**Frontend** is Yew struct components (`PipelineView`, `LogsPage`), TEA, no function-components/hooks. Trunk proxies `/api/` to `:9009`. Grid + per-task logs. SSE for live updates.
 
-Swagger UI: http://van.local:3000/api/swagger
+**Persistence** is sqlite (`schema.sql`, rusqlite bundled). Runs / stages / tasks. Logs persist when a task finishes; live stream is in-memory broadcast.
 
-### Auth
+Build: `./build.sh` (trunk release, then cargo release with static relocation + no unwind tables).
 
-Use the HTTP API. Header:
+Python for pipedefs, Rust for the binary, Yew/wasm for the UI, docker on the worker for `run()`.
 
-```http
-Authorization: token <token>
-```
+## Coding style
 
-Create a token in the web UI: **Settings → Applications → Generate New Token**. Scopes for PRs: `write:repository`. Do not SSH to van and run `forgejo admin` / sqlite.
-
-Git push over HTTP uses the same token as the password (username `gork`). Git over SSH uses gork's key, which the human must add under **Settings → SSH / GPG Keys**.
-
-SSH clone URL (system user is `forgejo`, not `git`):
-
-```text
-ssh://forgejo@van.local/OWNER/REPO.git
-```
-
-HTTP clone URL:
-
-```text
-http://van.local:3000/OWNER/REPO.git
-```
-
-### This repo's remotes
-
-Default remote is Forgejo (`origin`). GitHub is extra.
-
-```text
-origin    http://van.local:3000/iv/bettertest.git
-github    git@github.com:ivhacks/bettertest.git
-```
-
-`origin` is only the conventional fallback name. `git clone` names the remote `origin` unless you pass `-o`. After that it is just a label. Push/pull with no remote use (1) the branch upstream, (2) `remote.pushDefault`, (3) a remote actually named `origin`.
-
-Default branch on Forgejo: `master`.
-
-### Pull requests (as gork)
-
-gork is not an admin and is not a collaborator on `iv/bettertest`. Fork, push a branch, open a PR via the API.
-
-```bash
-# fork
-curl -sS -X POST \
-  -H "Authorization: token $FORGEJO_TOKEN" \
-  http://van.local:3000/api/v1/repos/iv/bettertest/forks
-
-# remote for the fork
-git remote add gork http://gork:${FORGEJO_TOKEN}@van.local:3000/gork/bettertest.git
-git push -u gork HEAD
-
-# open PR
-curl -sS -X POST \
-  -H "Authorization: token $FORGEJO_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"…","body":"…","head":"gork:BRANCH","base":"master"}' \
-  http://van.local:3000/api/v1/repos/iv/bettertest/pulls
-```
-
-If `FORGEJO_TOKEN` is unset, ask the human for a gork token. Same if SSH push fails: give them `/home/gork/.ssh/id_ed25519.pub` and have them add it to the gork Forgejo account.
-
-### Users (admin API only)
-
-Email is required. Omit admin unless you mean it. These need an **admin** token, which gork does not have.
-
-```bash
-# list
-curl -sS -H "Authorization: token $ADMIN_TOKEN" \
-  http://van.local:3000/api/v1/admin/users
-
-# create (no --admin equivalent: leave "admin": false)
-curl -sS -X POST \
-  -H "Authorization: token $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"username":"NAME","email":"NAME@van.local","password":"PASSWORD","must_change_password":true}' \
-  http://van.local:3000/api/v1/admin/users
-
-# delete
-curl -sS -X DELETE \
-  -H "Authorization: token $ADMIN_TOKEN" \
-  http://van.local:3000/api/v1/admin/users/NAME
-```
-
-On the server the same operations exist as `forgejo admin user list|create|delete`, but this agent should not SSH to van to run them. `forgejo admin user create` is the CLI group; the flag that grants admin is `--admin`.
+- Simple, readable, minimal. Write for the next person reading the file.
+- One approach that always works. No try-this-then-fallback. No "just for now" second path.
+- Smallest working thing, then iterate. No speculative abstractions until there is a second real use.
+- Prefer deleting a dependency over adding one. Until public release, take latest **stable** of everything, majors included.
+- **No environment variables.** Config is a CLI arg, code, the db, a URL, or a cookie. Never `std::env` / `os.environ` / `$FOO`.
+- **No polling. No websockets.** Push only: HTTP POST one way, SSE the other.
+- Frontend HTML tests assert **exact** HTML strings, not `contains()`.
+- Don't make simple fixes to complicated problems, or complicated fixes to simple ones.
+- Pedagogical crate/bin names (`bettertest-package` / `bettertest-crate`) are temporary; don't spread them further.
