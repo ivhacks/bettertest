@@ -1,5 +1,5 @@
 # build artifacts
-/target
+target/
 /target-cross
 /dist
 /frontend/dist
