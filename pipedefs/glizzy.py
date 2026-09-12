@@ -1,6 +1,6 @@
 from bettertest import Stage, run, task
 
-WORKER = "http://localhost:9009"
+WORKER = "http://[::1]:9010"
 IMAGE = "debian:bookworm"
 
 

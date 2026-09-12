@@ -13,6 +13,5 @@ secrets.yaml
 __pycache__
 *.pyc
 .venv
-.claude/
 .ruff_cache/
 pylib/src/bettertest.egg-info

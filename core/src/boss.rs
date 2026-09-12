@@ -20,7 +20,6 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-use uuid::Uuid;
 
 #[derive(Embed)]
 #[folder = "../frontend/dist/"]
@@ -40,7 +39,6 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
         .route("/index.html", get(index))
         .route("/api/health", get(health))
         .route("/api/run-task", post(run_task))
-        .route("/api/goofball", post(dummy_run))
         .route("/api/pipeline", get(get_pipeline))
         .route("/{*path}", get(get_embedded_asset))
         .with_state(parsed);
@@ -49,11 +47,6 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(("::", LISTEN_PORT)).await?;
     axum::serve(listener, router).await?;
     Ok(())
-}
-
-async fn dummy_run() -> Json<RunResponse> {
-    let new_run = RunResponse { id: Uuid::new_v4() };
-    Json(new_run)
 }
 
 async fn get_pipeline(State(pipeline): State<Pipeline>) -> Json<Pipeline> {
