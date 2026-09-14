@@ -1,16 +1,15 @@
 [package]
-name = "bettertest-frontend-package"
+name = "bettertest-frontend"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "bettertest-frontend-crate"
+name = "bettertest-frontend"
 path = "src/main.rs"
 
 [dependencies]
-bettertest-shared-package = { path = "../shared" }
-gloo = { version = "0.12", default-features = false, features = ["net", "console"] }
-# gloo's net feature doesn't turn on json; same package, feature-unified with gloo
+bettertest-shared = { path = "../shared" }
+gloo = "0.12"
 gloo-net = { version = "0.7", features = ["json"] }
 wasm-bindgen-futures = "0.4"
-yew = { version = "0.23.0", features = ["csr"] }
+yew = { version = "0.23", features = ["csr"] }

@@ -1,10 +1,10 @@
-use bettertest_shared_crate::*;
+use bettertest_shared::*;
 use gloo::{console::*, net::http::*};
 use wasm_bindgen_futures::*;
 use yew::prelude::*;
 
-struct PipelineView {
-    pipeline: Option<Pipeline>,
+struct PlView {
+    pl: Option<Pipeline>,
 }
 
 fn task_html(task: &Task) -> Html {
@@ -34,9 +34,9 @@ fn stage_html(stage: &Stage) -> Html {
     }
 }
 
-fn pipeline_html(pipeline: &Pipeline) -> Html {
+fn pipeline_html(pl: &Pipeline) -> Html {
     let mut weights = Vec::new();
-    for stage in &pipeline.stages {
+    for stage in &pl.stages {
         weights.push(1.0 + stage.tasks.len() as f32 / 2.0);
     }
 
@@ -50,12 +50,12 @@ fn pipeline_html(pipeline: &Pipeline) -> Html {
         <div style={format!(
             "display:grid; column-gap:8px; grid-template-columns: {weights_str};"
         )}>
-            { for pipeline.stages.iter().map(stage_html) }
+            { for pl.stages.iter().map(stage_html) }
         </div>
     }
 }
 
-impl Component for PipelineView {
+impl Component for PlView {
     type Message = Pipeline;
     type Properties = ();
 
@@ -77,20 +77,20 @@ impl Component for PipelineView {
             .await;
 
             match result {
-                Ok(pipeline) => link.send_message(pipeline),
+                Ok(pl) => link.send_message(pl),
                 Err(e) => error!(e),
             }
         });
-        Self { pipeline: None }
+        Self { pl: None }
     }
 
     fn update(&mut self, _: &Context<Self>, msg: Self::Message) -> bool {
-        self.pipeline = Some(msg);
+        self.pl = Some(msg);
         true
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
-        let Some(pipeline) = &self.pipeline else {
+        let Some(pl) = &self.pl else {
             return html! {};
         };
         html! {
@@ -99,7 +99,7 @@ impl Component for PipelineView {
                 //     { "new run" }
                 // </button>
                 <div style="width:100%;">
-                    { pipeline_html(pipeline) }
+                    { pipeline_html(pl) }
                 </div>
             </div>
         }
@@ -107,5 +107,5 @@ impl Component for PipelineView {
 }
 
 fn main() {
-    yew::Renderer::<PipelineView>::new().render();
+    yew::Renderer::<PlView>::new().render();
 }

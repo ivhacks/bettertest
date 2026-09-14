@@ -1,11 +1,8 @@
 [package]
-name = "bettertest-shared-package"
+name = "bettertest-shared"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-name = "bettertest_shared_crate"
-path = "src/lib.rs"
-
 [dependencies]
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["serde"] }

@@ -1,4 +1,5 @@
 mod boss;
+mod db;
 mod dispatch;
 mod dtos;
 mod embedded_scripts;

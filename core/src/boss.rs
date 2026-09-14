@@ -8,7 +8,8 @@ use axum::{
     },
     routing::{get, post},
 };
-use bettertest_shared_crate::*;
+use bettertest::db;
+use bettertest_shared::*;
 use rust_embed::Embed;
 use serde::Deserialize;
 use std::{convert::Infallible, error::Error, path::PathBuf, process::Stdio};
@@ -34,6 +35,7 @@ const LISTEN_PORT: u16 = 9009;
 
 pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
     let parsed = crate::pipedef::parse(&pipedef);
+    let _database = db::open()?;
     let router = Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
@@ -49,8 +51,8 @@ pub async fn entry(pipedef: PathBuf) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn get_pipeline(State(pipeline): State<Pipeline>) -> Json<Pipeline> {
-    Json(pipeline)
+async fn get_pipeline(State(pl): State<Pipeline>) -> Json<Pipeline> {
+    Json(pl)
 }
 
 async fn health() -> &'static str {

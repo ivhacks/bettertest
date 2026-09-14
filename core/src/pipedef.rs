@@ -1,5 +1,5 @@
 use crate::embedded_scripts::*;
-use bettertest_shared_crate::*;
+use bettertest_shared::*;
 use serde_json::*;
 use std::{io::Write, path::*, process::*};
 

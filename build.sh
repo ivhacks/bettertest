@@ -16,4 +16,4 @@ cd ..
 # The explicit --target is load-bearing even though it's the host triple: it scopes RUSTFLAGS to the
 # target build only, so relocation-model=static doesn't hit the proc-macro dylibs (serde_derive), which
 # must stay position-independent. Output lands in target/x86_64-unknown-linux-gnu/release/.
-RUSTFLAGS="-Crelocation-model=static -Cforce-unwind-tables=no" cargo build --release -p bettertest-package --target x86_64-unknown-linux-gnu
+RUSTFLAGS="-Crelocation-model=static -Cforce-unwind-tables=no" cargo build --release -p bettertest --target x86_64-unknown-linux-gnu
