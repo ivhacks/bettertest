@@ -990,6 +990,10 @@ impl client::TaskIo for BossTask<'_> {
     fn boss_token(&self) -> Option<&str> {
         self.token.as_deref()
     }
+
+    fn wait_when_busy(&self) -> bool {
+        true
+    }
 }
 
 /// A task cut short because its run was cancelled did not fail: it is skipped, like the tasks

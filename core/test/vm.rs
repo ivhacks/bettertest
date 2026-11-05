@@ -117,6 +117,36 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&planted.stdout)
     );
+    // The failure seen on a real image: link the file onto itself the way debugfs ln does, so
+    // grub.cfg names a deleted inode. Rewriting has to give it a new one, not only the same bytes.
+    let linked = Command::new("debugfs")
+        .args([
+            "-w",
+            "-R",
+            "ln /boot/grub/grub.cfg /boot/grub/grub.cfg.linked",
+            &spec,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        linked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    let removed = Command::new("debugfs")
+        .args(["-w", "-R", "rm /boot/grub/grub.cfg.linked", &spec])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let broken = Command::new("e2fsck")
+        .args(["-fn", &spec])
+        .output()
+        .unwrap();
+    assert!(!broken.status.success(), "the fixture should start corrupt");
     assert!(
         Command::new("qemu-img")
             .args([
@@ -162,8 +192,43 @@ fn emulated_cmdline_is_written_into_the_image() {
         text,
         String::from_utf8_lossy(&read.stderr)
     );
+    // A new file must not be handed grub.cfg's inode. That is what made reboot stop at grub>.
+    let extra = dir.join("extra.txt");
+    fs::write(&extra, "not grub\n").unwrap();
+    let wrote = Command::new("debugfs")
+        .args([
+            "-w",
+            "-R",
+            &format!("write {} /extra.txt", extra.display()),
+            &spec,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        wrote.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wrote.stderr)
+    );
+    let check = Command::new("e2fsck")
+        .args(["-fn", &spec])
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "stdout {}\nstderr {}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let read = Command::new("debugfs")
+        .args(["-R", "cat /boot/grub/grub.cfg", &spec])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&read.stdout);
+    assert!(text.contains(EMULATED_KERNEL_ARGS), "{text}");
     // The marker makes a second boot skip the rewrite.
+    let before = fs::metadata(&qcow).unwrap().modified().unwrap();
     ensure_emulated_cmdline(&qcow).unwrap();
+    assert_eq!(fs::metadata(&qcow).unwrap().modified().unwrap(), before);
     let _ = fs::remove_dir_all(dir);
 }
 

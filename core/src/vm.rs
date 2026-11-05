@@ -212,7 +212,9 @@ impl Vms {
             (vm.ssh_port, vm.dir.join("key"), vm.boot_timeout)
         };
         let booted = self.wait_for_boot(id);
-        // The connection drops as the vm goes down, so ssh's exit status says nothing either way.
+        // --no-block returns once systemd has queued the reboot. Without it, systemctl waits out
+        // the shutdown and the ssh session dies with the guest. Dropping that wait kills ssh,
+        // and a signal on that session can cancel the reboot before it happens.
         let reboot = Command::new("ssh")
             .args(SSH_OPTIONS)
             .arg("-i")
@@ -221,11 +223,32 @@ impl Vms {
                 "-p",
                 &ssh_port.to_string(),
                 "bt@127.0.0.1",
-                "sudo systemctl reboot",
+                "sudo systemctl reboot --no-block",
             ])
             .stdin(Stdio::null())
             .output();
-        let _ = tokio::time::timeout(Duration::from_secs(60), reboot).await;
+        let output = match tokio::time::timeout(Duration::from_secs(60), reboot).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => return Err(format!("could not run ssh to reboot vm {id}: {e}")),
+            Err(_) => {
+                return Err(format!(
+                    "vm {id} did not accept reboot within 60s (ssh did not return)"
+                ));
+            }
+        };
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let detail = detail.trim();
+            let detail = if detail.is_empty() {
+                String::new()
+            } else {
+                format!("\n{detail}")
+            };
+            return Err(format!(
+                "vm {id} did not reboot: ssh exited {}{detail}",
+                output.status
+            ));
+        }
         tokio::select! {
             _ = booted => Ok(()),
             _ = sleep(timeout) => {
@@ -431,6 +454,13 @@ pub fn remove_leftovers() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A marker from a worker that linked grub.cfg over itself. debugfs `ln` does not keep the link
+/// count, so removing the temporary name deletes the inode while the directory entry stays. The
+/// first boot still reads the old blocks. The guest then reuses that inode (its journal directory)
+/// and the next boot stops at `grub>` with `can't find command ''`.
+const CMDLINE_STAMP: &str =
+    "v2\nsystemd.default_device_timeout_sec=900 systemd.default_timeout_start_sec=900\n";
+
 /// Puts `EMULATED_KERNEL_ARGS` on the image's kernel command line, once. Overlays created after
 /// this see it. Two boots of one image must not both rewrite it.
 fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
@@ -454,30 +484,31 @@ fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
     ])?;
     let offset = largest_partition_offset(&read_prefix(&raw.0, 1024 * 1024)?)?;
     let spec = format!("{}?offset={offset}", raw.0.display());
-    // Debian's grub.cfg and Fedora's grub2 one. A crash between unlinking the file and linking
-    // its replacement leaves only the staged name.
-    let (cfg_path, grub, grub_missing) = find_grub(&spec)?;
+    // Debian's grub.cfg and Fedora's grub2 one. The edit is on a raw copy; the cached qcow is
+    // replaced only after e2fsck accepts it, so a crash mid-edit leaves the previous image.
+    let (cfg_path, grub, _grub_missing) = find_grub(&spec)?;
     if cfg_path.is_empty() {
         write_marker(&marker)?;
         return Ok(());
     }
+    // Always write a new inode. An image whose text is already right can still have grub.cfg
+    // pointing at a deleted inode, and skipping the write would stamp that image as done.
     let updated = extend_linux_cmdline(&grub, EMULATED_KERNEL_ARGS)?;
-    if updated != grub || grub_missing {
-        fs::write(&grub_file.0, &updated).map_err(|e| e.to_string())?;
-        replace_grub(&spec, &cfg_path, &grub_file.0)?;
-        qemu_img(&[
-            "convert",
-            "-f",
-            "raw",
-            "-O",
-            "qcow2",
-            &raw.0.to_string_lossy(),
-            &rewritten.0.to_string_lossy(),
-        ])?;
-        fs::set_permissions(&rewritten.0, fs::Permissions::from_mode(0o666))
-            .map_err(|e| e.to_string())?;
-        fs::rename(&rewritten.0, image).map_err(|e| e.to_string())?;
-    }
+    fs::write(&grub_file.0, &updated).map_err(|e| e.to_string())?;
+    replace_grub(&spec, &cfg_path, &grub_file.0)?;
+    filesystem_clean(&spec)?;
+    qemu_img(&[
+        "convert",
+        "-f",
+        "raw",
+        "-O",
+        "qcow2",
+        &raw.0.to_string_lossy(),
+        &rewritten.0.to_string_lossy(),
+    ])?;
+    fs::set_permissions(&rewritten.0, fs::Permissions::from_mode(0o666))
+        .map_err(|e| e.to_string())?;
+    fs::rename(&rewritten.0, image).map_err(|e| e.to_string())?;
     write_marker(&marker)
 }
 
@@ -488,8 +519,7 @@ fn marker_is_current(image: &Path, marker: &Path) -> bool {
     let (Ok(image_time), Ok(marker_time)) = (image_meta.modified(), marker_meta.modified()) else {
         return false;
     };
-    marker_time >= image_time
-        && fs::read_to_string(marker).ok().as_deref() == Some(EMULATED_KERNEL_ARGS)
+    marker_time >= image_time && fs::read_to_string(marker).ok().as_deref() == Some(CMDLINE_STAMP)
 }
 
 fn write_marker(marker: &Path) -> Result<(), String> {
@@ -500,7 +530,7 @@ fn write_marker(marker: &Path) -> Result<(), String> {
         .mode(0o666)
         .open(marker)
         .map_err(|e| e.to_string())?;
-    file.write_all(EMULATED_KERNEL_ARGS.as_bytes())
+    file.write_all(CMDLINE_STAMP.as_bytes())
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -667,32 +697,42 @@ fn find_grub(spec: &str) -> Result<(String, String, bool), String> {
     Ok((String::new(), String::new(), false))
 }
 
-/// Replaces grub.cfg with the host file. The new inode is linked into place, so a crash between
-/// removing the old name and linking the new one is repaired on the next boot.
+/// Replaces grub.cfg with the host file. The old name is removed first, then the file is written
+/// as a new inode. debugfs `ln` does not keep a link count, and writing a second name while the
+/// old entry still points at a deleted inode makes debugfs reuse that inode and the entry stays
+/// deleted. Reading the file cannot tell: a deleted inode still returns its old bytes.
 fn replace_grub(spec: &str, cfg_path: &str, host_file: &Path) -> Result<(), String> {
-    let staged = format!("{cfg_path}.bettertest");
-    let _ = debugfs(spec, &format!("rm {staged}"), true);
+    let _ = debugfs(spec, &format!("rm {cfg_path}"), true);
     let wrote = debugfs(
         spec,
-        &format!("write {} {staged}", host_file.display()),
+        &format!("write {} {cfg_path}", host_file.display()),
         true,
     )?;
-    if wrote.contains("File not found") {
-        return Err(format!("debugfs could not write {staged}: {wrote}"));
+    if wrote.contains("File not found") || wrote.contains("already exists") {
+        return Err(format!("debugfs could not write {cfg_path}: {wrote}"));
     }
-    let staged_text = debugfs_cat(spec, &staged)?;
-    if !staged_text.contains(EMULATED_KERNEL_ARGS) {
-        return Err("rewritten grub.cfg did not keep the kernel command".to_string());
-    }
-    // File not found means a previous attempt already unlinked it. Linking still restores the name.
-    let _ = debugfs(spec, &format!("rm {cfg_path}"), true)?;
-    debugfs(spec, &format!("ln {staged} {cfg_path}"), true)?;
     let final_text = debugfs_cat(spec, cfg_path)?;
     if !final_text.contains(EMULATED_KERNEL_ARGS) {
         return Err("grub.cfg is missing the emulated boot timeout".to_string());
     }
-    let _ = debugfs(spec, &format!("rm {staged}"), true);
     Ok(())
+}
+
+/// The rewritten filesystem has to pass a read-only check. A directory entry aimed at a deleted
+/// inode still reads back the old bytes, so reading grub.cfg is not enough.
+fn filesystem_clean(spec: &str) -> Result<(), String> {
+    let output = std::process::Command::new("e2fsck")
+        .args(["-fn", spec])
+        .output()
+        .map_err(|e| format!("could not run e2fsck (e2fsprogs): {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "rewritten vm image is not a consistent filesystem: {stderr}{stdout}"
+    ))
 }
 
 /// Adds `extra` to every grub `linux` / `linuxefi` command. Existing copies of these timeouts are

@@ -409,7 +409,18 @@ def reboot() -> None:
     if sandbox["kind"] != "vm":
         raise RuntimeError("reboot() needs the task to run in a vm")
     print("$ reboot", flush=True)
-    urllib.request.urlopen(urllib.request.Request(sandbox["reboot"], method="POST"))
+    request = urllib.request.Request(sandbox["reboot"], method="POST")
+    try:
+        with urllib.request.urlopen(request) as response:
+            response.read()
+    except urllib.error.HTTPError as error:
+        # str(HTTPError) is only "HTTP Error 500: Internal Server Error". The worker's reason,
+        # including the console tail, is the body.
+        body = error.read().decode(errors="replace").strip()
+        detail = f": {body}" if body else ""
+        raise RuntimeError(
+            f"{sandbox['reboot']} said {error.code} {error.reason}{detail}"
+        ) from None
 
 
 def artifact(path: str | Path, *, name: str) -> None:
