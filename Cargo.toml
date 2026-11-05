@@ -1,0 +1,10 @@
+[workspace]
+members = ["shared", "frontend", "core"]
+resolver = "3"
+
+[profile.release]
+strip = true
+lto = true
+panic = "abort"
+opt-level = "z"
+codegen-units = 1

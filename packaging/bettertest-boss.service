@@ -1,0 +1,15 @@
+[Unit]
+Description=bettertest boss: web UI and API on port 7357
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=bettertest
+StateDirectory=bettertest
+WorkingDirectory=/var/lib/bettertest
+ExecStart=/usr/bin/bettertest boss /etc/bettertest/pipedefs
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

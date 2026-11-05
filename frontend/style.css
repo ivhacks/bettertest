@@ -1,0 +1,688 @@
+/* The brand guide (brand/style_guide.pdf): black ground, white type, red and orange accents,
+   Archivo for words moving along its width axis, Martian Mono for code. Pass green and fail red are
+   the product's own, not the brand's. */
+
+@font-face {
+    font-family: "Archivo";
+    src: url("/assets/archivo.v1.woff2") format("woff2");
+    font-weight: 400 700;
+    font-stretch: 62% 100%;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Martian Mono";
+    src: url("/assets/martian-mono.v1.woff2") format("woff2");
+    font-weight: 400 700;
+    font-stretch: 75%;
+    font-display: swap;
+}
+
+:root {
+    --background: #000000;
+    --surface: #111111;
+    --line: #2a2a2a;
+    --text: #ffffff;
+    --muted: #8a8a8a;
+    --accent: #ff0000;
+    --highlight: #ff6e00;
+    --link: #ffb700;
+    --pass: #2ea44f;
+    --fail: #e5484d;
+    --running: #ff6e00;
+    --font: "Archivo", system-ui, sans-serif;
+    --mono: "Martian Mono", ui-monospace, monospace;
+    color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --background: #ffffff;
+        --surface: #f3f3f3;
+        --line: #dddddd;
+        --text: #000000;
+        --muted: #666666;
+        /* Red text under 24px on white is #d40000. Orange never carries text on white. */
+        --link: #d40000;
+        --fail: #cf222e;
+        color-scheme: light;
+    }
+}
+
+/* The page itself never scrolls. Only main does, so the header and tabs stay put. */
+html,
+body {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    background: var(--background);
+    color: var(--text);
+    font: 400 18px/1.5 var(--font);
+    font-stretch: 80%;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    font-size: 19px;
+    font-stretch: 70%;
+}
+
+/* The mark at its 24px minimum, the name in the hero style beside it, no taller than the mark. */
+header .home {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: 6px;
+    color: var(--text);
+    font: 700 28px/1 var(--font);
+    font-stretch: 62%;
+    text-transform: uppercase;
+}
+
+header .home img {
+    display: block;
+    height: 30px;
+}
+
+header > :not(.home, .spacer, button, .state, .worker, .runtime, .page, .add, .me)::before {
+    content: "/";
+    margin-right: 10px;
+    color: var(--muted);
+}
+
+header .spacer {
+    flex: 1;
+}
+
+header .page {
+    color: var(--muted);
+}
+
+/* Buttons cut their top-left and bottom-right corners at 45 degrees. Outlined ones draw the border
+   as the button's background and fill an inner shape cut 0.586px less, so the border follows the
+   cut at exactly 1px.
+   Hovered, a button lights up at once: its fill mixes in a little white (brightness cannot lift
+   pure red). Pressed, it turns white with black type the moment the mouse goes down, and fades back
+   over --fade once released. The fade is an animation, not a transition, so that it runs only on
+   release: CSS cannot tell a release from a hover, so main.rs marks the released button. */
+button {
+    --cut: 10px;
+    --fill: var(--line);
+    --fade: 420ms;
+    position: relative;
+    isolation: isolate;
+    height: 38px;
+    padding: 0 16px;
+    border: none;
+    background: var(--fill);
+    color: var(--text);
+    font: 500 18px/1 var(--font);
+    font-stretch: 70%;
+    cursor: pointer;
+    white-space: nowrap;
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
+            calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+
+button::before {
+    --inner: calc(var(--cut) - 0.586px);
+    content: "";
+    position: absolute;
+    inset: 1px;
+    z-index: -1;
+    background: var(--background);
+    clip-path: polygon(var(--inner) 0, 100% 0, 100% calc(100% - var(--inner)),
+            calc(100% - var(--inner)) 100%, 0 100%, 0 var(--inner));
+}
+
+button.primary {
+    --fill: var(--accent);
+    color: #ffffff;
+}
+
+button.primary::before,
+button.small::before {
+    content: none;
+}
+
+button.small {
+    --cut: 6px;
+    --fill: var(--highlight);
+    height: 30px;
+    padding: 0 12px;
+    color: #000000;
+    font-size: 16px;
+}
+
+button:hover,
+button:focus-visible {
+    outline: none;
+    background: color-mix(in srgb, var(--fill), #ffffff 22%);
+}
+
+button:active,
+button:active::before {
+    background: #ffffff;
+    color: #000000;
+}
+
+button.released,
+button.released::before {
+    animation: released var(--fade) ease-out;
+}
+
+/* From the pressed look back to whatever the button looks like now, hovered or not. */
+@keyframes released {
+    from {
+        background: #ffffff;
+        color: #000000;
+    }
+}
+
+main {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px;
+}
+
+.notice {
+    margin: 16px 16px 0;
+    padding: 8px 12px;
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    white-space: pre-wrap;
+}
+
+.tabs {
+    display: flex;
+    overflow-x: auto;
+    border-top: 1px solid var(--line);
+    font-size: 18px;
+    font-stretch: 70%;
+}
+
+.tab {
+    padding: 6px 16px;
+    border-right: 1px solid var(--line);
+    color: var(--muted);
+}
+
+.tab.current {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: inset 0 -2px var(--accent);
+}
+
+/* Run grid: one row per run, one column per task, grouped under its stage. A CSS grid whose tracks
+   the view sizes by stage; the table's rows and sections step aside so every cell is a grid item.
+   Square corners, labels narrowed to width 62 rather than shrunk. */
+
+.grid {
+    display: grid;
+    row-gap: 3px;
+    width: 100%;
+    font: 500 20px/1.2 var(--font);
+    font-stretch: 62%;
+}
+
+.grid thead,
+.grid tbody,
+.grid tr {
+    display: contents;
+}
+
+.grid th,
+.grid td {
+    padding: 0;
+    font-weight: 500;
+    color: var(--muted);
+}
+
+/* Tasks sit 2px apart and stages 10px: padding the cell's color stays out of. A stage too narrow
+   for gaps runs its tasks together into one rectangle. */
+.grid .cell,
+.grid .task {
+    padding-left: 2px;
+}
+
+.grid .dense {
+    padding-left: 0;
+}
+
+.grid .task.dense span {
+    visibility: hidden;
+}
+
+.grid .first,
+.grid .stage {
+    padding-left: 10px;
+}
+
+.grid .stage span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+    color: var(--text);
+    font-weight: 700;
+    text-align: center;
+}
+
+.grid .task {
+    position: relative;
+    align-self: end;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.grid .task span {
+    display: inline-block;
+}
+
+/* Tilted names rise to the right from the middle of their column, all at one angle. */
+.grid.tilted .task span {
+    position: absolute;
+    left: calc(50% + 1px);
+    bottom: 2px;
+    transform-origin: 0 100%;
+}
+
+.grid .run {
+    padding-right: 8px;
+    text-align: right;
+}
+
+.run {
+    font-family: var(--mono);
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+/* The red X that cancels a running run, before its id. */
+button.cancel {
+    --cut: 4px;
+    --fill: var(--fail);
+    width: 18px;
+    height: 18px;
+    margin-right: 6px;
+    padding: 0;
+    vertical-align: middle;
+}
+
+button.cancel::before {
+    content: none;
+}
+
+button.cancel svg {
+    display: block;
+    width: 10px;
+    height: 10px;
+    margin: auto;
+    fill: none;
+    stroke: #ffffff;
+    stroke-width: 2;
+}
+
+.cell {
+    height: 22px;
+    background: var(--surface);
+    background-clip: content-box;
+}
+
+.cell a {
+    display: block;
+    height: 100%;
+}
+
+.cell.pass {
+    background-color: var(--pass);
+}
+
+.cell.fail {
+    background-color: var(--fail);
+}
+
+.cell.running {
+    background-color: var(--running);
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+.cell.skipped {
+    opacity: 0.4;
+}
+
+/* A rerun's carried-over result: the same color, faded, so what ran again stands out. */
+.cell.carried {
+    opacity: 0.55;
+}
+
+@keyframes pulse {
+    50% {
+        opacity: 0.4;
+    }
+}
+
+/* Task logs */
+
+header .worker,
+header .runtime {
+    color: var(--muted);
+    font: 400 13px/1 var(--mono);
+}
+
+.state {
+    padding: 2px 8px;
+    background: var(--surface);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 15px;
+}
+
+.state.pass {
+    background: var(--pass);
+    color: #ffffff;
+}
+
+.state.fail {
+    background: var(--fail);
+    color: #ffffff;
+}
+
+.state.running {
+    background: var(--running);
+    color: #000000;
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+.note {
+    margin: 0;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+}
+
+.artifacts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.artifacts .size {
+    margin-left: 6px;
+    color: var(--muted);
+}
+
+/* column-reverse keeps the newest lines in view while the reader is at the bottom, and leaves
+   them alone once they scroll up. Leftover space goes below a short log, not above it. */
+main.follow {
+    display: flex;
+    flex-direction: column-reverse;
+}
+
+main.follow > * {
+    margin-bottom: auto;
+}
+
+.log {
+    margin: 0;
+    font: 400 13px/1.6 var(--mono);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log .stderr {
+    color: var(--fail);
+}
+
+.log .bettertest {
+    color: var(--muted);
+}
+
+/* Workers */
+
+.add {
+    display: flex;
+    gap: 6px;
+}
+
+input {
+    height: 38px;
+    box-sizing: border-box;
+    width: 260px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    background: var(--background);
+    color: var(--text);
+    font: 400 13px var(--mono);
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--highlight);
+}
+
+.workers {
+    border-collapse: collapse;
+}
+
+.workers th {
+    padding: 4px 16px 4px 0;
+    color: var(--muted);
+    font: 500 16px/1.2 var(--font);
+    font-stretch: 70%;
+    letter-spacing: 0.06em;
+    text-align: left;
+    text-transform: uppercase;
+}
+
+.workers td {
+    padding: 6px 16px 6px 0;
+    border-top: 1px solid var(--line);
+    vertical-align: top;
+}
+
+.workers .url {
+    padding-left: 10px;
+    border-left: 4px solid var(--pass);
+    font: 400 13px/1.5 var(--mono);
+}
+
+.workers .down .url {
+    border-left-color: var(--fail);
+}
+
+.workers .problem,
+.workers .since,
+.empty {
+    color: var(--muted);
+}
+
+.workers .tasks a {
+    display: block;
+}
+
+/* A pop-up window: cut corners like a button, 16px. */
+.backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(0 0 0 / 0.6);
+}
+
+.window {
+    --cut: 16px;
+    position: relative;
+    isolation: isolate;
+    width: 560px;
+    padding: 28px;
+    background: var(--line);
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
+            calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+
+.window::before {
+    --inner: calc(var(--cut) - 0.586px);
+    content: "";
+    position: absolute;
+    inset: 1px;
+    z-index: -1;
+    background: var(--surface);
+    clip-path: polygon(var(--inner) 0, 100% 0, 100% calc(100% - var(--inner)),
+            calc(100% - var(--inner)) 100%, 0 100%, 0 var(--inner));
+}
+
+.window h2 {
+    margin: 0 0 12px;
+    font: 700 40px/1 var(--font);
+    font-stretch: 62%;
+    text-transform: uppercase;
+}
+
+.window p {
+    margin: 0 0 20px;
+}
+
+.window .buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+/* Settings */
+
+.https {
+    margin-top: 32px;
+}
+
+.https h2 {
+    margin: 0 0 8px;
+    font: 700 24px/1 var(--font);
+    font-stretch: 62%;
+    text-transform: uppercase;
+}
+
+.https p {
+    margin: 0;
+}
+
+.https .notice {
+    margin: 12px 0 0;
+}
+
+.settings {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.settings input {
+    width: 90px;
+}
+
+.hint,
+.saved {
+    margin: 0;
+    color: var(--muted);
+}
+
+.saved {
+    margin-top: 12px;
+}
+
+/* Users and logging in */
+
+.users {
+    border-collapse: collapse;
+}
+
+.users th {
+    padding: 4px 16px 4px 0;
+    color: var(--muted);
+    font: 500 16px/1.2 var(--font);
+    font-stretch: 70%;
+    letter-spacing: 0.06em;
+    text-align: left;
+    text-transform: uppercase;
+}
+
+.users td {
+    padding: 6px 16px 6px 0;
+    border-top: 1px solid var(--line);
+    vertical-align: middle;
+}
+
+.users .name {
+    font-family: var(--mono);
+    font-size: 14px;
+}
+
+.users .actions {
+    white-space: nowrap;
+}
+
+.users .actions button + button {
+    margin-left: 6px;
+}
+
+select {
+    height: 32px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    background: var(--background);
+    color: var(--text);
+    font: inherit;
+}
+
+.login {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+header .me {
+    color: var(--muted);
+}
+
+main > .add {
+    margin-bottom: 20px;
+}
+
+.token {
+    margin: 0 0 20px;
+    padding: 8px;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    background: var(--background);
+    font: 400 12px/1.5 var(--mono);
+}
+
+.users .cert {
+    display: block;
+    white-space: nowrap;
+}
+
+.users .cert button {
+    margin-left: 6px;
+}

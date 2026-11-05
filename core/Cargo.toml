@@ -1,0 +1,30 @@
+[package]
+name = "bettertest"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ivhacks/bettertest"
+description = "CI that doesn't suck: one binary, pipelines written in Python, no YAML"
+
+[[bin]]
+name = "bettertest"
+path = "src/main.rs"
+
+[dependencies]
+argon2 = "0.6"
+axum = { version = "0.8", features = ["multipart"] }
+bettertest-shared = { path = "../shared" }
+clap = { version = "4", features = ["derive"] }
+fastrand = "2"
+reqwest = { version = "0.12", features = ["json", "multipart", "native-tls-vendored"] }
+openssl = "0.10"
+rusqlite = { version = "0.40", features = ["bundled"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-openssl = "0.6"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+webauthn-rs = { version = "0.6", features = ["conditional-ui"] }

@@ -1,0 +1,15 @@
+[Unit]
+Description=bettertest worker: runs tasks, on port 7358
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+User=bettertest
+StateDirectory=bettertest
+WorkingDirectory=/var/lib/bettertest
+ExecStart=/usr/bin/bettertest worker
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+    systemd-sysusers bettertest.conf
+    systemctl daemon-reload
+    systemctl enable bettertest-boss.service bettertest-worker.service
+    # restart rather than start, so an upgrade switches to the new binary
+    systemctl restart bettertest-boss.service bettertest-worker.service
+fi

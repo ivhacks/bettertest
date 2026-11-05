@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+
+# Run history in /var/tmp/bettertest is data, so even a purge leaves it.
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    systemctl daemon-reload
+fi

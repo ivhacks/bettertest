@@ -1,0 +1,5 @@
+# Dev only: trunk serve (:8080) proxies API to core (:7357).
+# Frontend keeps relative /api/... URLs; no CORS needed.
+[[proxy]]
+rewrite = "/api/"
+backend = "http://127.0.0.1:7357/api/"

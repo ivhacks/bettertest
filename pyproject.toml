@@ -1,0 +1,10 @@
+[project]
+name = "bettertest-dev"
+version = "0"
+dependencies = ["bettertest"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+bettertest = { path = "pylib", editable = true }

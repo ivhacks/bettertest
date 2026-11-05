@@ -1,0 +1,17 @@
+# build artifacts
+target/
+/dist
+/frontend/dist
+
+# secrets
+secrets.yaml
+*.secret
+.env
+
+# python
+__pycache__
+*.pyc
+.venv
+.ruff_cache/
+pylib/src/bettertest.egg-info
+/brand/fonts/
