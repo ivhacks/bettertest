@@ -111,6 +111,24 @@ header .page {
     color: var(--muted);
 }
 
+/* "Log In" is two words, so a squeezed header wraps it onto a second line. From 640px down the
+   link is a 44px user icon; the words stay in the markup for the accessible name. */
+header a.login {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    white-space: nowrap;
+}
+
+header a.login .user {
+    display: none;
+}
+
+header a.login:focus-visible {
+    outline: 2px solid var(--highlight);
+    outline-offset: 3px;
+}
+
 /* Buttons cut their top-left and bottom-right corners at 45 degrees. Outlined ones draw the border
    as the button's background and fill an inner shape cut 0.586px less, so the border follows the
    cut at exactly 1px.
@@ -336,6 +354,85 @@ button.cancel svg {
     fill: none;
     stroke: #ffffff;
     stroke-width: 2;
+}
+
+/* A phone header and a running row. The icon replaces the wrapping words, and the cancel control
+   grows into the space beside the run id instead of staying an 18px target in a wider cell.
+   Desktop, above, is unchanged. Rows without a cancel button stay the short grid. */
+@media (max-width: 640px) {
+    /* The wordmark and New Run already fill a 320px row. Wrap the rest onto the next line
+       so the login icon stays a 44px target on screen instead of sliding off the right edge. */
+    header {
+        flex-wrap: wrap;
+        row-gap: 8px;
+    }
+
+    header a.login {
+        position: relative;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        color: var(--text);
+    }
+
+    header a.login span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    header a.login .user {
+        display: block;
+        width: 24px;
+        height: 24px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+    }
+
+    .grid {
+        --run: 112px;
+    }
+
+    button.cancel {
+        --cut: 6px;
+        width: 44px;
+        height: 44px;
+        margin: 0;
+        flex: none;
+    }
+
+    button.cancel svg {
+        width: 16px;
+        height: 16px;
+    }
+
+    .run:has(> button.cancel) {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .grid .run:has(> button.cancel) {
+        display: flex;
+        justify-content: flex-end;
+        box-sizing: border-box;
+        padding-right: 4px;
+        padding-left: 4px;
+    }
+
+    .grid .cell {
+        height: auto;
+        min-height: 22px;
+        align-self: stretch;
+    }
 }
 
 .cell {

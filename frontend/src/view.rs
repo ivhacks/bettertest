@@ -85,8 +85,9 @@ pub fn grid(
     layout: &GridLayout,
     cancel: &Callback<String>,
 ) -> Html {
-    // Room for a running run's cancel button beside its id.
-    let mut columns = String::from("88px");
+    // Room for a running run's cancel button beside its id. On a narrow screen the stylesheet
+    // widens `--run` so that button can be a real tap target; desktop stays 88px.
+    let mut columns = String::from("var(--run, 88px)");
     for stage in &pipeline.stages {
         let each = stage_weight(stage.tasks.len()) / stage.tasks.len().max(1) as f64;
         for _ in &stage.tasks {
@@ -325,7 +326,17 @@ pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEve
             </>
         }
     } else {
-        html! { <a class="page" href="/login">{ "Log In" }</a> }
+        // The icon is the mobile face of this link. The words stay for desktop and for the
+        // accessible name; the stylesheet decides which one is on screen.
+        html! {
+            <a class="page login" href="/login" aria-label="Log In">
+                <svg class="user" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="8" r="3.25"></circle>
+                    <path d="M5.2 19.4c1.3-3.3 3.6-4.9 6.8-4.9s5.5 1.6 6.8 4.9"></path>
+                </svg>
+                <span>{ "Log In" }</span>
+            </a>
+        }
     }
 }
 
