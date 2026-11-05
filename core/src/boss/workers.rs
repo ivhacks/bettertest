@@ -3,15 +3,16 @@
 use super::*;
 
 impl Boss {
-    /// The worker for task `task` of `run`: the one it names, or one with every label (see
-    /// `pick_worker`), once it has a free slot. Waits while all of them are busy, and says so in the
-    /// task's log. Err says why there is none, or that the run was cancelled meanwhile.
+    /// The worker for task `task` of `run`: one whose labels cover `labels` (see `pick_worker`),
+    /// once it has a free slot. `stay` is a worker this run's sandbox is already on. Waits while
+    /// every match is busy, and says so in the task's log. Err says why there is none, or that the
+    /// run was cancelled meanwhile.
     pub(super) async fn claim_worker(
         &self,
         run: &Run,
         task: Uuid,
-        named: Option<&str>,
         labels: &[String],
+        stay: Option<&str>,
         cancelled: &Cancelled,
     ) -> Result<String, String> {
         let mut said = false;
@@ -23,7 +24,7 @@ impl Boss {
             let busy = {
                 let db = self.db();
                 let mut workers = lock(&self.workers);
-                match pick_worker(&workers, named, labels)? {
+                match pick_worker(&workers, labels, stay)? {
                     Pick::Worker(worker) => {
                         self.start_task_on(&db, &mut workers, run, task, &worker);
                         return Ok(worker);
@@ -204,7 +205,7 @@ pub(super) struct Watched {
 /// The longest the boss waits before trying a worker it cannot reach again.
 pub(super) const MOST_PATIENT: Duration = Duration::from_secs(30);
 
-/// How the boss names a worker: its url as pipedefs give it, without a trailing slash.
+/// How the boss names a worker: the url it was added with, without a trailing slash.
 pub(super) fn worker_key(url: &str) -> &str {
     url.trim_end_matches('/')
 }
@@ -216,13 +217,15 @@ pub(super) enum Pick {
     Busy(String),
 }
 
-/// The worker a task (or a stage's sandbox) runs on: the one it names, or else, of the connected
-/// workers with every one of `labels` and a free slot, the one running the fewest tasks (any one
-/// of them at random, if several are). Err says why there is none, for the task's log.
+/// The worker a task (or a stage's sandbox) runs on. Of the connected workers whose labels are a
+/// superset of `labels` and that have a free slot, any one, uniformly at random: every match is
+/// the right machine, and which one is chance. `stay`, when set, is the worker a sandbox of this
+/// run is already on, so the task cannot move. Err says why no connected worker matches, for the
+/// task's log. A worker the task did not ask for is never returned.
 pub(super) fn pick_worker(
     workers: &BTreeMap<String, Watched>,
-    named: Option<&str>,
     labels: &[String],
+    stay: Option<&str>,
 ) -> Result<Pick, String> {
     let full = |w: &Watched| {
         let capacity = w.worker.info.as_ref().map_or(0, |i| i.capacity as usize);
@@ -231,8 +234,9 @@ pub(super) fn pick_worker(
     // The boss's first try at reaching a worker is still under way (it takes at most QUIET): until
     // it says how many tasks the worker takes, or why it cannot be reached, nothing is known.
     let connecting = |w: &Watched| w.worker.info.is_none() && w.worker.problem.is_none();
-    if let Some(url) = named {
-        // One the boss cannot reach is tried anyway: the task then says what went wrong.
+    if let Some(url) = stay {
+        // The sandbox is already there. One the boss cannot reach is tried anyway: the task then
+        // says what went wrong.
         return Ok(match workers.get(worker_key(url)) {
             Some(w) if connecting(w) => Pick::Busy(format!("{url} is connecting")),
             Some(w) if w.worker.info.is_some() && full(w) => {
@@ -248,13 +252,7 @@ pub(super) fn pick_worker(
     let mut fitting = workers.values().filter(fits).peekable();
     if fitting.peek().is_some() {
         let free: Vec<&Watched> = fitting.filter(|w| !full(w)).collect();
-        let fewest = free.iter().map(|w| w.worker.tasks.len()).min();
-        let least_busy: Vec<&Watched> = free
-            .into_iter()
-            .filter(|w| Some(w.worker.tasks.len()) == fewest)
-            .collect();
-        // Any of them: equally good workers share the work.
-        return Ok(match fastrand::choice(least_busy) {
+        return Ok(match fastrand::choice(free) {
             Some(watched) => Pick::Worker(watched.worker.url.clone()),
             None => Pick::Busy(format!(
                 "every worker with labels {} is running as many tasks as it takes",

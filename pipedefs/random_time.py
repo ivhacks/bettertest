@@ -1,9 +1,11 @@
 import random
 import time
 
-from bettertest import Stage, task
+from bettertest import Labels, Stage, task
 
-WORKER = "http://[::1]:7358"
+
+class Label(Labels):
+    x86 = "x86"
 
 
 def take_a_while(name: str) -> None:
@@ -14,21 +16,25 @@ def take_a_while(name: str) -> None:
 
 class Spread(Stage):
     # The tasks of a stage run at the same time (as many as the worker takes: worker --tasks).
-    @task(WORKER)
+    labels = (Label.x86,)
+
+    @task()
     def first():
         take_a_while("first")
 
-    @task(WORKER)
+    @task()
     def second():
         take_a_while("second")
 
-    @task(WORKER)
+    @task()
     def third():
         take_a_while("third")
 
 
 class Then(Stage):
     # A stage starts once every task of the one before it has passed.
-    @task(WORKER)
+    labels = (Label.x86,)
+
+    @task()
     def last():
         take_a_while("last")

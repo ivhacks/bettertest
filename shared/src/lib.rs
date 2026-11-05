@@ -7,8 +7,7 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub name: String,
-    // The worker's url, or None to have the boss pick a worker with every one of `labels`.
-    pub worker: Option<String>,
+    // Every label a worker must have. The boss picks one whose labels cover this set.
     pub labels: Vec<String>,
     pub image: Option<String>,
     pub vm: Option<String>,
@@ -49,8 +48,7 @@ pub struct Stage {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sandbox {
-    // As in Task.
-    pub worker: Option<String>,
+    // As in Task: every label a worker must have.
     pub labels: Vec<String>,
     pub image: Option<String>,
     pub vm: Option<String>,
@@ -532,21 +530,5 @@ impl WorkersSnapshot {
             Event::WorkerForgotten { url } => self.workers.retain(|w| w.url != *url),
             _ => {}
         }
-    }
-}
-
-impl Pipeline {
-    /// The urls of the workers its tasks and stages name, each once, in order.
-    pub fn workers(&self) -> Vec<&str> {
-        let mut urls: Vec<&str> = vec![];
-        for stage in &self.stages {
-            let named = stage.sandbox.iter().filter_map(|s| s.worker.as_deref());
-            for url in named.chain(stage.tasks.iter().filter_map(|t| t.worker.as_deref())) {
-                if !urls.contains(&url) {
-                    urls.push(url);
-                }
-            }
-        }
-        urls
     }
 }

@@ -78,10 +78,9 @@ enum Command {
         #[arg(short, long)]
         task: String,
 
-        /// The worker's url, for a task that picks its worker by labels. Overrides the one the
-        /// pipedef names.
+        /// The worker to run the task on. Dispatch has no pool: the pipedef's labels do not pick.
         #[arg(short, long)]
-        worker: Option<String>,
+        worker: String,
     },
     /// Print a pipedef's stages and tasks, as JSON. Touches no worker.
     Parse {
@@ -160,7 +159,7 @@ async fn main() -> ExitCode {
             stage,
             task,
             worker,
-        } => dispatch::entry(&pipedef, &stage, &task, worker).await,
+        } => dispatch::entry(&pipedef, &stage, &task, &worker).await,
         Command::Parse { pipedef } => dispatch::parse(&pipedef).await,
         Command::Unified {
             sources,

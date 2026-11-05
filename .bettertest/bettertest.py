@@ -8,8 +8,9 @@ packages build, and Debian, Fedora and arm go through install, reboot and check 
 in a Sandbox that lives across those stages.
 
 Each task runs in a checkout of the commit its run tests, and the packages travel to the install
-tasks as artifacts. The worker runs many tasks at once (worker --tasks 8). The boss needs the cloud
-images as artifacts:
+tasks as artifacts. The worker runs many tasks at once (worker --tasks 8). Tasks ask for the
+x86 label; enroll a worker that has it. The boss needs the cloud images as artifacts (the worker
+downloads these urls; on one machine the boss is local):
     curl -T debian-13-genericcloud-amd64.qcow2 http://127.0.0.1:7357/artifact/debian-13-genericcloud-amd64.qcow2
     curl -T Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 http://127.0.0.1:7357/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
     curl -T debian-13-genericcloud-arm64.qcow2 http://127.0.0.1:7357/artifact/debian-13-genericcloud-arm64.qcow2
@@ -22,6 +23,7 @@ import tempfile
 import bettertest
 from bettertest import (
     LATEST,
+    Labels,
     Sandbox,
     Stage,
     artifact,
@@ -33,23 +35,29 @@ from bettertest import (
     task,
 )
 
-# An x86_64 worker with docker and qemu (x86_64 and aarch64). The packages build in a container.
-WORKER = "http://127.0.0.1:7358"
-BOSS = "http://127.0.0.1:7357"
+# An enrolled worker with the x86 label, docker and qemu (x86_64 and aarch64). The packages build
+# in a container. Cloud images live on the boss; the worker downloads them. On one machine that
+# address is local. It is not which worker runs the task.
+class Label(Labels):
+    x86 = "x86"
+
+
+IMAGES = "http://127.0.0.1:7357"
 IMAGE = "debian:trixie"
 # Built by the Prepare stage from .bettertest/build.Dockerfile.
 BUILD_IMAGE = "bettertest-build"
 
 DEBIAN = Sandbox(
-    worker=WORKER, vm=f"{BOSS}/artifact/debian-13-genericcloud-amd64.qcow2"
+    labels=[Label.x86], vm=f"{IMAGES}/artifact/debian-13-genericcloud-amd64.qcow2"
 )
 FEDORA = Sandbox(
-    worker=WORKER, vm=f"{BOSS}/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+    labels=[Label.x86],
+    vm=f"{IMAGES}/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
 )
 # Emulated on an x86_64 worker, so slow, but the same vm, ssh and cloud-init plumbing.
 ARM = Sandbox(
-    worker=WORKER,
-    vm=f"{BOSS}/artifact/debian-13-genericcloud-arm64.qcow2",
+    labels=[Label.x86],
+    vm=f"{IMAGES}/artifact/debian-13-genericcloud-arm64.qcow2",
     arch="aarch64",
 )
 
@@ -71,7 +79,9 @@ class Prepare(Stage):
     """What needs nothing from this run: the image the packages build in, and artifacts made on the
     worker and in a container."""
 
-    @task(WORKER)
+    labels = (Label.x86,)
+
+    @task()
     def build_image():
         # On the worker itself: docker's layer cache makes this instant unless the Dockerfile
         # changed.
@@ -81,11 +91,11 @@ class Prepare(Stage):
             check=True,
         )
 
-    @task(WORKER)
+    @task()
     def made_on_worker():
         made_here("made on the worker\n")
 
-    @task(WORKER, IMAGE)
+    @task(IMAGE)
     def made_in_container():
         run("echo 'made in a container' > /tmp/made.txt")
         artifact("/tmp/made.txt", name="made.txt")
@@ -94,7 +104,9 @@ class Prepare(Stage):
 class Build(Stage):
     """The packages, while the vms boot."""
 
-    @task(WORKER, BUILD_IMAGE)
+    labels = (Label.x86,)
+
+    @task(BUILD_IMAGE)
     def packages():
         # A fresh container per run, so runs at the same time share nothing. It builds from
         # nothing each time, about two minutes.
@@ -127,6 +139,8 @@ class Build(Stage):
 
 class Install(Stage):
     """The packages on their distros, and every check of artifacts made so far."""
+
+    labels = (Label.x86,)
 
     @task(sandbox=DEBIAN)
     def debian():
@@ -166,7 +180,7 @@ class Install(Stage):
         # Not /tmp: Debian empties it on boot. Check compares it with the boot after Reboot.
         run("cat /proc/sys/kernel/random/boot_id > ~/before")
 
-    @task(WORKER)
+    @task()
     def artifacts_arrive():
         expected = {
             Prepare.made_on_worker: "made on the worker\n",
@@ -178,7 +192,7 @@ class Install(Stage):
             print(f"{producer.__qualname__}: {got!r}")
             assert got == text, f"expected {text!r}"
 
-    @task(WORKER)
+    @task()
     def latest_artifact():
         # Prepare.made_on_worker passed in this run, so this run is the newest that has it.
         made = get_artifact(
@@ -190,7 +204,7 @@ class Install(Stage):
         )
         assert made.read_text() == "made on the worker\n"
 
-    @task(WORKER)
+    @task()
     def pinned_artifact():
         # A real pipedef pins an id copied from the run grid. Only a test reaches inside for its
         # own run's.
@@ -204,7 +218,7 @@ class Install(Stage):
             )
             assert made.read_text() == "made in a vm\n", run_id
 
-    @task(WORKER)
+    @task()
     def artifact_mistakes():
         # Asking for an artifact that is not there must fail with a message that says why.
         cases = [
@@ -300,6 +314,8 @@ def this_run() -> str:
 class Reboot(Stage):
     """Every vm reboots, cleanly; the packages must come back up by themselves."""
 
+    labels = (Label.x86,)
+
     @task(sandbox=DEBIAN)
     def debian():
         reboot()
@@ -312,7 +328,7 @@ class Reboot(Stage):
     def arm():
         reboot()
 
-    @task(WORKER)
+    @task()
     def made_later():
         # Install.artifact_mistakes asked for this before it existed.
         with tempfile.TemporaryDirectory() as scratch:

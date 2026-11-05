@@ -38,8 +38,7 @@ fn id(n: u128) -> Uuid {
 fn task(name: &str) -> Task {
     Task {
         name: name.into(),
-        worker: Some("http://worker:7358".into()),
-        labels: vec![],
+        labels: vec!["x86".into()],
         image: None,
         vm: None,
         arch: None,
@@ -616,7 +615,7 @@ fn workers_show_what_runs_where() {
     );
     assert_eq!(
         to_html(&super::workers(&[], 0, &Callback::noop())),
-        r#"<p class="empty">No workers yet. A pipedef that names one adds it, or add one above.</p>"#
+        r#"<p class="empty">No workers yet. Add one above. Tasks run on a worker whose labels cover what they ask for.</p>"#
     );
 }
 
@@ -630,7 +629,7 @@ fn forgetting_a_worker_asks_first() {
         )),
         concat!(
             r#"<div class="backdrop"><div role="dialog" class="window"><h2>Forget Worker?</h2>"#,
-            r#"<p>http://worker-03:7358 stops getting tasks. A pipedef that names it will add it back.</p>"#,
+            r#"<p>http://worker-03:7358 stops getting tasks until someone adds it again.</p>"#,
             r#"<div class="buttons"><button>Cancel</button><button class="primary">Forget</button></div></div></div>"#,
         )
     );

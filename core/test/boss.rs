@@ -7,8 +7,7 @@ use std::collections::BTreeSet;
 fn task(name: &str) -> Task {
     Task {
         name: name.into(),
-        worker: Some("http://worker:7358".into()),
-        labels: vec![],
+        labels: vec!["x86".into()],
         image: None,
         vm: None,
         arch: None,
@@ -26,8 +25,7 @@ fn pipeline() -> Pipeline {
     };
     let mut deploy = stage("Deploy", &["push", "smoke"]);
     deploy.sandbox = Some(Sandbox {
-        worker: Some("http://worker:7358".into()),
-        labels: vec![],
+        labels: vec!["x86".into()],
         image: Some("debian".into()),
         vm: None,
         arch: None,
@@ -149,7 +147,7 @@ fn a_task_in_a_parallel_shared_sandbox_reruns_alone() {
 fn spanning_pipeline() -> Pipeline {
     let in_sandbox = |name: &str, sandbox: &str| Task {
         sandbox: Some(sandbox.into()),
-        worker: None,
+        labels: vec![],
         ..task(name)
     };
     let stage = |name: &str, tasks: Vec<Task>| Stage {
@@ -158,8 +156,7 @@ fn spanning_pipeline() -> Pipeline {
         tasks,
     };
     let vm = |image: &str| Sandbox {
-        worker: Some("http://worker:7358".into()),
-        labels: vec![],
+        labels: vec!["x86".into()],
         image: None,
         vm: Some(image.into()),
         arch: None,
@@ -266,9 +263,13 @@ fn workers(up: &[(&str, &[&str], usize, u32)]) -> BTreeMap<String, Watched> {
         .collect()
 }
 
-fn picked(up: &BTreeMap<String, Watched>, named: Option<&str>, labels: &[&str]) -> String {
+fn picked(up: &BTreeMap<String, Watched>, labels: &[&str]) -> String {
+    picked_on(up, labels, None)
+}
+
+fn picked_on(up: &BTreeMap<String, Watched>, labels: &[&str], stay: Option<&str>) -> String {
     let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
-    match pick_worker(up, named, &labels) {
+    match pick_worker(up, &labels, stay) {
         Ok(Pick::Worker(url)) => url,
         Ok(Pick::Busy(why)) => format!("busy: {why}"),
         Err(why) => format!("none: {why}"),
@@ -276,44 +277,77 @@ fn picked(up: &BTreeMap<String, Watched>, named: Option<&str>, labels: &[&str]) 
 }
 
 #[test]
-fn picks_the_least_busy_worker() {
-    // b runs fewer tasks of the four each takes.
-    let up = workers(&[("http://a", &["x86"], 2, 4), ("http://b", &["x86"], 1, 4)]);
-    assert_eq!(picked(&up, None, &["x86"]), "http://b");
-    // Equally busy: either, and over many picks both.
+fn the_only_matching_worker_is_picked() {
+    // The arm machine is idle and the x86 one is busy. The task asked for x86, so it lands there.
     let up = workers(&[
-        ("http://a", &["x86"], 0, 1),
-        ("http://b", &["x86"], 0, 1),
-        ("http://c", &["x86"], 1, 2),
+        ("http://arm", &["arm"], 0, 4),
+        ("http://x86", &["x86"], 3, 4),
     ]);
-    let all: BTreeSet<String> = (0..100).map(|_| picked(&up, None, &["x86"])).collect();
-    assert_eq!(all, ["http://a".to_string(), "http://b".to_string()].into());
-    // Only workers with every label count.
+    assert_eq!(picked(&up, &["x86"]), "http://x86");
+    // A worker with more labels than the task asked for still covers it. One that lacks one does not.
     let up = workers(&[
         ("http://a", &["x86"], 0, 1),
         ("http://b", &["x86", "gpu"], 0, 1),
     ]);
-    assert_eq!(picked(&up, None, &["x86", "gpu"]), "http://b");
+    assert_eq!(picked(&up, &["x86", "gpu"]), "http://b");
+}
+
+#[test]
+fn any_of_several_matching_workers_can_be_picked() {
+    // b is busier than a. Both have the labels and a free slot, so either may run the task.
+    // c has the wrong labels and must not.
+    let up = workers(&[
+        ("http://a", &["x86"], 0, 2),
+        ("http://b", &["x86"], 1, 2),
+        ("http://c", &["arm"], 0, 2),
+    ]);
+    let mut seen = BTreeSet::new();
+    for _ in 0..200 {
+        let got = picked(&up, &["x86"]);
+        assert_ne!(got, "http://c", "scheduled on a worker without the labels");
+        seen.insert(got);
+    }
+    assert_eq!(
+        seen,
+        ["http://a".to_string(), "http://b".to_string()].into()
+    );
+}
+
+#[test]
+fn no_match_is_not_scheduled_on_another_worker() {
+    let up = workers(&[
+        ("http://arm", &["arm"], 0, 1),
+        ("http://gpu", &["x86", "gpu"], 0, 1),
+    ]);
+    let got = picked(&up, &["arm", "gpu"]);
+    assert!(
+        got.starts_with("none: no connected worker has labels arm, gpu"),
+        "{got}"
+    );
+    assert!(
+        !got.starts_with("http://"),
+        "a miss must not invent a worker: {got}"
+    );
 }
 
 #[test]
 fn a_full_worker_gets_no_more_tasks() {
     // a takes one task and runs one; b takes two and runs one.
     let up = workers(&[("http://a", &["x86"], 1, 1), ("http://b", &["x86"], 1, 2)]);
-    assert_eq!(picked(&up, None, &["x86"]), "http://b");
+    assert_eq!(picked(&up, &["x86"]), "http://b");
     let up = workers(&[("http://a", &["x86"], 1, 1), ("http://b", &["x86"], 2, 2)]);
     assert_eq!(
-        picked(&up, None, &["x86"]),
+        picked(&up, &["x86"]),
         "busy: every worker with labels x86 is running as many tasks as it takes"
     );
+    // The only free worker has the wrong labels. The task waits; it does not run there.
+    let up = workers(&[("http://a", &["x86"], 1, 1), ("http://b", &["arm"], 0, 1)]);
     assert_eq!(
-        picked(&up, Some("http://a"), &[]),
-        "busy: http://a is running as many tasks as it takes"
+        picked(&up, &["x86"]),
+        "busy: every worker with labels x86 is running as many tasks as it takes"
     );
-    // A worker the boss does not know yet is tried, and the task says how that went.
-    assert_eq!(picked(&up, Some("http://c"), &[]), "http://c");
-    // One it knows but is still connecting to is waited for: how many tasks it takes is
-    // not known yet. So are labels some worker still connecting may have.
+    // A worker still connecting may be the one: how many tasks it takes is not known yet.
+    // gpu is a label nobody connected has, so the boss waits rather than guessing.
     let mut up = up;
     let connecting = Worker {
         url: "http://d".into(),
@@ -328,20 +362,49 @@ fn a_full_worker_gets_no_more_tasks() {
     };
     up.insert("http://d".into(), watched);
     assert_eq!(
-        picked(&up, Some("http://d"), &[]),
-        "busy: http://d is connecting"
+        picked(&up, &["gpu"]),
+        "busy: no connected worker has labels gpu yet, and some are still connecting"
     );
-    assert_eq!(
-        picked(&up, None, &["arm"]),
-        "busy: no connected worker has labels arm yet, and some are still connecting"
-    );
-    // One the boss could not reach is tried, and the task says why it failed.
+    // Once that attempt has failed, a label nobody has is an error at once.
     if let Some(d) = up.get_mut("http://d") {
         d.worker.problem = Some("http://d did not answer".into());
     }
-    assert_eq!(picked(&up, Some("http://d"), &[]), "http://d");
-    // Busy or not, no worker with the labels at all is an error at once.
-    assert!(picked(&up, None, &["arm"]).starts_with("none: no connected worker has labels arm"));
+    let got = picked(&up, &["gpu"]);
+    assert!(
+        got.starts_with("none: no connected worker has labels gpu"),
+        "{got}"
+    );
+    assert!(!got.starts_with("http://"), "{got}");
+}
+
+#[test]
+fn a_sandbox_stays_on_the_worker_that_already_has_it() {
+    let up = workers(&[("http://a", &["x86"], 0, 1), ("http://b", &["x86"], 0, 1)]);
+    assert_eq!(picked_on(&up, &[], Some("http://b")), "http://b");
+    let up = workers(&[("http://a", &["x86"], 1, 1)]);
+    assert_eq!(
+        picked_on(&up, &[], Some("http://a")),
+        "busy: http://a is running as many tasks as it takes"
+    );
+    // Still connecting: wait, rather than start the next task of the sandbox elsewhere.
+    let mut up = workers(&[]);
+    up.insert(
+        "http://d".into(),
+        Watched {
+            worker: Worker {
+                url: "http://d".into(),
+                info: None,
+                since: 0,
+                problem: None,
+                tasks: vec![],
+            },
+            watcher: None,
+        },
+    );
+    assert_eq!(
+        picked_on(&up, &[], Some("http://d")),
+        "busy: http://d is connecting"
+    );
 }
 
 #[test]
@@ -360,7 +423,7 @@ fn labels_one_typo_away_are_named() {
         ("http://b", &["arm"], 0, 1),
     ]);
     assert_eq!(
-        picked(&up, None, &["x86", "gpuu"]),
+        picked(&up, &["x86", "gpuu"]),
         "none: no connected worker has labels x86, gpuu. Worker http://a has the similar label \
          gpu. Connected workers: http://a (x86, gpu); http://b (arm). The workers page shows \
          them all."

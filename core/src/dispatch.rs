@@ -7,14 +7,14 @@ use std::{
 };
 use tokio::sync::watch;
 
-/// Runs one task straight on its worker, no boss involved, and prints its log to the terminal.
-/// The worker cannot tell the difference: it is the same code path the boss uses.
-/// `worker` is for a task that picks its worker by labels: dispatch has no workers to pick from.
+/// Runs one task straight on `worker`, no boss involved, and prints its log to the terminal.
+/// The worker cannot tell the difference: it is the same code path the boss uses. Dispatch has no
+/// pool of workers, so the caller names the machine; the pipedef's labels do not pick one.
 pub async fn entry(
     path: &Path,
     stage_name: &str,
     task_name: &str,
-    worker: Option<String>,
+    worker: &str,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let source = std::fs::read_to_string(path)?;
     let pipeline = pipedef::parse(&source).await?;
@@ -25,16 +25,8 @@ pub async fn entry(
         return Err(format!("stage {stage_name:?} has no task {task_name:?}").into());
     };
 
-    let named = match &stage.sandbox {
-        Some(sandbox) => sandbox.worker.clone(),
-        None => task.worker.clone(),
-    };
-    let Some(worker) = worker.or(named) else {
-        return Err("this task picks its worker by labels: name one with --worker".into());
-    };
-
     let http = client::http()?;
-    let passed = client::execute_task(&http, &worker, &source, stage, task, &mut Terminal).await;
+    let passed = client::execute_task(&http, worker, &source, stage, task, &mut Terminal).await;
     Ok(if passed {
         ExitCode::SUCCESS
     } else {

@@ -14,8 +14,7 @@ fn db() -> Db {
 fn task(name: &str) -> Task {
     Task {
         name: name.into(),
-        worker: Some("http://worker:7358".into()),
-        labels: vec![],
+        labels: vec!["x86".into()],
         image: None,
         vm: None,
         arch: None,

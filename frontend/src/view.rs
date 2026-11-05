@@ -482,7 +482,7 @@ pub fn forget_window(
         <div class="backdrop">
             <div class="window" role="dialog">
                 <h2>{ "Forget Worker?" }</h2>
-                <p>{ format!("{url} stops getting tasks. A pipedef that names it will add it back.") }</p>
+                <p>{ format!("{url} stops getting tasks until someone adds it again.") }</p>
                 <div class="buttons">
                     <button onclick={cancel}>{ "Cancel" }</button>
                     <button class="primary" onclick={forget}>{ "Forget" }</button>
@@ -513,7 +513,7 @@ pub fn artifacts(task: &TaskRun, artifacts: &[Artifact]) -> Html {
 pub fn workers(workers: &[Worker], now: u64, forget: &Callback<String>) -> Html {
     if workers.is_empty() {
         return html! {
-            <p class="empty">{ "No workers yet. A pipedef that names one adds it, or add one above." }</p>
+            <p class="empty">{ "No workers yet. Add one above. Tasks run on a worker whose labels cover what they ask for." }</p>
         };
     }
     html! {

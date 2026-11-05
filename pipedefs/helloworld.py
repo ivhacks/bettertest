@@ -1,9 +1,13 @@
-from bettertest import Stage, task
+from bettertest import Labels, Stage, task
 
-WORKER = "http://localhost:7358"
+
+class Label(Labels):
+    x86 = "x86"
 
 
 class Hello(Stage):
-    @task(WORKER)
+    labels = (Label.x86,)
+
+    @task()
     def world():
         print("hello, world")
