@@ -356,6 +356,17 @@ button.cancel svg {
     stroke-width: 2;
 }
 
+/* The button is clipped to its cut corners, so an outline or shadow never shows. Mixing 22% white
+   into the red is only about 1.3:1 against the red itself. Focus inverts to the page's text color,
+   which is at least 3.9:1 against that red, and the mark flips so it stays readable. */
+button.cancel:focus-visible {
+    background: var(--text);
+}
+
+button.cancel:focus-visible svg {
+    stroke: var(--background);
+}
+
 /* A phone header and a running row. The icon replaces the wrapping words, and the cancel control
    grows into the space beside the run id instead of staying an 18px target in a wider cell.
    Desktop, above, is unchanged. Rows without a cancel button stay the short grid. */
