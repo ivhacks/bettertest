@@ -54,6 +54,27 @@ pub trait TaskIo {
 
     /// What the task shows the boss to fetch its checkout and artifacts, when there is a boss.
     fn boss_token(&self) -> Option<&str>;
+
+    /// The boss waits when the worker says it is full. Dispatch does not: a 409 is the answer.
+    fn wait_when_busy(&self) -> bool {
+        false
+    }
+}
+
+/// How long the boss waits before asking a worker again after it answered 409. The slot it still
+/// holds belongs to a task that has already exited, or to a dispatch, and is free within this.
+const BUSY_AGAIN: Duration = Duration::from_millis(200);
+
+enum StartError {
+    /// The worker is already running as many tasks as it takes. The task did not start.
+    Busy(String),
+    Failed(String),
+}
+
+impl From<String> for StartError {
+    fn from(value: String) -> Self {
+        StartError::Failed(value)
+    }
 }
 
 /// Runs one task on `worker` in a sandbox of its own: start it, run the task body, stop it. The
@@ -170,11 +191,33 @@ pub async fn run_task(
     target: &Target,
     io: &mut impl TaskIo,
 ) -> bool {
-    let started = start_task(http, worker, pipedef, stage, task, target, io);
     // A timeout too big for a Duration is as good as none.
     let limit = task
         .timeout
         .and_then(|t| Duration::try_from_secs_f64(t).ok());
+    let started = async {
+        let mut said = false;
+        loop {
+            match start_task(http, worker, pipedef, stage, task, target, io).await {
+                Ok(code) => return Ok(code),
+                Err(StartError::Failed(e)) => return Err(e),
+                // The boss's own count said this worker had a slot. The worker disagreed: a task
+                // that just exited still held its permit, or a dispatch is using one. Wait.
+                Err(StartError::Busy(why)) if io.wait_when_busy() => {
+                    if !said {
+                        io.log(LogStream::Bettertest, format!("waiting: {why}"));
+                        said = true;
+                    }
+                    let mut cancelled = io.cancelled();
+                    tokio::select! {
+                        () = tokio::time::sleep(BUSY_AGAIN) => {}
+                        reason = cancellation(&mut cancelled) => return Err(reason),
+                    }
+                }
+                Err(StartError::Busy(why)) => return Err(why),
+            }
+        }
+    };
     let ended = match limit {
         // Giving up drops the connection to the worker, which kills the task and all it started.
         Some(limit) => tokio::time::timeout(limit, started).await.map_err(|_| {
@@ -205,7 +248,7 @@ async fn start_task(
     task: &Task,
     target: &Target,
     io: &mut impl TaskIo,
-) -> Result<i32, String> {
+) -> Result<i32, StartError> {
     let mut form = Form::new()
         .text("pipedef", pipedef.to_string())
         .text("stage", stage.to_string())
@@ -232,7 +275,19 @@ async fn start_task(
     }
 
     let url = format!("{worker}/start-task");
-    let mut response = check(&url, http.post(&url).multipart(form).send().await).await?;
+    let sent = http
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| StartError::Failed(format!("could not reach {url}: {}", why(&e))))?;
+    if sent.status() == reqwest::StatusCode::CONFLICT {
+        let body = sent.text().await.unwrap_or_default();
+        return Err(StartError::Busy(format!("{url} said 409 Conflict: {body}")));
+    }
+    let mut response = check_response(&url, sent)
+        .await
+        .map_err(StartError::Failed)?;
 
     let mut events = SseDecoder::default();
     let mut cancelled = io.cancelled();
@@ -240,18 +295,21 @@ async fn start_task(
         // Hanging up makes the worker kill the task. The caller still stops its sandbox.
         let chunk = tokio::select! {
             chunk = tokio::time::timeout(QUIET, response.chunk()) => chunk,
-            reason = cancellation(&mut cancelled) => return Err(reason),
+            reason = cancellation(&mut cancelled) => return Err(reason.into()),
         };
         let chunk = match chunk {
             Ok(Ok(Some(chunk))) => chunk,
             Ok(Ok(None)) => break,
-            Ok(Err(e)) => return Err(format!("lost connection to {url}: {}", why(&e))),
+            Ok(Err(e)) => {
+                return Err(format!("lost connection to {url}: {}", why(&e)).into());
+            }
             // Frozen, unplugged or gone off the network: a dead machine never says goodbye.
             Err(_) => {
                 return Err(format!(
                     "lost {worker}: it has said nothing for {}, not even a keep-alive",
                     duration(QUIET.as_millis().try_into().unwrap_or(u64::MAX))
-                ));
+                )
+                .into());
             }
         };
         for (event, data) in events.feed(&chunk) {
@@ -268,12 +326,16 @@ async fn start_task(
                     );
                     io.saved(artifact);
                 }
-                "exit" => return data.parse().map_err(|_| format!("bad exit code {data:?}")),
+                "exit" => {
+                    return data
+                        .parse()
+                        .map_err(|_| StartError::Failed(format!("bad exit code {data:?}")));
+                }
                 _ => {}
             }
         }
     }
-    Err(format!("{url} ended without an exit code"))
+    Err(format!("{url} ended without an exit code").into())
 }
 
 /// A running task's stream from its worker carries a keep-alive every 15 seconds. Silence for
@@ -350,6 +412,10 @@ pub fn why(e: &reqwest::Error) -> String {
 /// Turns a failed request or an error status into a message worth putting in a task log.
 pub async fn check(url: &str, sent: reqwest::Result<Response>) -> Result<Response, String> {
     let response = sent.map_err(|e| format!("could not reach {url}: {}", why(&e)))?;
+    check_response(url, response).await
+}
+
+async fn check_response(url: &str, response: Response) -> Result<Response, String> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);

@@ -179,7 +179,18 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
         vms: Arc::new(vm::Vms::new(port)),
         slots: Arc::new(Semaphore::new(capacity as usize)),
     };
-    let router = Router::new()
+    let router = router(shared, labels, capacity);
+
+    println!("worker listening on http://[::1]:{port}");
+    let listener = TcpListener::bind(("::", port)).await?;
+    // start-task learns the boss's address from the connection it arrives on.
+    let service = router.into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, service).await?;
+    Ok(())
+}
+
+fn router(shared: Shared, labels: Vec<String>, capacity: u32) -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/events", get(move || events(labels.clone(), capacity)))
         .route("/start-container", post(start_container))
@@ -191,14 +202,7 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
         .route("/vm/{id}/{file}", get(vm_cloud_init))
         .route("/start-task", post(start_task))
         .route("/output/{id}/{name}", get(get_output))
-        .with_state(shared);
-
-    println!("worker listening on http://[::1]:{port}");
-    let listener = TcpListener::bind(("::", port)).await?;
-    // start-task learns the boss's address from the connection it arrives on.
-    let service = router.into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service).await?;
-    Ok(())
+        .with_state(shared)
 }
 
 async fn health() -> &'static str {
@@ -433,7 +437,12 @@ async fn start_vm(
 }
 
 async fn reboot_vm(State(vms): State<Arc<vm::Vms>>, Path(id): Path<String>) -> Result<(), Failure> {
-    vms.reboot(&id).await.map_err(internal)
+    vms.reboot(&id).await.map_err(|e| {
+        // The task log is the response body. Say it here too: a journal that only has the
+        // request line hides a boot that never called back.
+        eprintln!("reboot {id} failed: {e}");
+        internal(e)
+    })
 }
 
 async fn delete_vm(State(vms): State<Arc<vm::Vms>>, Path(id): Path<String>) -> Result<(), Failure> {
@@ -520,8 +529,10 @@ async fn start_task(
     ConnectInfo(caller): ConnectInfo<SocketAddr>,
     form: Multipart,
 ) -> Result<impl IntoResponse, Failure> {
-    // Held for as long as the task runs. The boss gives a worker no more than it takes, so this
-    // only refuses someone else using it too, say a dispatch from a laptop.
+    // Held while the task process is running. Released when that process has exited, before the
+    // exit event: the boss starts the next task as soon as it sees that event, and the connection
+    // stays open until the boss has read it. Holding the permit until hangup makes the next
+    // start-task a 409 on a worker that takes one task at a time.
     let Ok(slot) = shared.slots.clone().try_acquire_owned() else {
         return Err((
             StatusCode::CONFLICT,
@@ -587,7 +598,7 @@ async fn start_task(
     let (tx, rx) = mpsc::channel::<Event>(64);
     spawn(async move {
         let _group = group;
-        let _slot = slot;
+        let slot = slot;
         // A failed write means python died early. Its stderr and exit code will say why.
         let _ = stdin.write_all(&payload).await;
         drop(stdin);
@@ -598,11 +609,14 @@ async fn start_task(
             )?;
             Ok::<_, ()>(child.wait().await)
         };
-        // Returning early drops `child`, which kills the task.
+        // Returning early drops `child`, which kills the task, and `slot`.
         let status = tokio::select! {
             _ = tx.closed() => return, // The caller hung up.
             status = finished => status,
         };
+        // The task is no longer running. Free the slot before the caller hears that, so it can
+        // start another task while it is still reading this stream.
+        drop(slot);
         // No exit code means a signal killed it.
         let code = match status {
             Ok(Ok(status)) => status.code().unwrap_or(-1),

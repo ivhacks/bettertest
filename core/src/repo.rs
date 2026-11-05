@@ -175,7 +175,8 @@ impl Repo {
 
     /// Tells the forge how pipeline `context` did on commit `sha`: `state` is pending, success,
     /// failure or warning, `description` says it in words, and `link` is where to see it.
-    /// Forgejo's and Gitea's commit status API.
+    /// Forgejo and Gitea take `/api/v1` on the repo's host. GitHub has no such path (it answers
+    /// 410); a github.com repo is reported to api.github.com instead.
     pub async fn report(
         &self,
         http: &Client,
@@ -185,35 +186,140 @@ impl Repo {
         description: &str,
         link: Option<&str>,
     ) -> Result<(), String> {
-        let mut api = self.url.clone();
-        let _ = api.set_username("");
-        let _ = api.set_password(None);
-        api.set_path(&format!(
-            "/api/v1/repos/{}/statuses/{}",
-            self.full_name,
-            checked(sha)?
-        ));
-        let body = serde_json::json!({
-            "state": state,
-            "context": format!("bettertest/{context}"),
-            "description": description,
-            "target_url": link,
-        });
-        let user = self.url.username();
-        let response = http
-            .post(api.clone())
-            .basic_auth(user, self.url.password())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("could not reach {api}: {}", client::why(&e)))?;
+        let call = status_call(
+            &self.url,
+            &self.full_name,
+            sha,
+            context,
+            state,
+            description,
+            link,
+        )?;
+        // The token stays out of the url, which is what a failure logs.
+        let token = credential(&self.url);
+        let response = status_request(
+            http,
+            &call,
+            token.as_deref(),
+            self.url.username(),
+            self.url.password(),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("could not reach {}: {}", call.url, client::why(&e)))?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(format!("{api} said {status}: {text}"));
+            return Err(format!("{} said {status}: {text}", call.url));
         }
         Ok(())
     }
+}
+
+/// One commit-status post: where, and the JSON body. `github` selects GitHub's auth and response
+/// shape. The url has no credentials.
+#[derive(Debug)]
+struct StatusCall {
+    url: Url,
+    body: serde_json::Value,
+    github: bool,
+}
+
+/// The password of `url`, or its username when the token is the whole credential
+/// (`https://<token>@host/owner/name.git`).
+fn credential(url: &Url) -> Option<String> {
+    match url.password() {
+        Some(password) if !password.is_empty() => Some(password.to_string()),
+        _ => {
+            let user = url.username();
+            if user.is_empty() {
+                None
+            } else {
+                Some(user.to_string())
+            }
+        }
+    }
+}
+
+fn is_github(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("www.github.com")
+    })
+}
+
+/// GitHub rejects a status post that has no User-Agent with 403 ("administrative rules"), before
+/// it even checks the token. The header is set on the request so a client whose default agent is
+/// empty still satisfies that rule. The token is a bearer header, never part of `call.url`.
+fn status_request(
+    http: &Client,
+    call: &StatusCall,
+    token: Option<&str>,
+    user: &str,
+    password: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = http.post(call.url.clone()).json(&call.body);
+    if call.github {
+        let request = request
+            .header("user-agent", "bettertest")
+            .header("accept", "application/vnd.github+json");
+        match token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+    } else {
+        request.basic_auth(user, password)
+    }
+}
+
+/// Forgejo's and Gitea's status API on the repo's own host, or GitHub's on api.github.com.
+/// GitHub has no `warning` state and keeps at most 140 characters of description.
+fn status_call(
+    repo: &Url,
+    full_name: &str,
+    sha: &str,
+    context: &str,
+    state: &str,
+    description: &str,
+    link: Option<&str>,
+) -> Result<StatusCall, String> {
+    let sha = checked(sha)?;
+    let github = is_github(repo);
+    let mut url = if github {
+        Url::parse("https://api.github.com/").map_err(|e| e.to_string())?
+    } else {
+        let mut url = repo.clone();
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url
+    };
+    let path = if github {
+        format!("/repos/{full_name}/statuses/{sha}")
+    } else {
+        format!("/api/v1/repos/{full_name}/statuses/{sha}")
+    };
+    url.set_path(&path);
+    // A cancelled run is `warning` on Forgejo and Gitea. GitHub would reject that state.
+    let state = if github && state == "warning" {
+        "failure"
+    } else {
+        state
+    };
+    let description = if github {
+        description.chars().take(140).collect::<String>()
+    } else {
+        description.to_string()
+    };
+    let mut body = serde_json::json!({
+        "state": state,
+        "context": format!("bettertest/{context}"),
+        "description": description,
+    });
+    if let Some(link) = link {
+        body["target_url"] = serde_json::Value::String(link.to_string());
+    } else if !github {
+        body["target_url"] = serde_json::Value::Null;
+    }
+    Ok(StatusCall { url, body, github })
 }
 
 /// A file only this user can read, removed when dropped. Not 0666 like everything else in the work
@@ -253,3 +359,7 @@ fn checked(sha: &str) -> Result<&str, String> {
         Err(format!("{sha:?} is not a commit id"))
     }
 }
+
+#[cfg(test)]
+#[path = "../test/repo.rs"]
+mod tests;
