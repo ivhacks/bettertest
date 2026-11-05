@@ -25,8 +25,9 @@ class Labels(enum.Enum):
             arm = "arm"
 
     Then `@task(labels=[Label.arm])` runs the task on whichever connected worker has every label
-    it lists, and the IDE flags a label the pipedef did not declare (`Label.amr`). Each worker has
-    the label of its architecture: x86 or arm.
+    it lists (the boss picks one at random), and the IDE flags a label the pipedef did not declare
+    (`Label.amr`). Each worker has the label of its architecture: x86 or arm. A task can instead
+    name one worker by url.
     """
 
 
@@ -34,14 +35,18 @@ class Sandbox:
     """A container or VM that tasks in several stages share, declared once at the top of the
     pipedef:
 
-        DEBIAN = Sandbox(worker=WORKER, vm="http://boss:7357/artifact/debian-13.qcow2")
+        DEBIAN = Sandbox(
+            labels=[Label.x86],
+            vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+        )
 
     Then `@task(sandbox=DEBIAN)` runs a task in it. The boss starts it when the first stage that
     uses it comes up, and stops it once the last stage that uses it is over (or the run fails or is
     cancelled), so what one stage does to it, the next one finds: install a package in one stage,
     reboot in the next, check it in the one after. Tasks of one stage that share a sandbox run one
     at a time, in the order they are defined; different sandboxes run at the same time. It takes a
-    `worker` or `labels`, and an `image` or a `vm` (with `arch`, as in task()).
+    `worker` url or `labels`, and an `image` or a `vm` (with `arch`, as in task()). The vm url is
+    the image's own, not the boss.
     """
 
     def __init__(
@@ -116,16 +121,17 @@ def task(
     """Mark a Stage method as a task.
 
     The task runs on `worker` (its url), or on whichever connected worker has every one of `labels`
-    (see Labels). `image` gives the task its own docker container, `vm` its own virtual machine (a
-    URL to a qcow2 image). run() executes commands inside it. With neither, the task body still
-    runs on the worker, but run() is unavailable.
+    (see Labels). With labels and no url, the boss picks one of those at random. `image` gives the
+    task its own docker container, `vm` its own virtual machine (a URL to a qcow2 image, the
+    image's own). run() executes commands inside it. With neither, the task body still runs on the
+    worker, but run() is unavailable.
 
     `arch` is the vm's architecture: the worker's own when left out, which it runs at full speed
     (kvm), or another, which it emulates, slowly.
 
     In a stage that declares a sandbox (see Stage), leave out worker, labels, image, vm and arch:
-    the task runs on the stage's worker, in the stage's sandbox. `sandbox` runs it in a Sandbox
-    that tasks of other stages share too (see Sandbox), instead of all of those.
+    the task runs where the stage's sandbox does. `sandbox` runs it in a Sandbox that tasks of
+    other stages share too (see Sandbox), instead of all of those.
 
     `timeout` is how many seconds the task body may take. Once they are up, the task is killed,
     along with everything it started, and fails. Starting its sandbox does not count.

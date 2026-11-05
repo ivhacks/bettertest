@@ -1,12 +1,12 @@
-from bettertest import Stage, run, task
-
-WORKER = "http://[::1]:7358"
-# A `docker save` tarball uploaded to the boss. The worker loads it the first time it is used, so
-# the worker never needs a registry or the internet.
-ALPINE = "http://[::1]:7357/artifact/alpine.tar"
+from bettertest import Labels, Stage, run, task
 
 
-class FromArtifact(Stage):
-    @task(WORKER, ALPINE)
+class Label(Labels):
+    x86 = "x86"
+
+
+class Alpine(Stage):
+    # A docker image name. The worker pulls it; the pipedef does not name a host.
+    @task(image="alpine", labels=[Label.x86])
     def cat_release():
         run("cat /etc/alpine-release")

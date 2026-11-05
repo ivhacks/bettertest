@@ -336,8 +336,8 @@ fn console_tail(console: &Path) -> String {
     format!("\nlast lines of the vm console:\n{tail}")
 }
 
-/// Downloads the image at `url` the first time it is asked for. Artifacts never change once
-/// uploaded, so a cached copy is always current.
+/// Downloads the image at `url` the first time it is asked for. The copy is keyed by that URL, so
+/// a later change at the same URL is not fetched again.
 async fn cached_image(url: &str) -> Result<PathBuf, String> {
     let images = workdir::dir("vm-images").map_err(|e| e.to_string())?;
     let path = images.join(format!("{}.qcow2", worker::cache_key(url)));

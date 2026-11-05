@@ -462,6 +462,28 @@ impl Run {
     }
 }
 
+impl Pipeline {
+    /// Worker urls the pipedef names. The boss enrolls each one when the pipeline is loaded.
+    pub fn workers(&self) -> Vec<&str> {
+        let mut urls: Vec<&str> = vec![];
+        let named =
+            self.stages
+                .iter()
+                .filter_map(|stage| stage.sandbox.as_ref())
+                .chain(self.sandboxes.values())
+                .filter_map(|sandbox| sandbox.worker.as_deref())
+                .chain(self.stages.iter().flat_map(|stage| {
+                    stage.tasks.iter().filter_map(|task| task.worker.as_deref())
+                }));
+        for url in named {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
+    }
+}
+
 impl PipelineSnapshot {
     pub fn apply(&mut self, event: &Event) {
         match event {
@@ -532,21 +554,5 @@ impl WorkersSnapshot {
             Event::WorkerForgotten { url } => self.workers.retain(|w| w.url != *url),
             _ => {}
         }
-    }
-}
-
-impl Pipeline {
-    /// The urls of the workers its tasks and stages name, each once, in order.
-    pub fn workers(&self) -> Vec<&str> {
-        let mut urls: Vec<&str> = vec![];
-        for stage in &self.stages {
-            let named = stage.sandbox.iter().filter_map(|s| s.worker.as_deref());
-            for url in named.chain(stage.tasks.iter().filter_map(|t| t.worker.as_deref())) {
-                if !urls.contains(&url) {
-                    urls.push(url);
-                }
-            }
-        }
-        urls
     }
 }

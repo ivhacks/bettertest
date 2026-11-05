@@ -25,6 +25,12 @@ nohup ./bettertest worker > worker.log 2>&1 &
 
 # on the boss
 nohup ./bettertest boss pipelines/ > boss.log 2>&1 &
+
+# once: tell the boss where the worker is. The pipelines here ask for labels (x86, arm, …).
+# A pipedef can instead name this url, and the boss enrolls that worker itself.
+curl -X POST http://boss-host:7357/api/add-worker \
+  -H 'content-type: application/json' \
+  -d '{"url":"http://worker-host:7358"}'
 ```
 
 Open `http://boss-host:7357`. Starting them again after a reboot is the machine's job: the packages
@@ -50,17 +56,23 @@ result back to the forge as a commit status.
 ```python
 import subprocess
 
-from bettertest import Stage, artifact, copy, get_artifact_this_run, run, task
+from bettertest import Labels, Stage, artifact, copy, get_artifact_this_run, run, task
 
-WORKER = "http://worker-host:7358"
+
+class Label(Labels):
+    x86 = "x86"
+
+
 IMAGE = "debian:trixie"
 
 
 class Build(Stage):
     # Each task gets its own container; the tasks of a stage run at the same time. The task's
     # Python runs on the worker, in a checkout of the commit: copy() into the container what the
-    # commands there need.
-    @task(WORKER, IMAGE, timeout=1800)
+    # commands there need. labels are what a worker must have; the boss picks one that has them.
+    labels = (Label.x86,)
+
+    @task(image=IMAGE, timeout=1800)
     def package():
         subprocess.run(["tar", "-czf", "../src.tgz", "."], check=True)
         copy("../src.tgz", "/src.tgz")
@@ -70,7 +82,9 @@ class Build(Stage):
 
 class Test(Stage):
     # Stages run one at a time, top to bottom; a failed one skips the rest.
-    @task(WORKER, IMAGE)
+    labels = (Label.x86,)
+
+    @task(image=IMAGE)
     def smoke():
         copy(get_artifact_this_run(Build.package, name="app.tar"), "/tmp/app.tar")
         run("tar -xf /tmp/app.tar -C /opt && /opt/app/bin/app --version")
@@ -79,11 +93,13 @@ class Test(Stage):
 A stage is a step, not a group: put each task in the first stage after everything it needs, and
 it runs as soon as it can.
 
-- `@task(vm="http://boss-host:7357/artifact/debian-13.qcow2")` runs a task in a VM instead.
-- `@task(labels=[Label.arm])` picks any connected worker that is an ARM machine, with the labels
-  declared once in the pipedef: `class Label(Labels): arm = "arm"`. Workers take more labels when
-  started: `./bettertest worker --label gpu`.
-- A task with neither runs straight on the worker.
+- `@task(vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2", labels=[Label.x86])` runs a task in a VM. The URL is the image's own; the worker downloads it.
+- `@task(labels=[Label.arm])` picks any connected worker that has that label. Declare labels once
+  in the pipedef: `class Label(Labels): arm = "arm"`. The boss chooses at random among enrolled
+  workers whose labels cover the task. A task can instead name one worker by url
+  (`@task("http://worker-host:7358")`); the boss runs it there. Workers take more
+  labels when started: `./bettertest worker --label gpu`.
+- A task with no image and no vm runs straight on the worker.
 - A worker runs one task at a time, since it may have hardware on it that two tests at once would
   break. Plain compute takes more: `./bettertest worker --tasks 8`.
 
@@ -91,9 +107,17 @@ A VM or container can outlive a stage. Declare it once, and tasks in several sta
 finding it as the stage before left it:
 
 ```python
-from bettertest import Sandbox, Stage, reboot, run, task
+from bettertest import Labels, Sandbox, Stage, reboot, run, task
 
-DEBIAN = Sandbox(worker=WORKER, vm="http://boss-host:7357/artifact/debian-13.qcow2")
+
+class Label(Labels):
+    x86 = "x86"
+
+
+DEBIAN = Sandbox(
+    labels=[Label.x86],
+    vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+)
 
 
 class Install(Stage):
@@ -109,10 +133,14 @@ class Reboot(Stage):
 ```
 
 A stage can also share one container among its tasks, for tasks so small that starting a
-container each would take longer: set `worker`, `image` and `parallel = True` on the stage.
+container each would take longer: set `labels`, `image` and `parallel = True` on the stage.
 
-`bettertest dispatch app.py --stage Build --task package` runs one task from your laptop, with no
-boss.
+Enroll a worker once (`POST /api/add-worker`, or the form on the workers page) before the first
+run. On one machine that url is `http://[::1]:7358`. The worker advertises `x86` or `arm` itself.
+
+`bettertest dispatch app.py --stage Build --task package --worker http://[::1]:7358` runs one task
+from your laptop, with no boss. Dispatch has no pool. `--worker` picks for a task that only has
+labels, and overrides a worker url the pipedef names.
 
 ## The web UI
 

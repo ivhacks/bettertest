@@ -592,7 +592,8 @@ impl Running {
         false
     }
 
-    /// A worker for task `id` (see Boss::claim_worker).
+    /// A worker for task `id` (see Boss::claim_worker). `named` is a worker url from the pipedef, or
+    /// the worker a sandbox of this run is already on.
     async fn claim(
         &self,
         id: Uuid,
@@ -750,6 +751,8 @@ pub(super) async fn run_in_sandbox(
             continue;
         }
         let up = lock(&r.spanning).remove(name);
+        // A sandbox already up stays on the worker that has it. The first task uses the url the
+        // pipedef named, or is placed by labels.
         let (named, labels) = match &up {
             Some(up) => (Some(up.worker.as_str()), &[][..]),
             None => (sandbox.worker.as_deref(), &sandbox.labels[..]),

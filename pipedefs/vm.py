@@ -1,11 +1,16 @@
-from bettertest import Stage, run, task
+from bettertest import Labels, Stage, run, task
 
-WORKER = "http://[::1]:7358"
-DEBIAN = "http://[::1]:7357/artifact/debian-13-genericcloud-amd64.qcow2"
+
+class Label(Labels):
+    x86 = "x86"
+
+
+# The cloud image as Debian publishes it. The worker downloads this URL.
+DEBIAN = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 
 
 class Debian(Stage):
-    @task(WORKER, vm=DEBIAN)
+    @task(vm=DEBIAN, labels=[Label.x86])
     def uname():
         run("uname -a")
         run("cat /etc/os-release")

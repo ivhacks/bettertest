@@ -10,6 +10,7 @@ use tokio::sync::watch;
 /// Runs one task straight on its worker, no boss involved, and prints its log to the terminal.
 /// The worker cannot tell the difference: it is the same code path the boss uses.
 /// `worker` is for a task that picks its worker by labels: dispatch has no workers to pick from.
+/// It also overrides a worker url the pipedef names.
 pub async fn entry(
     path: &Path,
     stage_name: &str,

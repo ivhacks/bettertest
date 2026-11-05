@@ -26,7 +26,7 @@ bettertest was a learning project; it is now a product we are trying to launch. 
 - **boss** — serves the UI and API, owns history, decides what runs where.
 - **worker** — a machine that runs tasks: plain compute with docker, or a hardware fixture (robot arm, PCBA rig, GPIO). Workers are test fixtures, not dev machines.
 - **sandbox** — a container or VM a task runs in. Started and stopped separately from tasks.
-- **artifact** — an immutable file stored on the boss: uploaded by hand (docker image tarballs, VM images), or published by a task with `artifact()` (build outputs, screenshots).
+- **artifact** — an immutable file stored on the boss, published by a task with `artifact()` (build outputs, screenshots) or uploaded by hand. A sandbox image is not one of these: the pipedef names the image, and the worker pulls it.
 
 ## Product principles
 
@@ -78,7 +78,7 @@ Assume bettertest runs nonstop for five years at a company with thousands of com
 
 - `boss [--sources FILE] [--cert C --key K] [--boss-port N] <pipedef, directory or repo url>...` — `:7357` ("test" in leetspeak) unless `--boss-port` says otherwise. HTTPS with `--cert`/`--key`, plain HTTP without (see HTTPS). `--sources` reads more sources from a file, one per line (`#` comments): the place for repo urls with credentials, so they never show in the process list. One pipeline per pipedef file; a directory stands for every `*.py` in it, read at startup (no pipedefs is fine); a git repo url (`http://user:token@host/owner/name.git`) for every `.bettertest/*.py` on its default branch. See Repos. Re-reads and re-parses a pipedef whenever it is needed (page load, new run), so edits show up without a restart. A run: stages one at a time, top to bottom; a failed stage skips the rest.
 - `worker [--label L]... [--tasks N] [--worker-port P]` — `:7358` unless `--worker-port` says otherwise. Runs tasks and their sandboxes, at most `N` at once (1 unless told otherwise: a worker with hardware on it can rarely run two tests at the same time). Its labels are its architecture's (`x86`, `arm`) plus each `--label`. On start, removes containers and VMs a crashed worker left behind.
-- `dispatch <pipedef> --stage S --task T [--worker URL]` — runs one task on its worker (`--worker` for one that picks by labels) with no boss (in its stage's sandbox, if the stage has one), prints the log, exits 0 on pass and 1 on fail.
+- `dispatch <pipedef> --stage S --task T [--worker URL]` — runs one task on its worker (`--worker` for one that picks by labels, or to override the url the pipedef names) with no boss (in its stage's sandbox, if the stage has one), prints the log, exits 0 on pass and 1 on fail.
 - `parse <pipedef>` — prints the pipedef's stages and tasks as JSON. Touches no worker.
 - `unified [--boss-port N] [--worker-port P] <pipedef>...` — boss and worker in one process (`tokio::try_join!`). Same port flags as the separate commands, same defaults.
 
@@ -140,16 +140,23 @@ Names: package = product slice (`bettertest`, `bettertest-shared`, `bettertest-f
 ```python
 import subprocess
 
-from bettertest import Stage, copy, run, task
+from bettertest import Labels, Stage, copy, run, task
 
-WORKER = "http://worker-host:7358"
+
+class Label(Labels):
+    x86 = "x86"
+
+
 IMAGE = "debian:trixie"
 
 
 class Test(Stage):
     # Each task gets its own container; the tasks run at the same time. The task body runs on the
     # worker, in a checkout of the commit; commands in the container see only what is copied in.
-    @task(WORKER, IMAGE)
+    # labels are what a worker must have. The boss picks any enrolled worker that has them.
+    labels = (Label.x86,)
+
+    @task(image=IMAGE)
     def unit():
         subprocess.run(["tar", "-czf", "../src.tgz", "."], check=True)
         copy("../src.tgz", "/src.tgz")
@@ -158,7 +165,7 @@ class Test(Stage):
 
 class Deploy(Stage):
     # One shared container; the tasks run one at a time, in order, each building on the last.
-    worker = WORKER
+    labels = (Label.x86,)
     image = IMAGE
 
     @task()
@@ -171,10 +178,10 @@ class Deploy(Stage):
         run("/opt/app/bin/app --version")
 ```
 
-- `@task(worker=None, image=None, vm=None, arch=None, timeout=None, labels=())`. A task names its `worker` by url, or picks one by `labels`: the boss runs it on whichever connected worker has every label, the one running the fewest tasks (any one of them at random, if several are equally busy). A worker gets no more tasks at once than `worker --tasks` says it takes; while every worker that would do is full, the task waits for a slot (its log says so, and cancelling the run ends the wait). The worker refuses (409) a task beyond that too, say a dispatch while the boss uses it. A stage that shares a sandbox holds one slot from its first task until its sandbox has stopped. With no such worker connected the task fails at once, naming the connected workers and their labels, and any worker whose label is a likely typo of one asked for (same but for case, or a letter or two off): on purpose, since waiting would be silent and likely forever. A worker's labels are its architecture's, `x86` or `arm`, plus any it was started with (`worker --label gpu`). Labels are members of the pipedef's one `Labels` subclass (`class Label(Labels): arm = "arm"`, then `labels=[Label.arm]`), so the IDE flags a label the pipeline did not declare, and parse refuses anything else. A stage may set `worker` or `labels` for all its tasks. `image` is a docker image name or the URL of a `docker save` tarball. `vm` is the URL of a qcow2 image. Never both. `arch` (`"x86_64"` or `"aarch64"`, a `Literal`) is the vm's architecture: the worker's own when left out, run at full speed with kvm; another one is emulated, slowly. `timeout` is how many seconds the task body may take (starting its sandbox does not count); then the caller hangs up, which kills the task, and the task fails with "timed out after 2.5s". Tasks in a shared-sandbox stage may set it too. `@task` returns a `staticmethod`.
+- `@task(worker=None, image=None, vm=None, arch=None, timeout=None, labels=())`. A task names its `worker` by url, or the `labels` a worker must have. With labels and no url, the boss runs it on any connected worker whose labels are a superset of that set, chosen uniformly at random among the ones with a free slot. A worker gets no more tasks at once than `worker --tasks` says it takes; while every matching worker is full, the task waits for a slot (its log says so, and cancelling the run ends the wait). The worker refuses (409) a task beyond that too, say a dispatch while the boss uses it. A stage that shares a sandbox holds one slot from its first task until its sandbox has stopped. With no connected worker whose labels cover the task's, the task fails at once, naming the connected workers and their labels, and any worker whose label is a likely typo of one asked for (same but for case, or a letter or two off): on purpose, since waiting would be silent and likely forever. It is never placed on a worker that lacks a label it asked for. A worker's labels are its architecture's, `x86` or `arm`, plus any it was started with (`worker --label gpu`). Labels are members of the pipedef's one `Labels` subclass (`class Label(Labels): x86 = "x86"`, then `labels=[Label.x86]`), so the IDE flags a label the pipeline did not declare, and parse refuses anything else. A stage may set `worker` or `labels` for all its tasks. A task with neither, whose stage sets neither, is a parse error, unless it runs in a Sandbox (that sandbox names the worker or the labels). Naming a worker and giving labels is a parse error. `image` is a docker image name (`debian:trixie`) or the URL of a `docker save` tarball. `vm` is the URL of a qcow2 image, the one the distro publishes. Never both. Either way the pipedef names the image's own source: the worker fetches it, and the pipedef does not point it at the boss or at a cache. `arch` (`"x86_64"` or `"aarch64"`, a `Literal`) is the vm's architecture: the worker's own when left out, run at full speed with kvm; another one is emulated, slowly. `timeout` is how many seconds the task body may take (starting its sandbox does not count); then the caller hangs up, which kills the task, and the task fails with "timed out after 2.5s". Tasks in a shared-sandbox stage may set it too. `@task` returns a `staticmethod`.
 - Stages run in the order they are defined, one at a time; a failed stage skips every stage below it. Parallelism lives inside a stage: its tasks run at the same time. Setting `after` on a stage is a parse error.
-- A stage that sets `worker` plus `image` or `vm` gives all its tasks one shared sandbox. Its tasks use `@task()` (setting their own is an error), run in order, and once one fails the rest are skipped. Starting the sandbox shows in the first task's log, stopping it in the last one that ran. With `parallel = True` as well, they share the sandbox but run at the same time, each exec'd into it (`docker exec`, or ssh for a VM): for small tasks, where starting a sandbox each would take longer than the tasks themselves. Each still holds a slot of the worker, so a worker that takes fewer at once runs them a few at a time; a failed one fails the stage but stops none of the others, and rerunning one carries over its siblings. `parallel` on a stage without a sandbox is a parse error: other stages' tasks run at the same time anyway.
-- `Sandbox(worker=..., labels=..., image=..., vm=..., arch=...)` at the top of a pipedef (`DEBIAN = Sandbox(...)`) is a sandbox that tasks of several stages share: `@task(sandbox=DEBIAN)`. The boss starts it when the first stage that uses it comes up (it shows in that task's log) and stops it once the last stage that uses it is over, or when the run fails or is cancelled. So what one stage does to it the next finds: install in one stage, reboot in the next, check in the one after, with the same steps of other sandboxes alongside in each stage. Tasks of one stage in the same sandbox run one at a time, in the order they are defined, and once one fails the rest are skipped; different sandboxes run at the same time. Its name is the one the pipedef assigns it to. A Sandbox no task uses, a task in one that sets its own worker, labels, image, vm or arch, and one that is neither an image nor a vm are parse errors. A rerun needs each sandbox it uses built up again, so it starts at the first stage that uses any of them, whole stages.
+- A stage that sets `worker` or `labels`, plus `image` or `vm`, gives all its tasks one shared sandbox. Its tasks use `@task()` (setting their own is an error), run in order, and once one fails the rest are skipped. Starting the sandbox shows in the first task's log, stopping it in the last one that ran. With `parallel = True` as well, they share the sandbox but run at the same time, each exec'd into it (`docker exec`, or ssh for a VM): for small tasks, where starting a sandbox each would take longer than the tasks themselves. Each still holds a slot of the worker, so a worker that takes fewer at once runs them a few at a time; a failed one fails the stage but stops none of the others, and rerunning one carries over its siblings. `parallel` on a stage without a sandbox is a parse error: other stages' tasks run at the same time anyway.
+- `Sandbox(worker=..., labels=..., image=..., vm=..., arch=...)` at the top of a pipedef (`DEBIAN = Sandbox(...)`) is a sandbox that tasks of several stages share: `@task(sandbox=DEBIAN)`. The boss starts it on the worker it names, or on one whose labels cover `labels`, when the first stage that uses it comes up (it shows in that task's log), and stops it once the last stage that uses it is over, or when the run fails or is cancelled. So what one stage does to it the next finds: install in one stage, reboot in the next, check in the one after, with the same steps of other sandboxes alongside in each stage. Tasks of one stage in the same sandbox run one at a time, in the order they are defined, and once one fails the rest are skipped; different sandboxes run at the same time. Its name is the one the pipedef assigns it to. A Sandbox no task uses, a task in one that sets its own worker, labels, image, vm or arch, one with neither a worker nor labels, and one that is neither an image nor a vm are parse errors. A rerun needs each sandbox it uses built up again, so it starts at the first stage that uses any of them, whole stages.
 - `run(cmd)` executes a shell command inside the task's sandbox: `docker exec` for a container, `ssh` for a VM. State carries between `run()` calls. A non-zero exit fails the task. With no sandbox, `run()` raises; use `subprocess` for host-side work.
 - `copy(local, remote)` copies a file from the worker into the sandbox (`docker cp` / `scp`).
 - `reboot()` cleanly reboots the task's VM and returns once it has booted again.
@@ -190,7 +197,7 @@ class Deploy(Stage):
 Sandboxes are decoupled from tasks so one can be shared by several tasks, or (later) started early to be warm. The boss calls `start-container` / `start-vm`, then `start-task` with `target` for each task that uses it, then `DELETE`. A sandbox that fails to stop fails its (last) task: a leak is not a pass.
 
 - **Containers:** `docker run --detach --init --label bettertest.worker` idling on a shell loop; `run()` execs into it. The label lets a restarted worker find leftovers.
-- **Artifacts instead of a registry:** docker's `insecure-registries` needs root on every worker, so there is no registry. Upload a `docker save` tarball to the boss (`PUT /artifact/{name}`); a task whose `image` is that URL makes the worker stream it into `docker load` once and tag it `bettertest-artifact:<hash of url>`. Artifacts are immutable (409 on re-upload), so caching by URL is always correct.
+- **Images the worker fetches:** `image` is a docker image name (`debian:trixie`); the worker pulls it. A URL instead is a `docker save` tarball, streamed into `docker load` once and tagged `bettertest-artifact:<hash of url>`. `vm` is the qcow2's own URL; the worker downloads it once into `vm-images/`. The pipedef names that source and never the boss. There is no registry of our own: docker's `insecure-registries` needs root on every worker, and a cache, when there is one, is the worker's.
 - **VMs, rootless:** `qemu-system-x86_64` or `qemu-system-aarch64 -M virt,gic-version=max,highmem=off -bios QEMU_EFI.fd` (arm boots through UEFI firmware, from `edk2-aarch64` or `qemu-efi-aarch64`; `highmem=off` because an M1's kvm maps only 36 bits), with `-accel kvm -accel tcg` (kvm when the user may use `/dev/kvm` and the vm is the worker's own architecture, emulation otherwise) with user-mode networking: the worker reaches the VM's sshd via a port forwarded on 127.0.0.1; the VM reaches the worker at 10.0.2.2. cloud-init (NoCloud via SMBIOS serial) fetches user-data from the worker and installs `bettertest-ready.service`, which POSTs to `/vm/{id}/ready` at the end of every boot, after sshd is up. So nothing polls or retries ssh, on the first boot or after `reboot()` (`POST /vm/{id}/reboot` runs `sudo systemctl reboot` over ssh and waits for that call). A copy-on-write overlay sits on a cached base image (`/var/tmp/bettertest/vm-images/<hash>.qcow2`). Per-VM ed25519 key, user `bt` with passwordless sudo. Boot timeout 300s; failures include the qemu log and console tail.
 
 ### Live updates: snapshot, then events, never a gap
@@ -223,7 +230,7 @@ A finished run can be rerun whole, from a stage, or from one task (`POST /api/re
 
 ### Workers page
 
-The boss keeps a connection to every worker it knows: each one a pipedef names (enrolled when its pipeline page loads or a run starts) and each one added on the workers page, kept in the `workers` table. The connection is the worker's `GET /events` stream: one `worker` event saying what it is (hostname, arch, version), then keep-alives every 15 s. While that stream lasts the worker is up. When it ends, or stays quiet for 45 s (a frozen or unplugged machine never says goodbye), the worker is down, and the boss tries again after 1 s, doubling up to 30 s. The boss also tracks which tasks run on each worker. The workers page (`/workers`) shows all of it live, through the same snapshot-then-events stream as the other pages (`Event::Worker`, `Event::WorkerForgotten`). The worker state lives in memory, changed only under the db lock as well, so the snapshot is gapless. "forget" removes a worker; a pipedef that names it adds it back.
+The boss keeps a connection to every worker it knows: each one a pipedef names by url (enrolled when its pipeline page loads or a run starts) and each one added on the workers page, kept in the `workers` table. A task that only names labels runs on any enrolled worker whose labels cover that set. The connection is the worker's `GET /events` stream: one `worker` event saying what it is (hostname, arch, version), then keep-alives every 15 s. While that stream lasts the worker is up. When it ends, or stays quiet for 45 s (a frozen or unplugged machine never says goodbye), the worker is down, and the boss tries again after 1 s, doubling up to 30 s. The boss also tracks which tasks run on each worker. The workers page (`/workers`) shows all of it live, through the same snapshot-then-events stream as the other pages (`Event::Worker`, `Event::WorkerForgotten`). The worker state lives in memory, changed only under the db lock as well, so the snapshot is gapless. "forget" removes a worker; a pipedef that names it adds it back.
 
 ### Users
 
@@ -365,7 +372,7 @@ sudo apt install ./bettertest_0.1.0_amd64.deb      # Debian, Ubuntu
 sudo dnf install ./bettertest-0.1.0-1.x86_64.rpm   # Fedora, RHEL
 ```
 
-Both packages do the same: each installs `/usr/bin/bettertest`, creates a `bettertest` system user (member of `docker` and `kvm`), and enables and starts `bettertest-boss` (port 7357 unless `--boss-port`, pipelines from `/etc/bettertest/pipedefs`, which ships `helloworld.py`) and `bettertest-worker` (port 7358 unless `--worker-port`). Both restart on failure and start on boot. Add a pipedef to `/etc/bettertest/pipedefs` and `systemctl restart bettertest-boss`. Depends only on `python3`, since the binary is static; recommends docker, qemu and openssh-client for sandboxes. Data stays in `/var/tmp/bettertest`, even on purge. The packages declare the `docker` group themselves (`g docker -` in sysusers.d), so rpm sees it provided and installs without docker present.
+Both packages do the same: each installs `/usr/bin/bettertest`, creates a `bettertest` system user (member of `docker` and `kvm`), and enables and starts `bettertest-boss` (port 7357 unless `--boss-port`, pipelines from `/etc/bettertest/pipedefs`, which ships `helloworld.py`) and `bettertest-worker` (port 7358 unless `--worker-port`). Both restart on failure and start on boot. A worker a pipedef names by url is enrolled when that pipeline is loaded. `helloworld.py` asks for the `x86` label instead, so enroll that worker once, on the workers page or with `POST /api/add-worker` and `{"url":"http://[::1]:7358"}` when it is on the same machine. Add a pipedef to `/etc/bettertest/pipedefs` and `systemctl restart bettertest-boss`. Depends only on `python3`, since the binary is static; recommends docker, qemu and openssh-client for sandboxes. Data stays in `/var/tmp/bettertest`, even on purge. The packages declare the `docker` group themselves (`g docker -` in sysusers.d), so rpm sees it provided and installs without docker present.
 
 ### Without root (the word doc)
 
@@ -373,20 +380,26 @@ Both machines: copy `bettertest` from the flash drive anywhere in your home dire
 
 ```sh
 # worker machine (needs python3, docker; qemu-system-x86_64, qemu-img, ssh, ssh-keygen for vm tasks)
+# its labels are its architecture (x86 or arm) plus any --label
 nohup ./bettertest worker > worker.log 2>&1 &
 
-# boss machine (needs python3 and git). Pipedefs name the worker's URL, e.g. http://worker-host:7358
+# boss machine (needs python3 and git). A pipedef names a worker url, or labels.
+# The pipelines here ask for labels, so enroll the worker once.
 echo http://ci:TOKEN@forge-host:3000/team/app.git > sources.txt && chmod 600 sources.txt
 nohup ./bettertest boss --sources sources.txt > boss.log 2>&1 &
 # (or pipedef files: nohup ./bettertest boss app.py ...)
+# enroll the worker once. Tasks run on any enrolled worker whose labels cover what they ask for.
+curl -X POST http://boss-host:7357/api/add-worker \
+  -H 'content-type: application/json' \
+  -d '{"url":"http://worker-host:7358"}'
 # then in the forge, repo settings > webhooks: push events, POST, json, to
 #   http://boss-host:7357/api/push-hook
 #   (once logins are needed: Authorization Header "Bearer <the forge user's API token>", see Users)
 
-# airgapped images: on any machine that has the image, then upload to the boss
-docker save myimage:tag -o myimage.tar
-curl -T myimage.tar http://boss-host:7357/artifact/myimage.tar
-# and in the pipedef: @task(WORKER, "http://boss-host:7357/artifact/myimage.tar")
+# The pipedef names the image. The worker pulls a docker name, or downloads a vm from
+# the qcow2's own URL. Neither is an address of the boss.
+#   @task(image="debian:trixie", labels=[Label.x86])
+#   @task(vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2", labels=[Label.x86])
 ```
 
 Open `http://boss-host:7357`. History lives in `/var/tmp/bettertest` and survives reboot. Starting boss and worker again after a reboot is the machine's job (systemd, as the .deb and .rpm set up, or whatever else it uses), not bettertest's.
@@ -410,7 +423,7 @@ cargo test                                   # core (SSE decoder) + frontend (ex
 - Build machine needs: rust with the `<arch>-unknown-linux-musl` (`x86_64` or `aarch64`) and `wasm32-unknown-unknown` targets, trunk, `musl-gcc` (Fedora: `musl-gcc`), the Perl modules OpenSSL's build uses (Fedora: `perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy perl-lib perl-Time-Piece`), `dpkg-deb` for `deb.sh` (Fedora: `dpkg`), and `rpmbuild` plus the systemd rpm macros for `rpm.sh` (Fedora: `rpm-build systemd-rpm-macros`).
 - `build.sh` passes `--target $(uname -m)-unknown-linux-musl`, so it builds for the machine it runs on. Besides making the binary static, an explicit target keeps `-Crelocation-model=static` and `-Cforce-unwind-tables=no` off the proc-macro dylibs.
 - Cross-building for another target, without root, uses zig as the C compiler: `RUSTFLAGS="-Crelocation-model=static -Cforce-unwind-tables=no" cargo zigbuild --release -p bettertest --target aarch64-unknown-linux-musl` on x86_64 (or `x86_64-unknown-linux-musl` on aarch64). Needs zig (a tarball from ziglang.org, unpacked anywhere on PATH), `cargo install cargo-zigbuild`, and `rustup target add <target>`.
-- **bettertest tests itself** with `.bettertest/bettertest.py`, five stages, each a step: Prepare (the image the packages build in; artifacts made on the worker and in a container), Build (the .deb and .rpm, while a Debian 13, a Fedora 44 and an emulated aarch64 Debian 13 VM boot), Install (each package on its distro; copies to and from the arm VM; every check of artifacts, and of the errors for ones that are not there), Reboot (every VM), Check (the services came back, the web UI is up, a helloworld run passes; the arm VM really rebooted). The VMs are `Sandbox`es that live across those stages. The worker runs with `--tasks 8`. Run it with a copy of the binary, pointed at the repo: `cp target/x86_64-unknown-linux-musl/release/bettertest /tmp/bt && /tmp/bt unified http://ci:TOKEN@forge-host:3000/team/bettertest.git`, upload the Debian 13 genericcloud (amd64 and arm64) and Fedora 44 Cloud Base Generic qcow2 images as the artifacts the pipedef names, and push (or start a run). The packages build in a fresh container of `.bettertest/build.Dockerfile` (the build machine above, on Fedora), which the Prepare stage builds on the worker first (docker's cache makes that instant), so runs at the same time share nothing; a build starts from nothing, about two minutes. It fails unless the binary is fully static (`readelf` finds no interpreter or dynamic section).
+- **bettertest tests itself** with `.bettertest/bettertest.py`, five stages, each a step: Prepare (the image the packages build in; artifacts made on the worker and in a container), Build (the .deb and .rpm, while a Debian 13, a Fedora 44 and an emulated aarch64 Debian 13 VM boot), Install (each package on its distro; copies to and from the arm VM; every check of artifacts, and of the errors for ones that are not there), Reboot (every VM), Check (the services came back, the web UI is up, a helloworld run passes; the arm VM really rebooted). The VMs are `Sandbox`es that live across those stages. The worker runs with `--tasks 8`. Run it with a copy of the binary, pointed at the repo: `cp target/x86_64-unknown-linux-musl/release/bettertest /tmp/bt && /tmp/bt unified http://ci:TOKEN@forge-host:3000/team/bettertest.git`. Enroll that worker once (`POST /api/add-worker` with `http://[::1]:7358`); the pipedef asks for the `x86` label. It names the Debian 13 genericcloud (amd64 and arm64) and Fedora 44 Cloud Base Generic images at their upstream URLs, and the worker downloads those. Push (or start a run). The packages build in a fresh container of `.bettertest/build.Dockerfile` (the build machine above, on Fedora), which the Prepare stage builds on the worker first (docker's cache makes that instant), so runs at the same time share nothing; a build starts from nothing, about two minutes. It fails unless the binary is fully static (`readelf` finds no interpreter or dynamic section).
 - **Binary size.** The static release binary is about 10.4 MB on stable (8.7 MB before HTTPS, users and webauthn-rs; 3.5 MB when it was dynamically linked). An experiment on nightly (`-Zbuild-std`, `-Cpanic=immediate-abort`, trimmed axum features; the code is gone) reached 362 KB. Biggest single win: `-Cforce-unwind-tables=no`. **Unsound here, never use:** `-Zvirtual-function-elimination` (segfaults at startup) and lld `--icf=all` (breaks async waker vtable identity). `opt-level = "z"` beats `"s"`.
 
 ### Releases

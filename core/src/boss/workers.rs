@@ -3,9 +3,9 @@
 use super::*;
 
 impl Boss {
-    /// The worker for task `task` of `run`: the one it names, or one with every label (see
-    /// `pick_worker`), once it has a free slot. Waits while all of them are busy, and says so in the
-    /// task's log. Err says why there is none, or that the run was cancelled meanwhile.
+    /// The worker for task `task` of `run`: the one it names, or one whose labels cover `labels`
+    /// (see `pick_worker`), once it has a free slot. Waits while every match is busy, and says so
+    /// in the task's log. Err says why there is none, or that the run was cancelled meanwhile.
     pub(super) async fn claim_worker(
         &self,
         run: &Run,
@@ -204,7 +204,8 @@ pub(super) struct Watched {
 /// The longest the boss waits before trying a worker it cannot reach again.
 pub(super) const MOST_PATIENT: Duration = Duration::from_secs(30);
 
-/// How the boss names a worker: its url as pipedefs give it, without a trailing slash.
+/// How the boss names a worker: the url a pipedef gave, or the one it was added with, without a
+/// trailing slash.
 pub(super) fn worker_key(url: &str) -> &str {
     url.trim_end_matches('/')
 }
@@ -216,9 +217,11 @@ pub(super) enum Pick {
     Busy(String),
 }
 
-/// The worker a task (or a stage's sandbox) runs on: the one it names, or else, of the connected
-/// workers with every one of `labels` and a free slot, the one running the fewest tasks (any one
-/// of them at random, if several are). Err says why there is none, for the task's log.
+/// The worker a task (or a stage's sandbox) runs on. `named` is a worker url the pipedef gave, or
+/// the worker a sandbox of this run is already on: the task runs there. Otherwise, of the connected
+/// workers whose labels are a superset of `labels` and that have a free slot, any one, uniformly at
+/// random. Err says why no connected worker matches, for the task's log. A worker the task did not
+/// ask for is never returned.
 pub(super) fn pick_worker(
     workers: &BTreeMap<String, Watched>,
     named: Option<&str>,
@@ -232,7 +235,8 @@ pub(super) fn pick_worker(
     // it says how many tasks the worker takes, or why it cannot be reached, nothing is known.
     let connecting = |w: &Watched| w.worker.info.is_none() && w.worker.problem.is_none();
     if let Some(url) = named {
-        // One the boss cannot reach is tried anyway: the task then says what went wrong.
+        // The pipedef named this worker, or the sandbox is already there. One the boss cannot
+        // reach is tried anyway: the task then says what went wrong.
         return Ok(match workers.get(worker_key(url)) {
             Some(w) if connecting(w) => Pick::Busy(format!("{url} is connecting")),
             Some(w) if w.worker.info.is_some() && full(w) => {
@@ -248,13 +252,7 @@ pub(super) fn pick_worker(
     let mut fitting = workers.values().filter(fits).peekable();
     if fitting.peek().is_some() {
         let free: Vec<&Watched> = fitting.filter(|w| !full(w)).collect();
-        let fewest = free.iter().map(|w| w.worker.tasks.len()).min();
-        let least_busy: Vec<&Watched> = free
-            .into_iter()
-            .filter(|w| Some(w.worker.tasks.len()) == fewest)
-            .collect();
-        // Any of them: equally good workers share the work.
-        return Ok(match fastrand::choice(least_busy) {
+        return Ok(match fastrand::choice(free) {
             Some(watched) => Pick::Worker(watched.worker.url.clone()),
             None => Pick::Busy(format!(
                 "every worker with labels {} is running as many tasks as it takes",

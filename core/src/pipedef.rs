@@ -54,3 +54,7 @@ pub async fn parse(pipedef: &str) -> Result<Pipeline, String> {
     }
     serde_json::from_slice(&output.stdout).map_err(|e| format!("pipedef dumped bad json: {e}"))
 }
+
+#[cfg(test)]
+#[path = "../test/pipedef.rs"]
+mod tests;
