@@ -25,8 +25,9 @@ use uuid::Uuid;
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(300);
 
-#[derive(Default)]
 pub struct Vms {
+    // Where this worker listens, so a vm can call back at 10.0.2.2.
+    port: u16,
     // cloud-init may ask for its config on any boot, so it is served for the vm's whole life.
     cloud_init: Mutex<HashMap<String, CloudInit>>,
     // Who is waiting for a vm to finish booting, the first time or after a reboot.
@@ -46,6 +47,19 @@ struct Vm {
 }
 
 impl Vms {
+    pub fn new(port: u16) -> Self {
+        Self {
+            port,
+            cloud_init: Mutex::new(HashMap::new()),
+            waiting: Mutex::new(HashMap::new()),
+            running: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// Boots a vm from the qcow2 image at `image_url` and waits until it is ready for ssh. `arch`
     /// is the image's architecture, this worker's own when None.
     pub async fn start(&self, image_url: &str, arch: Option<Arch>) -> Result<String, String> {
@@ -102,7 +116,7 @@ impl Vms {
             .and_then(|listener| listener.local_addr())
             .map_err(|e| e.to_string())?
             .port();
-        let host = format!("http://10.0.2.2:{}/vm/{id}", worker::LISTEN_PORT);
+        let host = format!("http://10.0.2.2:{}/vm/{id}", self.port);
         lock(&self.cloud_init).insert(
             id.to_string(),
             CloudInit {

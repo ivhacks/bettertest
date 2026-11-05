@@ -976,6 +976,10 @@ impl client::TaskIo for BossTask<'_> {
         self.boss.tls.as_ref().map(|tls| tls.name.as_str())
     }
 
+    fn boss_port(&self) -> u16 {
+        self.boss.port
+    }
+
     fn cancelled(&self) -> Option<Cancelled> {
         Some(self.cancelled.clone())
     }

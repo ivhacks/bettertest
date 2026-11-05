@@ -28,7 +28,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve the web ui and the API on port 7357, and run pipelines.
+    /// Serve the web ui and the API, and run pipelines.
     ///
     /// Each pipedef is one pipeline, named after its file. A directory stands for every *.py file
     /// in it, and a git repo url (credentials included, for its forge) for every .bettertest/*.py
@@ -43,10 +43,13 @@ enum Command {
         /// it, readable only by you, so they never show in the process list.
         #[arg(long = "sources")]
         sources_file: Option<PathBuf>,
+        /// Port the web UI and API listen on.
+        #[arg(long, default_value_t = boss::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
+        boss_port: u16,
         #[command(flatten)]
         https: Https,
     },
-    /// Run tasks for the boss on port 7358.
+    /// Run tasks for the boss.
     Worker {
         /// A label tasks can pick this worker by, besides its architecture's (x86 or arm), like
         /// gpu or pcba-rig. Give it once per label.
@@ -56,6 +59,9 @@ enum Command {
         /// hardware on it can rarely run two tests at the same time.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
         tasks: u32,
+        /// Port this worker listens on.
+        #[arg(long, default_value_t = worker::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
+        worker_port: u16,
     },
     /// Run one task on its worker, without a boss, and print its log.
     ///
@@ -89,6 +95,12 @@ enum Command {
         #[arg(required = true)]
         sources: Vec<String>,
 
+        /// Port the boss's web UI and API listen on.
+        #[arg(long, default_value_t = boss::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
+        boss_port: u16,
+        /// Port the worker listens on.
+        #[arg(long, default_value_t = worker::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
+        worker_port: u16,
         #[command(flatten)]
         https: Https,
     },
@@ -122,6 +134,7 @@ async fn main() -> ExitCode {
         Command::Boss {
             mut sources,
             sources_file,
+            boss_port,
             https,
         } => match (
             sources_file.map(|file| read_sources(&file)).transpose(),
@@ -130,10 +143,16 @@ async fn main() -> ExitCode {
             (Err(e), _) | (_, Err(e)) => Err(e),
             (Ok(more), Ok(tls)) => {
                 sources.extend(more.unwrap_or_default());
-                boss::entry(sources, tls).await.map(|()| ExitCode::SUCCESS)
+                boss::entry(sources, tls, boss_port)
+                    .await
+                    .map(|()| ExitCode::SUCCESS)
             }
         },
-        Command::Worker { labels, tasks } => worker::entry(labels, tasks)
+        Command::Worker {
+            labels,
+            tasks,
+            worker_port,
+        } => worker::entry(labels, tasks, worker_port)
             .await
             .map(|()| ExitCode::SUCCESS),
         Command::Dispatch {
@@ -143,9 +162,17 @@ async fn main() -> ExitCode {
             worker,
         } => dispatch::entry(&pipedef, &stage, &task, worker).await,
         Command::Parse { pipedef } => dispatch::parse(&pipedef).await,
-        Command::Unified { sources, https } => match https.load() {
-            Ok(tls) => tokio::try_join!(worker::entry(vec![], 1), boss::entry(sources, tls))
-                .map(|_| ExitCode::SUCCESS),
+        Command::Unified {
+            sources,
+            boss_port,
+            worker_port,
+            https,
+        } => match https.load() {
+            Ok(tls) => tokio::try_join!(
+                worker::entry(vec![], 1, worker_port),
+                boss::entry(sources, tls, boss_port)
+            )
+            .map(|_| ExitCode::SUCCESS),
             Err(e) => Err(e),
         },
     };
@@ -179,3 +206,7 @@ fn read_sources(file: &std::path::Path) -> Result<Vec<String>, Box<dyn Error>> {
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+#[cfg(test)]
+#[path = "../test/main.rs"]
+mod tests;
