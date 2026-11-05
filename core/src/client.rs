@@ -68,6 +68,7 @@ pub async fn execute_task(
     io: &mut impl TaskIo,
 ) -> bool {
     let sandbox = stage.sandbox.clone().unwrap_or_else(|| Sandbox {
+        worker: task.worker.clone(),
         labels: task.labels.clone(),
         image: task.image.clone(),
         vm: task.vm.clone(),

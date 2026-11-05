@@ -15,21 +15,6 @@ from typing import Any, Literal
 
 Arch = Literal["x86_64", "aarch64"]
 
-# The worker listens here. A pipedef that puts that url on a task is pinning a machine.
-_WORKER_PORT = 7358
-
-_NO_WORKER_URL = (
-    "a pipedef cannot name a worker url: give it labels, and the boss picks a worker"
-)
-
-
-def _names_a_worker(value: object) -> bool:
-    """True when `value` is a url of a worker. Scheduling never takes one of those."""
-    if not isinstance(value, str):
-        return False
-    parsed = urllib.parse.urlsplit(value)
-    return parsed.scheme in ("http", "https") and parsed.port == _WORKER_PORT
-
 
 class Labels(enum.Enum):
     """The worker labels a pipeline picks its workers by. Declare them once per pipedef, as a
@@ -41,8 +26,8 @@ class Labels(enum.Enum):
 
     Then `@task(labels=[Label.arm])` runs the task on whichever connected worker has every label
     it lists (the boss picks one at random), and the IDE flags a label the pipedef did not declare
-    (`Label.amr`). Each worker has the label of its architecture: x86 or arm. A pipedef cannot name
-    a worker by url.
+    (`Label.amr`). Each worker has the label of its architecture: x86 or arm. A task can instead
+    name one worker by url.
     """
 
 
@@ -59,32 +44,30 @@ class Sandbox:
     uses it comes up, and stops it once the last stage that uses it is over (or the run fails or is
     cancelled), so what one stage does to it, the next one finds: install a package in one stage,
     reboot in the next, check it in the one after. Tasks of one stage that share a sandbox run one
-    at a time, in the order they are defined; different sandboxes run at the same time. It takes
-    `labels` (every label a worker must have) and an `image` or a `vm` (with `arch`, as in task()).
-    It cannot name a worker by url.
+    at a time, in the order they are defined; different sandboxes run at the same time. It takes a
+    `worker` url or `labels`, and an `image` or a `vm` (with `arch`, as in task()). The vm url is
+    the image's own, not the boss.
     """
 
     def __init__(
         self,
+        worker: str | None = None,
         image: str | None = None,
         vm: str | None = None,
         arch: Arch | None = None,
         labels: Sequence[Labels] = (),
-        *,
-        worker: str | None = None,
     ):
-        if worker is not None or _names_a_worker(image) or _names_a_worker(vm):
-            raise ValueError(_NO_WORKER_URL)
         if (image is None) == (vm is None):
             raise ValueError("a Sandbox is an image or a vm: give it one of them")
-        if not labels:
+        if (worker is None) == (not labels):
             raise ValueError(
-                "a Sandbox picks its worker by labels: give it some, like [Label.x86]"
+                "a Sandbox names its worker or picks one by labels: give it one"
             )
         if arch is not None and vm is None:
             raise ValueError(
                 "arch is the architecture of a vm: give the Sandbox a vm too"
             )
+        self.worker = worker
         self.image = image
         self.vm = vm
         self.arch = arch
@@ -127,48 +110,49 @@ _SSH_OPTIONS = [
 
 
 def task(
+    worker: str | None = None,
     image: str | None = None,
     vm: str | None = None,
     arch: Arch | None = None,
     timeout: float | None = None,
     labels: Sequence[Labels] = (),
     sandbox: Sandbox | None = None,
-    *,
-    worker: str | None = None,
 ):
     """Mark a Stage method as a task.
 
-    The task runs on whichever connected worker has every one of `labels` (see Labels). The boss
-    picks one of those at random. A task cannot name a worker by url. `image` gives the task its
-    own docker container, `vm` its own virtual machine (a URL to a qcow2 image). run() executes
-    commands inside it. With neither, the task body still runs on the worker, but run() is
-    unavailable.
+    The task runs on `worker` (its url), or on whichever connected worker has every one of `labels`
+    (see Labels). With labels and no url, the boss picks one of those at random. `image` gives the
+    task its own docker container, `vm` its own virtual machine (a URL to a qcow2 image, the
+    image's own). run() executes commands inside it. With neither, the task body still runs on the
+    worker, but run() is unavailable.
 
     `arch` is the vm's architecture: the worker's own when left out, which it runs at full speed
     (kvm), or another, which it emulates, slowly.
 
-    In a stage that declares a sandbox (see Stage), leave out labels, image, vm and arch: the task
-    runs where the stage's sandbox does. `sandbox` runs it in a Sandbox that tasks of other stages
-    share too (see Sandbox), instead of all of those.
+    In a stage that declares a sandbox (see Stage), leave out worker, labels, image, vm and arch:
+    the task runs where the stage's sandbox does. `sandbox` runs it in a Sandbox that tasks of
+    other stages share too (see Sandbox), instead of all of those.
 
     `timeout` is how many seconds the task body may take. Once they are up, the task is killed,
     along with everything it started, and fails. Starting its sandbox does not count.
     """
-    if worker is not None or _names_a_worker(image) or _names_a_worker(vm):
-        raise ValueError(_NO_WORKER_URL)
     if image is not None and vm is not None:
         raise ValueError("a task gets an image or a vm, not both")
-    if sandbox is not None and (image, vm, arch, tuple(labels)) != (
+    if sandbox is not None and (worker, image, vm, arch, tuple(labels)) != (
+        None,
         None,
         None,
         None,
         (),
     ):
         raise ValueError(
-            "a task in a Sandbox runs where the Sandbox is: leave out labels, image, vm and arch"
+            "a task in a Sandbox runs where the Sandbox is: leave out worker, labels, image, vm"
+            " and arch"
         )
     if sandbox is not None and not isinstance(sandbox, Sandbox):
         raise ValueError(f"sandbox is a Sandbox, not {sandbox!r}")
+    if worker is not None and labels:
+        raise ValueError("a task names its worker or picks one by labels, not both")
     if arch is not None and vm is None:
         raise ValueError("arch is the architecture of a vm: give the task a vm too")
     if timeout is not None and (
@@ -180,6 +164,7 @@ def task(
 
     def decorator(fn: Callable[[], None]):
         fn.bettertest_task = True  # ty: ignore[unresolved-attribute]
+        fn.bettertest_worker = worker  # ty: ignore[unresolved-attribute]
         fn.bettertest_image = image  # ty: ignore[unresolved-attribute]
         fn.bettertest_vm = vm  # ty: ignore[unresolved-attribute]
         fn.bettertest_arch = arch  # ty: ignore[unresolved-attribute]
@@ -198,14 +183,15 @@ class Stage:
     ones below it are skipped. A stage is not a group of related tasks: put each task in the
     earliest stage after everything it needs, so that it runs as soon as it can.
 
-    By default a stage's tasks run at the same time, each in its own sandbox. Set `labels` and an
-    `image` or `vm` on the stage instead, and its tasks share that one sandbox and run one at a
-    time, in order, so each task can build on what the one before it did. Set `parallel = True` as
-    well, and they share the sandbox but run at the same time: for small tasks, where starting a
-    sandbox each would take longer than the tasks. `labels` without a sandbox is where the stage's
-    tasks run unless they say otherwise. A stage cannot name a worker by url.
+    By default a stage's tasks run at the same time, each in its own sandbox. Set `worker` (or
+    `labels`) and an `image` or `vm` on the stage instead, and its tasks share that one sandbox
+    and run one at a time, in order, so each task can build on what the one before it did. Set
+    `parallel = True` as well, and they share the sandbox but run at the same time: for small
+    tasks, where starting a sandbox each would take longer than the tasks. A `worker` or `labels`
+    without a sandbox is where the stage's tasks run unless they say otherwise.
     """
 
+    worker: str | None = None
     labels: Sequence[Labels] = ()
     image: str | None = None
     vm: str | None = None
@@ -277,18 +263,16 @@ def dump_json(pipedef: dict[str, Any]) -> str:
                 f"stage {name} sets `after`: stages run in the order they are defined instead"
             )
         shared = stage.image is not None or stage.vm is not None
-        if (
-            stage.__dict__.get("worker") is not None
-            or _names_a_worker(stage.image)
-            or _names_a_worker(stage.vm)
-        ):
-            raise ValueError(f"stage {name}: {_NO_WORKER_URL}")
         stage_labels = _label_values(f"stage {name}", stage.labels)
         if stage.image is not None and stage.vm is not None:
             raise ValueError(f"stage {name} gets an image or a vm, not both")
-        if shared and not stage_labels:
+        if stage.worker is not None and stage_labels:
             raise ValueError(
-                f"stage {name} has a sandbox, so it needs labels, like [Label.x86]"
+                f"stage {name} names its worker or picks one by labels, not both"
+            )
+        if shared and stage.worker is None and not stage_labels:
+            raise ValueError(
+                f"stage {name} has a sandbox, so it needs a worker or labels"
             )
         if stage.parallel and not shared:
             raise ValueError(
@@ -302,6 +286,7 @@ def dump_json(pipedef: dict[str, Any]) -> str:
             )
         sandbox = (
             {
+                "worker": stage.worker,
                 "labels": stage_labels,
                 "image": stage.image,
                 "vm": stage.vm,
@@ -315,13 +300,14 @@ def dump_json(pipedef: dict[str, Any]) -> str:
         tasks = []
         for task_name, fn in _tasks(stage):
             own = (
+                fn.bettertest_worker,
                 fn.bettertest_image,
                 fn.bettertest_vm,
                 fn.bettertest_arch,
                 fn.bettertest_labels,
             )
             spanning = fn.bettertest_sandbox
-            if shared and (own != (None, None, None, ()) or spanning is not None):
+            if shared and (own != (None, None, None, None, ()) or spanning is not None):
                 raise ValueError(
                     f"{name}.{task_name} runs in its stage's sandbox: use @task()"
                 )
@@ -334,23 +320,23 @@ def dump_json(pipedef: dict[str, Any]) -> str:
                         " top level, like DEBIAN = Sandbox(...)"
                     )
                 used[sandbox_name] = {
+                    "worker": spanning.worker,
                     "labels": _label_values(f"Sandbox {sandbox_name}", spanning.labels),
                     "image": spanning.image,
                     "vm": spanning.vm,
                     "arch": spanning.arch,
                     "parallel": False,
                 }
+            worker = fn.bettertest_worker
             labels = _label_values(f"{name}.{task_name}", fn.bettertest_labels)
-            if not labels and spanning is None:
-                labels = stage_labels
-            if not labels and spanning is None:
-                raise ValueError(
-                    f"{name}.{task_name} needs labels: the boss picks a worker that has every"
-                    " one, like [Label.x86]"
-                )
+            if worker is None and not labels and spanning is None:
+                worker, labels = stage.worker, stage_labels
+            if worker is None and not labels and spanning is None:
+                raise ValueError(f"{name}.{task_name} needs a worker or labels")
             tasks.append(
                 {
                     "name": task_name,
+                    "worker": worker,
                     "labels": labels,
                     "image": fn.bettertest_image,
                     "vm": fn.bettertest_vm,

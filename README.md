@@ -26,7 +26,8 @@ nohup ./bettertest worker > worker.log 2>&1 &
 # on the boss
 nohup ./bettertest boss pipelines/ > boss.log 2>&1 &
 
-# once: tell the boss where the worker is. Pipedefs name labels (x86, arm, …), not this url.
+# once: tell the boss where the worker is. The pipelines here ask for labels (x86, arm, …).
+# A pipedef can instead name this url, and the boss enrolls that worker itself.
 curl -X POST http://boss-host:7357/api/add-worker \
   -H 'content-type: application/json' \
   -d '{"url":"http://worker-host:7358"}'
@@ -71,7 +72,7 @@ class Build(Stage):
     # commands there need. labels are what a worker must have; the boss picks one that has them.
     labels = (Label.x86,)
 
-    @task(IMAGE, timeout=1800)
+    @task(image=IMAGE, timeout=1800)
     def package():
         subprocess.run(["tar", "-czf", "../src.tgz", "."], check=True)
         copy("../src.tgz", "/src.tgz")
@@ -83,7 +84,7 @@ class Test(Stage):
     # Stages run one at a time, top to bottom; a failed one skips the rest.
     labels = (Label.x86,)
 
-    @task(IMAGE)
+    @task(image=IMAGE)
     def smoke():
         copy(get_artifact_this_run(Build.package, name="app.tar"), "/tmp/app.tar")
         run("tar -xf /tmp/app.tar -C /opt && /opt/app/bin/app --version")
@@ -95,7 +96,8 @@ it runs as soon as it can.
 - `@task(vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2", labels=[Label.x86])` runs a task in a VM. The URL is the image's own; the worker downloads it.
 - `@task(labels=[Label.arm])` picks any connected worker that has that label. Declare labels once
   in the pipedef: `class Label(Labels): arm = "arm"`. The boss chooses at random among enrolled
-  workers whose labels cover the task. A pipedef cannot name a worker by url. Workers take more
+  workers whose labels cover the task. A task can instead name one worker by url
+  (`@task("http://worker-host:7358")`); the boss runs it there. Workers take more
   labels when started: `./bettertest worker --label gpu`.
 - A task with no image and no vm runs straight on the worker.
 - A worker runs one task at a time, since it may have hardware on it that two tests at once would
@@ -137,7 +139,8 @@ Enroll a worker once (`POST /api/add-worker`, or the form on the workers page) b
 run. On one machine that url is `http://[::1]:7358`. The worker advertises `x86` or `arm` itself.
 
 `bettertest dispatch app.py --stage Build --task package --worker http://[::1]:7358` runs one task
-from your laptop, with no boss. Dispatch has no pool, so you name the machine; the pipedef does not.
+from your laptop, with no boss. Dispatch has no pool. `--worker` picks for a task that only has
+labels, and overrides a worker url the pipedef names.
 
 ## The web UI
 

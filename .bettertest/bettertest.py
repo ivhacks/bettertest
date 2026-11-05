@@ -32,6 +32,7 @@ from bettertest import (
     task,
 )
 
+
 # An enrolled worker with the x86 label, docker and qemu (x86_64 and aarch64). The packages build
 # in a container. A vm is the cloud image's own URL; the worker downloads it.
 class Label(Labels):
@@ -91,7 +92,7 @@ class Prepare(Stage):
     def made_on_worker():
         made_here("made on the worker\n")
 
-    @task(IMAGE)
+    @task(image=IMAGE)
     def made_in_container():
         run("echo 'made in a container' > /tmp/made.txt")
         artifact("/tmp/made.txt", name="made.txt")
@@ -102,7 +103,7 @@ class Build(Stage):
 
     labels = (Label.x86,)
 
-    @task(BUILD_IMAGE)
+    @task(image=BUILD_IMAGE)
     def packages():
         # A fresh container per run, so runs at the same time share nothing. It builds from
         # nothing each time, about two minutes.

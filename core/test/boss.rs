@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 fn task(name: &str) -> Task {
     Task {
         name: name.into(),
+        worker: None,
         labels: vec!["x86".into()],
         image: None,
         vm: None,
@@ -25,6 +26,7 @@ fn pipeline() -> Pipeline {
     };
     let mut deploy = stage("Deploy", &["push", "smoke"]);
     deploy.sandbox = Some(Sandbox {
+        worker: None,
         labels: vec!["x86".into()],
         image: Some("debian".into()),
         vm: None,
@@ -156,6 +158,7 @@ fn spanning_pipeline() -> Pipeline {
         tasks,
     };
     let vm = |image: &str| Sandbox {
+        worker: None,
         labels: vec!["x86".into()],
         image: None,
         vm: Some(image.into()),
@@ -264,12 +267,12 @@ fn workers(up: &[(&str, &[&str], usize, u32)]) -> BTreeMap<String, Watched> {
 }
 
 fn picked(up: &BTreeMap<String, Watched>, labels: &[&str]) -> String {
-    picked_on(up, labels, None)
+    picked_on(up, None, labels)
 }
 
-fn picked_on(up: &BTreeMap<String, Watched>, labels: &[&str], stay: Option<&str>) -> String {
+fn picked_on(up: &BTreeMap<String, Watched>, named: Option<&str>, labels: &[&str]) -> String {
     let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
-    match pick_worker(up, &labels, stay) {
+    match pick_worker(up, named, &labels) {
         Ok(Pick::Worker(url)) => url,
         Ok(Pick::Busy(why)) => format!("busy: {why}"),
         Err(why) => format!("none: {why}"),
@@ -380,10 +383,10 @@ fn a_full_worker_gets_no_more_tasks() {
 #[test]
 fn a_sandbox_stays_on_the_worker_that_already_has_it() {
     let up = workers(&[("http://a", &["x86"], 0, 1), ("http://b", &["x86"], 0, 1)]);
-    assert_eq!(picked_on(&up, &[], Some("http://b")), "http://b");
+    assert_eq!(picked_on(&up, Some("http://b"), &[]), "http://b");
     let up = workers(&[("http://a", &["x86"], 1, 1)]);
     assert_eq!(
-        picked_on(&up, &[], Some("http://a")),
+        picked_on(&up, Some("http://a"), &[]),
         "busy: http://a is running as many tasks as it takes"
     );
     // Still connecting: wait, rather than start the next task of the sandbox elsewhere.
@@ -402,8 +405,23 @@ fn a_sandbox_stays_on_the_worker_that_already_has_it() {
         },
     );
     assert_eq!(
-        picked_on(&up, &[], Some("http://d")),
+        picked_on(&up, Some("http://d"), &[]),
         "busy: http://d is connecting"
+    );
+}
+
+#[test]
+fn a_named_worker_url_is_the_one_that_runs() {
+    // Another x86 worker is free. The pipedef named this url, so the task runs there.
+    let up = workers(&[
+        ("http://a", &["x86"], 0, 2),
+        ("http://pinned", &["arm"], 0, 1),
+    ]);
+    assert_eq!(picked_on(&up, Some("http://pinned"), &[]), "http://pinned");
+    let up = workers(&[("http://pinned", &["x86"], 1, 1)]);
+    assert_eq!(
+        picked_on(&up, Some("http://pinned"), &[]),
+        "busy: http://pinned is running as many tasks as it takes"
     );
 }
 

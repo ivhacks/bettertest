@@ -475,7 +475,7 @@
     \
     #kw[class] Test(Stage): \
     #h(2em)#comment[\# Each task gets its own container.] \
-    #h(2em)\@task(IMAGE, labels=[Label.x86]) \
+    #h(2em)\@task(image=IMAGE, labels=[Label.x86]) \
     #h(2em)#kw[def] unit(): \
     #h(4em)run(#str-lit["cd /src && cargo test"])
   ]

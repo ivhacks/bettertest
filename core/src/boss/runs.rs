@@ -60,6 +60,11 @@ pub(super) async fn pipeline_events(
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, Failure> {
     let (_, pipeline) = load_pipeline(&boss, &name).await?;
+    if let Ok(pipeline) = &pipeline {
+        for url in pipeline.workers() {
+            boss.enroll(url);
+        }
+    }
     let pipelines = boss.pipelines();
     let snapshot = move |db: &Db| {
         Ok(Some(PipelineSnapshot {
@@ -136,6 +141,9 @@ pub(super) fn begin_run(
     link: Option<String>,
     carried: &BTreeMap<(String, String), TaskRun>,
 ) -> Result<Run, Failure> {
+    for url in pipeline.workers() {
+        boss.enroll(url);
+    }
     let run = boss
         .record(|db| {
             let run = db.insert_run(name, &pipeline, commit, carried)?;
@@ -584,17 +592,17 @@ impl Running {
         false
     }
 
-    /// A worker for task `id` (see Boss::claim_worker). `stay` is a worker this run's sandbox is
-    /// already on: the task runs there, because that sandbox cannot move.
+    /// A worker for task `id` (see Boss::claim_worker). `named` is a worker url from the pipedef, or
+    /// the worker a sandbox of this run is already on.
     async fn claim(
         &self,
         id: Uuid,
+        named: Option<&str>,
         labels: &[String],
-        stay: Option<&str>,
     ) -> Result<String, String> {
         let claimed = self
             .boss
-            .claim_worker(&self.run, id, labels, stay, &self.cancelled);
+            .claim_worker(&self.run, id, named, labels, &self.cancelled);
         claimed.await
     }
 
@@ -659,7 +667,7 @@ pub(super) async fn run_parallel_stage(
         }
         let (r, stage, task, id) = (r.clone(), stage.clone(), task.clone(), task_run.id);
         tasks.spawn(async move {
-            let worker = match r.claim(id, &task.labels, None).await {
+            let worker = match r.claim(id, task.worker.as_deref(), &task.labels).await {
                 Ok(worker) => worker,
                 Err(e) => return r.refuse(id, e),
             };
@@ -743,12 +751,13 @@ pub(super) async fn run_in_sandbox(
             continue;
         }
         let up = lock(&r.spanning).remove(name);
-        // A sandbox already up stays on the worker that has it. The first task is placed by labels.
-        let (stay, labels) = match &up {
+        // A sandbox already up stays on the worker that has it. The first task uses the url the
+        // pipedef named, or is placed by labels.
+        let (named, labels) = match &up {
             Some(up) => (Some(up.worker.as_str()), &[][..]),
-            None => (None, &sandbox.labels[..]),
+            None => (sandbox.worker.as_deref(), &sandbox.labels[..]),
         };
-        let worker = match r.claim(id, labels, stay).await {
+        let worker = match r.claim(id, named, labels).await {
             Ok(worker) => worker,
             Err(e) => {
                 passed = r.refuse(id, e);
@@ -813,7 +822,7 @@ pub(super) async fn run_shared_stage(
         }
         false
     };
-    let claimed = r.claim(first.id, &sandbox.labels, None);
+    let claimed = r.claim(first.id, sandbox.worker.as_deref(), &sandbox.labels);
     let worker = match claimed.await {
         Ok(worker) => worker,
         Err(e) => return none_ran(e),
@@ -881,7 +890,7 @@ pub(super) async fn run_together(
         let (worker, target) = (worker.to_string(), target.clone());
         tasks.spawn(async move {
             if Some(id) != first
-                && let Err(e) = r.claim(id, &[], Some(&worker)).await
+                && let Err(e) = r.claim(id, Some(&worker), &[]).await
             {
                 return (id, r.refuse(id, e));
             }

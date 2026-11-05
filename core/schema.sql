@@ -58,8 +58,8 @@ CREATE TABLE task_artifacts (
     PRIMARY KEY (task_run_id, name)
 );
 
--- The workers the boss keeps a connection to: ones added on the workers page. A pipedef names
--- the labels a task needs, not a worker's url.
+-- The workers the boss keeps a connection to: ones pipedefs named, and ones added on the workers
+-- page.
 CREATE TABLE workers (
     url              TEXT PRIMARY KEY
 );

@@ -7,7 +7,8 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub name: String,
-    // Every label a worker must have. The boss picks one whose labels cover this set.
+    // The worker's url, or None to have the boss pick a worker with every one of `labels`.
+    pub worker: Option<String>,
     pub labels: Vec<String>,
     pub image: Option<String>,
     pub vm: Option<String>,
@@ -48,7 +49,8 @@ pub struct Stage {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sandbox {
-    // As in Task: every label a worker must have.
+    // As in Task.
+    pub worker: Option<String>,
     pub labels: Vec<String>,
     pub image: Option<String>,
     pub vm: Option<String>,
@@ -457,6 +459,28 @@ impl Run {
             .iter_mut()
             .flat_map(|stage| &mut stage.tasks)
             .find(|task| task.id == id)
+    }
+}
+
+impl Pipeline {
+    /// Worker urls the pipedef names. The boss enrolls each one when the pipeline is loaded.
+    pub fn workers(&self) -> Vec<&str> {
+        let mut urls: Vec<&str> = vec![];
+        let named =
+            self.stages
+                .iter()
+                .filter_map(|stage| stage.sandbox.as_ref())
+                .chain(self.sandboxes.values())
+                .filter_map(|sandbox| sandbox.worker.as_deref())
+                .chain(self.stages.iter().flat_map(|stage| {
+                    stage.tasks.iter().filter_map(|task| task.worker.as_deref())
+                }));
+        for url in named {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 }
 

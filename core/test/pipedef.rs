@@ -1,7 +1,6 @@
 // Tests of pipedef.rs, a child module of it (see the #[path] at its end).
 
 use super::parse;
-use bettertest_shared::Task;
 use std::future::Future;
 
 fn run<T>(future: impl Future<Output = T>) -> T {
@@ -36,47 +35,42 @@ class Install(Stage):
 "#;
     let pipeline = run(parse(source)).expect("pipedef");
     assert_eq!(pipeline.stages[0].tasks[0].labels, ["x86"]);
+    assert_eq!(pipeline.stages[0].tasks[0].worker, None);
     assert_eq!(pipeline.sandboxes["DEBIAN"].labels, ["x86".to_string()]);
-    let json = serde_json::to_string(&pipeline).expect("json");
-    assert!(
-        !json.contains("\"worker\""),
-        "the pipedef json still has a worker field: {json}"
-    );
-    // A worker url left in old json is not a field the boss can schedule on.
-    let with_url = r#"{"name":"world","worker":"http://pinned:7358","labels":["x86"],"image":null,"vm":null,"arch":null,"timeout":null,"sandbox":null}"#;
-    let task: Task = serde_json::from_str(with_url).expect("task json");
-    assert_eq!(task.labels, ["x86"]);
-    assert!(
-        !serde_json::to_string(&task)
-            .expect("json")
-            .contains("pinned")
-    );
+    assert_eq!(pipeline.sandboxes["DEBIAN"].worker, None);
+    assert!(pipeline.workers().is_empty());
 }
 
 #[test]
-fn a_pipedef_cannot_schedule_by_worker_url() {
-    let cases = [
-        r#"
+fn a_pipedef_can_name_a_worker_url() {
+    let by_keyword = r#"
 from bettertest import Stage, task
 
 class Hello(Stage):
     @task(worker="http://worker:7358")
     def world():
         pass
-"#,
-        r#"
+"#;
+    let positional = r#"
 from bettertest import Stage, task
 
 class Hello(Stage):
     @task("http://worker:7358")
     def world():
         pass
-"#,
-        r#"
-from bettertest import Labels, Sandbox, Stage, task
+"#;
+    for source in [by_keyword, positional] {
+        let pipeline = run(parse(source)).expect("pipedef");
+        assert_eq!(
+            pipeline.stages[0].tasks[0].worker.as_deref(),
+            Some("http://worker:7358")
+        );
+        assert!(pipeline.stages[0].tasks[0].labels.is_empty());
+        assert_eq!(pipeline.workers(), ["http://worker:7358"]);
+    }
 
-class Label(Labels):
-    x86 = "x86"
+    let sandbox = r#"
+from bettertest import Sandbox, Stage, task
 
 BOX = Sandbox(worker="http://worker:7358", image="debian")
 
@@ -84,33 +78,33 @@ class Hello(Stage):
     @task(sandbox=BOX)
     def world():
         pass
-"#,
-        r#"
-from bettertest import Labels, Stage, task
+"#;
+    let pipeline = run(parse(sandbox)).expect("pipedef");
+    assert_eq!(
+        pipeline.sandboxes["BOX"].worker.as_deref(),
+        Some("http://worker:7358")
+    );
+    assert_eq!(pipeline.workers(), ["http://worker:7358"]);
 
-class Label(Labels):
-    x86 = "x86"
+    let stage_worker = r#"
+from bettertest import Stage, task
 
 class Hello(Stage):
     worker = "http://worker:7358"
-    labels = [Label.x86]
 
     @task()
     def world():
         pass
-"#,
-    ];
-    for source in cases {
-        let err = run(parse(source)).expect_err("a worker url should not parse");
-        assert!(
-            err.contains("cannot name a worker url"),
-            "rejected for the wrong reason:\n{err}"
-        );
-    }
+"#;
+    let pipeline = run(parse(stage_worker)).expect("pipedef");
+    assert_eq!(
+        pipeline.stages[0].tasks[0].worker.as_deref(),
+        Some("http://worker:7358")
+    );
 }
 
 #[test]
-fn a_task_with_no_labels_does_not_parse() {
+fn a_task_with_neither_a_worker_nor_labels_does_not_parse() {
     let source = r#"
 from bettertest import Stage, task
 
@@ -119,6 +113,6 @@ class Hello(Stage):
     def world():
         pass
 "#;
-    let err = run(parse(source)).expect_err("labels are required");
-    assert!(err.contains("needs labels"), "{err}");
+    let err = run(parse(source)).expect_err("a worker or labels are required");
+    assert!(err.contains("needs a worker or labels"), "{err}");
 }
