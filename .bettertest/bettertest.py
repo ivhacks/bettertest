@@ -10,9 +10,9 @@ in a Sandbox that lives across those stages.
 Each task runs in a checkout of the commit its run tests, and the packages travel to the install
 tasks as artifacts. The worker runs many tasks at once (worker --tasks 8). The boss needs the cloud
 images as artifacts:
-    curl -T debian-13-genericcloud-amd64.qcow2 http://192.168.1.57:7357/artifact/debian-13-genericcloud-amd64.qcow2
-    curl -T Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 http://192.168.1.57:7357/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
-    curl -T debian-13-genericcloud-arm64.qcow2 http://192.168.1.57:7357/artifact/debian-13-genericcloud-arm64.qcow2
+    curl -T debian-13-genericcloud-amd64.qcow2 http://127.0.0.1:7357/artifact/debian-13-genericcloud-amd64.qcow2
+    curl -T Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 http://127.0.0.1:7357/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
+    curl -T debian-13-genericcloud-arm64.qcow2 http://127.0.0.1:7357/artifact/debian-13-genericcloud-arm64.qcow2
 """
 
 import os
@@ -34,8 +34,8 @@ from bettertest import (
 )
 
 # An x86_64 worker with docker and qemu (x86_64 and aarch64). The packages build in a container.
-WORKER = "http://192.168.1.64:7358"
-BOSS = "http://192.168.1.57:7357"
+WORKER = "http://127.0.0.1:7358"
+BOSS = "http://127.0.0.1:7357"
 IMAGE = "debian:trixie"
 # Built by the Prepare stage from .bettertest/build.Dockerfile.
 BUILD_IMAGE = "bettertest-build"
