@@ -1,7 +1,7 @@
 // Tests of repo.rs, a child module of it (see the #[path] at its end), so they
 // reach what it keeps private.
 
-use super::{credential, status_call};
+use super::{credential, status_call, status_request};
 use reqwest::Url;
 
 fn url(text: &str) -> Url {
@@ -115,6 +115,52 @@ fn credential_is_the_password_or_else_the_username() {
         Some("ghp_token")
     );
     assert_eq!(credential(&url("https://github.com/a/b.git")), None);
+}
+
+#[test]
+fn github_status_names_itself_and_keeps_the_token_out_of_the_url() {
+    let http = reqwest::Client::new();
+    let repo = url("https://ci:secret@github.com/ivhacks/bettertest.git");
+    let call = status_call(
+        &repo,
+        "ivhacks/bettertest",
+        "abc",
+        "bettertest",
+        "pending",
+        "running",
+        None,
+    )
+    .unwrap();
+    let sent = status_request(
+        &http,
+        &call,
+        credential(&repo).as_deref(),
+        "ci",
+        Some("secret"),
+    )
+    .build()
+    .unwrap();
+    assert_eq!(sent.headers().get("user-agent").unwrap(), "bettertest");
+    assert_eq!(
+        sent.headers().get("accept").unwrap(),
+        "application/vnd.github+json"
+    );
+    let authorization = sent
+        .headers()
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(authorization.starts_with("Bearer "), "{authorization}");
+    assert!(authorization.contains("secret"), "{authorization}");
+    assert!(!sent.url().as_str().contains("secret"));
+    assert!(!sent.url().as_str().contains("ci:"));
+
+    let anonymous = status_request(&http, &call, None, "", None)
+        .build()
+        .unwrap();
+    assert_eq!(anonymous.headers().get("user-agent").unwrap(), "bettertest");
+    assert!(anonymous.headers().get("authorization").is_none());
 }
 
 #[test]

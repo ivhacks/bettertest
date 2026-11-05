@@ -16,8 +16,9 @@ Three VMs are resident at once from Build through Check, and each qemu is given 
 that is 6 GiB before qemu's own overhead and the package build running beside them. A 4 GiB
 worker cannot run this pipeline; give it about 8 GiB. Build starts four tasks at once, so
 --tasks 4 is enough to not queue there; a smaller capacity only queues, and the VMs still all
-stay up. The arm VM is emulated on x86 (qemu-system-aarch64 and UEFI firmware; boot gives up
-after 300s).
+stay up. The arm VM is emulated on x86 (qemu-system-aarch64 and UEFI firmware). Emulation
+keeps the guest clock at wall speed, so Debian's 90s wait for /boot/efi used to drop the boot
+into emergency mode; the worker lengthens that wait and allows 30 minutes for the ready callback.
 """
 
 import os

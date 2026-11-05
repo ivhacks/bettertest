@@ -195,21 +195,18 @@ impl Repo {
             description,
             link,
         )?;
-        let mut request = http.post(call.url.clone()).json(&call.body);
         // The token stays out of the url, which is what a failure logs.
-        request = if call.github {
-            let request = request.header("accept", "application/vnd.github+json");
-            match credential(&self.url) {
-                Some(token) => request.bearer_auth(token),
-                None => request,
-            }
-        } else {
-            request.basic_auth(self.url.username(), self.url.password())
-        };
-        let response = request
-            .send()
-            .await
-            .map_err(|e| format!("could not reach {}: {}", call.url, client::why(&e)))?;
+        let token = credential(&self.url);
+        let response = status_request(
+            http,
+            &call,
+            token.as_deref(),
+            self.url.username(),
+            self.url.password(),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("could not reach {}: {}", call.url, client::why(&e)))?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
@@ -248,6 +245,30 @@ fn is_github(url: &Url) -> bool {
     url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("www.github.com")
     })
+}
+
+/// GitHub rejects a status post that has no User-Agent with 403 ("administrative rules"), before
+/// it even checks the token. The header is set on the request so a client whose default agent is
+/// empty still satisfies that rule. The token is a bearer header, never part of `call.url`.
+fn status_request(
+    http: &Client,
+    call: &StatusCall,
+    token: Option<&str>,
+    user: &str,
+    password: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = http.post(call.url.clone()).json(&call.body);
+    if call.github {
+        let request = request
+            .header("user-agent", "bettertest")
+            .header("accept", "application/vnd.github+json");
+        match token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+    } else {
+        request.basic_auth(user, password)
+    }
 }
 
 /// Forgejo's and Gitea's status API on the repo's own host, or GitHub's on api.github.com.
