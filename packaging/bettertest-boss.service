@@ -1,5 +1,5 @@
 [Unit]
-Description=bettertest boss: web UI and API on port 7357
+Description=bettertest boss: web UI and API (default port 7357)
 Wants=network-online.target
 After=network-online.target
 

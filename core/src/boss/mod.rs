@@ -84,6 +84,9 @@ struct Boss {
     http: reqwest::Client,
     // The certificate the boss presents, when it speaks HTTPS.
     tls: Option<tls::Tls>,
+    // Where the web UI and API listen. Workers call back here: they take the IP from the
+    // start-task connection and this port from that same form.
+    port: u16,
 }
 
 /// Where a pipeline's pipedef is.
@@ -100,8 +103,13 @@ type Shared = Arc<Boss>;
 /// startup), or the url of a git repo whose `.bettertest/*.py` files are pipedefs. A repo url may
 /// carry credentials, `http://user:token@host/owner/name.git`, for fetching and for reporting
 /// commit statuses.
-/// With `tls`, the boss speaks HTTPS only.
-pub async fn entry(sources: Vec<String>, tls: Option<tls::Tls>) -> Result<(), Box<dyn Error>> {
+/// With `tls`, the boss speaks HTTPS only. `port` is where it listens (`--boss-port`, 7357 unless
+/// told otherwise).
+pub async fn entry(
+    sources: Vec<String>,
+    tls: Option<tls::Tls>,
+    port: u16,
+) -> Result<(), Box<dyn Error>> {
     let mut pipedefs = vec![];
     let mut repos = vec![];
     for source in sources {
@@ -162,6 +170,7 @@ pub async fn entry(sources: Vec<String>, tls: Option<tls::Tls>) -> Result<(), Bo
         freed: Notify::new(),
         http: client::http()?,
         tls,
+        port,
     });
     for url in enrolled {
         boss.enroll(&url);
@@ -236,10 +245,10 @@ pub async fn entry(sources: Vec<String>, tls: Option<tls::Tls>) -> Result<(), Bo
         .layer(middleware::from_fn_with_state(boss.clone(), guard))
         .with_state(boss);
 
-    let listener = TcpListener::bind(("::", LISTEN_PORT)).await?;
+    let listener = TcpListener::bind(("::", port)).await?;
     match &serving.tls {
         Some(tls) => {
-            println!("boss web ui at https://{}:{LISTEN_PORT}", tls.name);
+            println!("boss web ui at https://{}:{port}", tls.name);
             println!(
                 "certificate for {}, expires {}",
                 tls.names.join(", "),
@@ -252,7 +261,7 @@ pub async fn entry(sources: Vec<String>, tls: Option<tls::Tls>) -> Result<(), Bo
             .await?;
         }
         None => {
-            println!("boss web ui at http://[::1]:{LISTEN_PORT}");
+            println!("boss web ui at http://[::1]:{port}");
             axum::serve(
                 listener,
                 router.into_make_service_with_connect_info::<tls::Peer>(),

@@ -77,6 +77,10 @@ impl client::TaskIo for Terminal {
         None
     }
 
+    fn boss_port(&self) -> u16 {
+        crate::boss::LISTEN_PORT
+    }
+
     // Ctrl-C stops dispatch.
     fn cancelled(&self) -> Option<watch::Receiver<Option<String>>> {
         None

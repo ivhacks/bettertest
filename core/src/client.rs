@@ -45,6 +45,10 @@ pub trait TaskIo {
     /// at the address the worker saw it call from, and checks the certificate against this name.
     fn boss_name(&self) -> Option<&str>;
 
+    /// The port the boss listens on. The worker combines it with the IP of the start-task
+    /// connection; TCP's source port is ephemeral, so this has to come along in the form.
+    fn boss_port(&self) -> u16;
+
     /// Says why, once the run is cancelled. None when nothing can cancel it.
     fn cancelled(&self) -> Option<watch::Receiver<Option<String>>>;
 
@@ -221,6 +225,7 @@ async fn start_task(
         if let Some(token) = io.boss_token() {
             form = form.text("boss_token", token.to_string());
         }
+        form = form.text("boss_port", io.boss_port().to_string());
     }
     if let Some(name) = io.boss_name() {
         form = form.text("boss_name", name.to_string());

@@ -38,7 +38,7 @@ bettertest was a learning project; it is now a product we are trying to launch. 
 - **Pipedef code runs on the worker, natively** (not in a container), because a test may need to toggle a GPIO pin or talk to a serial bus. The worker handles isolation through sandboxes. A buggy pipedef can break its worker, never the boss.
 - **Workers are disposable.** Workers join and leave the pool often, and may be wiped at any time. Nothing may rely on a worker keeping state between tasks. Once a worker finishes a task, the boss preserves whatever output and state of that task matters (logs, result files, build outputs); the worker knows only which files it produced, not how they will be used.
 - **Push only.** HTTP POST one way, SSE the other. No polling anywhere, ever. No websockets. Everything stays inspectable with curl and mitmproxy.
-- **Workers know the boss's address and can call boss APIs.** A worker learns it from the incoming API call: the boss's IP is the peer address of the `start-task` connection, and the boss port is fixed. Those details persist on the worker for as long as that task runs, so the task calls the boss directly (e.g. `get_artifact()` is one GET). Never relay worker→boss requests through the task's SSE stream or invent callback schemes.
+- **Workers know the boss's address and can call boss APIs.** A worker learns it from the incoming API call: the boss's IP is the peer address of the `start-task` connection, and the boss port is `--boss-port` (7357 unless told otherwise), sent in that same form because TCP's source port is not the listen port. Those details persist on the worker for as long as that task runs, so the task calls the boss directly (e.g. `get_artifact()` is one GET). Never relay worker→boss requests through the task's SSE stream or invent callback schemes.
 - **No environment variables.** Config is, in order of preference: nothing, code, the db, a URL, a cookie, a CLI arg. Never `std::env`, `os.environ`, `$FOO`.
 - **Rootless.** Nothing needs sudo: no `/opt`, no `/etc`, no systemd units, no ports below 1024, no registry daemon config, no network bridges. The .deb is an extra for machines where root is available, never a requirement.
 - **UI:** as few pages as possible (pipeline grid, task log, workers, settings, users). Fast enough that latency is never noticed. Keyboard navigable. The page never scrolls; only content regions do. Sharp square corners. Green good, red bad.
@@ -76,11 +76,11 @@ Assume bettertest runs nonstop for five years at a company with thousands of com
 
 `bettertest` with clap subcommands:
 
-- `boss [--sources FILE] [--cert C --key K] <pipedef, directory or repo url>...` — `:7357` ("test" in leetspeak). HTTPS with `--cert`/`--key`, plain HTTP without (see HTTPS). `--sources` reads more sources from a file, one per line (`#` comments): the place for repo urls with credentials, so they never show in the process list. One pipeline per pipedef file; a directory stands for every `*.py` in it, read at startup (no pipedefs is fine); a git repo url (`http://user:token@host/owner/name.git`) for every `.bettertest/*.py` on its default branch. See Repos. Re-reads and re-parses a pipedef whenever it is needed (page load, new run), so edits show up without a restart. A run: stages one at a time, top to bottom; a failed stage skips the rest.
-- `worker [--label L]... [--tasks N]` — `:7358`. Runs tasks and their sandboxes, at most `N` at once (1 unless told otherwise: a worker with hardware on it can rarely run two tests at the same time). Its labels are its architecture's (`x86`, `arm`) plus each `--label`. On start, removes containers and VMs a crashed worker left behind.
+- `boss [--sources FILE] [--cert C --key K] [--boss-port N] <pipedef, directory or repo url>...` — `:7357` ("test" in leetspeak) unless `--boss-port` says otherwise. HTTPS with `--cert`/`--key`, plain HTTP without (see HTTPS). `--sources` reads more sources from a file, one per line (`#` comments): the place for repo urls with credentials, so they never show in the process list. One pipeline per pipedef file; a directory stands for every `*.py` in it, read at startup (no pipedefs is fine); a git repo url (`http://user:token@host/owner/name.git`) for every `.bettertest/*.py` on its default branch. See Repos. Re-reads and re-parses a pipedef whenever it is needed (page load, new run), so edits show up without a restart. A run: stages one at a time, top to bottom; a failed stage skips the rest.
+- `worker [--label L]... [--tasks N] [--worker-port P]` — `:7358` unless `--worker-port` says otherwise. Runs tasks and their sandboxes, at most `N` at once (1 unless told otherwise: a worker with hardware on it can rarely run two tests at the same time). Its labels are its architecture's (`x86`, `arm`) plus each `--label`. On start, removes containers and VMs a crashed worker left behind.
 - `dispatch <pipedef> --stage S --task T [--worker URL]` — runs one task on its worker (`--worker` for one that picks by labels) with no boss (in its stage's sandbox, if the stage has one), prints the log, exits 0 on pass and 1 on fail.
 - `parse <pipedef>` — prints the pipedef's stages and tasks as JSON. Touches no worker.
-- `unified <pipedef>...` — boss and worker in one process (`tokio::try_join!`).
+- `unified [--boss-port N] [--worker-port P] <pipedef>...` — boss and worker in one process (`tokio::try_join!`). Same port flags as the separate commands, same defaults.
 
 ### Code map
 
@@ -245,7 +245,7 @@ Every request acts as a user: the one whose session cookie it carries, or else *
 Off by default: the boss speaks plain HTTP, and nobody deploying it meets a certificate. `boss --cert boss.crt --key boss.key` turns it on. bettertest is not a certificate authority and makes no certificates: whoever turns HTTPS on brings a PEM certificate (intermediates after it) and its key, usually from the site's own CA, which the site's browsers and workers already trust. The key stays in the file it was given; bettertest never copies it.
 
 - At start the boss checks the pair: it refuses to start, saying which, for a key that is not the certificate's, an expired certificate, or a file that is not PEM. It logs the names the certificate covers and when it expires.
-- Port 7357 then speaks HTTPS only (OpenSSL, the one already compiled in, through `tokio-openssl`, as in axum's `low-level-openssl` example); a plain `http://` request gets no answer. Each handshake runs on its own task with a 10 s limit, so a stalled client blocks nobody.
+- The boss port (`--boss-port`, 7357 unless told otherwise) then speaks HTTPS only (OpenSSL, the one already compiled in, through `tokio-openssl`, as in axum's `low-level-openssl` example); a plain `http://` request gets no answer. Each handshake runs on its own task with a 10 s limit, so a stalled client blocks nobody.
 - The settings page says whether HTTPS is on, for which names, until when, and warns from 30 days before expiry. A new certificate takes a restart.
 - Workers: the certificate names a host, but a worker only knows the address the boss called it from, and that name may have no DNS record. So `start-task` carries `boss_name`, and the worker and the task's Python connect to that address while checking the certificate against the name, with the machine's trust store as everywhere else. A worker whose machine does not trust the certificate fails the task with the TLS error.
 
@@ -262,7 +262,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 
 ### Worker output
 
-`start-task` unpacks the run's commit (when it carries one) into `tasks/<id>/src/` from the boss's `/api/run/<run>/source.tar`, spawns `python3 -u -c GLUE start <stage> <task>` in that directory, and streams stdout/stderr as SSE events `stdout` / `stderr`, then one `artifact` event (`<id>/<name>`) per file the task published, then `exit` with the code (-1 for a signal). When the form carries `pipeline` and `run`, the task gets them and the boss URL `http://<caller ip>:7357` to fetch artifacts from (`https://<boss_name>:7357`, reached at the caller's address, when the boss speaks HTTPS). The worker keeps `tasks/<id>/` until the caller hangs up, so the caller downloads each artifact (`GET /output/<id>/<name>`) as its event arrives; then the directory goes, so a worker keeps nothing of a task once it is over. Output is split on raw bytes, decoded lossily, and `\r` becomes a line break, because axum's SSE encoder panics on a carriage return. If the caller hangs up, the stream drops and the task is killed: python runs in a process group of its own, and the whole group gets SIGKILL (through `sh -c 'kill -KILL -<pgid>'`, since std cannot signal a group and kill(1) is not on every machine), so a subprocess it started dies with it.
+`start-task` unpacks the run's commit (when it carries one) into `tasks/<id>/src/` from the boss's `/api/run/<run>/source.tar`, spawns `python3 -u -c GLUE start <stage> <task>` in that directory, and streams stdout/stderr as SSE events `stdout` / `stderr`, then one `artifact` event (`<id>/<name>`) per file the task published, then `exit` with the code (-1 for a signal). When the form carries `pipeline` and `run`, the task gets them and the boss URL `http://<caller ip>:<boss-port>` to fetch artifacts from (`https://<boss_name>:<boss-port>`, reached at the caller's address, when the boss speaks HTTPS). `boss-port` is `--boss-port` (7357 unless told otherwise), sent in the form; the IP is still the peer address of the connection. The worker keeps `tasks/<id>/` until the caller hangs up, so the caller downloads each artifact (`GET /output/<id>/<name>`) as its event arrives; then the directory goes, so a worker keeps nothing of a task once it is over. Output is split on raw bytes, decoded lossily, and `\r` becomes a line break, because axum's SSE encoder panics on a carriage return. If the caller hangs up, the stream drops and the task is killed: python runs in a process group of its own, and the whole group gets SIGKILL (through `sh -c 'kill -KILL -<pgid>'`, since std cannot signal a group and kill(1) is not on every machine), so a subprocess it started dies with it.
 
 ### Frontend
 
@@ -282,7 +282,7 @@ Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/
 API names are verb-noun where a bare noun is ambiguous: `POST /api/run` could mean start or get, so it is `POST /api/start-run/{pipeline}`. Unambiguous reads stay nouns.
 
 ```
-Boss :7357
+Boss :7357 (`--boss-port`)
   /, /pipeline/{pipeline}, /task/{task}   pages (/ redirects to the first pipeline)
   /workers, /settings, /users, /login     pages
   GET  /api/pipelines                     pipeline names
@@ -336,11 +336,12 @@ Boss :7357
   POST {worker}/start-task                  multipart: pipedef, stage, task, target, pipeline, run, commit,
                                             boss_token (the task's, to fetch from a locked-down boss)
                                             boss_name (the certificate's name, when the boss speaks HTTPS)
+                                            boss_port (where the boss listens; the IP comes from the connection)
   GET  {worker}/output/{id}/{name}          each artifact the task published, before hanging up
   GET  {worker}/events                      for as long as the boss knows the worker
   DELETE {worker}/container/{id} | vm/{id}
 
-Worker :7358
+Worker :7358 (`--worker-port`)
   GET    /health
   GET    /events                          SSE: a `worker` event (hostname, arch, version, labels, capacity), then
                                           keep-alives
@@ -364,7 +365,7 @@ sudo apt install ./bettertest_0.1.0_amd64.deb      # Debian, Ubuntu
 sudo dnf install ./bettertest-0.1.0-1.x86_64.rpm   # Fedora, RHEL
 ```
 
-Both packages do the same: each installs `/usr/bin/bettertest`, creates a `bettertest` system user (member of `docker` and `kvm`), and enables and starts `bettertest-boss` (port 7357, pipelines from `/etc/bettertest/pipedefs`, which ships `helloworld.py`) and `bettertest-worker` (port 7358). Both restart on failure and start on boot. Add a pipedef to `/etc/bettertest/pipedefs` and `systemctl restart bettertest-boss`. Depends only on `python3`, since the binary is static; recommends docker, qemu and openssh-client for sandboxes. Data stays in `/var/tmp/bettertest`, even on purge. The packages declare the `docker` group themselves (`g docker -` in sysusers.d), so rpm sees it provided and installs without docker present.
+Both packages do the same: each installs `/usr/bin/bettertest`, creates a `bettertest` system user (member of `docker` and `kvm`), and enables and starts `bettertest-boss` (port 7357 unless `--boss-port`, pipelines from `/etc/bettertest/pipedefs`, which ships `helloworld.py`) and `bettertest-worker` (port 7358 unless `--worker-port`). Both restart on failure and start on boot. Add a pipedef to `/etc/bettertest/pipedefs` and `systemctl restart bettertest-boss`. Depends only on `python3`, since the binary is static; recommends docker, qemu and openssh-client for sandboxes. Data stays in `/var/tmp/bettertest`, even on purge. The packages declare the `docker` group themselves (`g docker -` in sysusers.d), so rpm sees it provided and installs without docker present.
 
 ### Without root (the word doc)
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=bettertest worker: runs tasks, on port 7358
+Description=bettertest worker: runs tasks (default port 7358)
 Wants=network-online.target
 After=network-online.target docker.service
 

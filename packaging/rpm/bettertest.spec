@@ -20,9 +20,10 @@ Recommends:     qemu-img
 Recommends:     openssh-clients
 
 %description
-bettertest is one binary that is both the boss (web UI and API, port 7357) and the worker (runs
-tasks, port 7358). Pipelines are Python files in /etc/bettertest/pipedefs. Both run as systemd
-services from installation on. docker runs tasks with an image; qemu runs tasks with a vm.
+bettertest is one binary that is both the boss (web UI and API, port 7357 unless --boss-port) and
+the worker (runs tasks, port 7358 unless --worker-port). Pipelines are Python files in
+/etc/bettertest/pipedefs. Both run as systemd services from installation on. docker runs tasks
+with an image; qemu runs tasks with a vm.
 
 %install
 install -D -m 755 %{_sourcedir}/target/%{_arch}-unknown-linux-musl/release/bettertest %{buildroot}%{_bindir}/bettertest

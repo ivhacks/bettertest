@@ -73,6 +73,9 @@ struct StartTask {
     // What to show the boss when fetching the commit and artifacts, so a locked-down boss lets the
     // task read what its run needs.
     boss_token: Option<String>,
+    // The port the boss listens on, so this worker can call it at the IP of the start-task
+    // connection. Absent for dispatch (no boss) and then unused.
+    boss_port: Option<u16>,
 }
 
 /// A task's files on this worker: `src/` is where it runs, holding the commit its run tests,
@@ -150,8 +153,9 @@ impl FromRef<Shared> for Arc<vm::Vms> {
 }
 
 /// `labels` are what tasks can pick this worker by, besides its architecture's. `capacity` is how
-/// many tasks it runs at once.
-pub async fn entry(labels: Vec<String>, capacity: u32) -> Result<(), Box<dyn Error>> {
+/// many tasks it runs at once. `port` is where it listens (`--worker-port`, 7358 unless told
+/// otherwise).
+pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), Box<dyn Error>> {
     // Labels go into pipedefs as enum values and onto the workers page: keep them plain names.
     if let Some(bad) = labels.iter().find(|l| !valid_artifact_name(l)) {
         return Err(format!("label {bad:?}: labels are letters, digits, '.', '-' and '_'").into());
@@ -172,7 +176,7 @@ pub async fn entry(labels: Vec<String>, capacity: u32) -> Result<(), Box<dyn Err
     }
 
     let shared = Shared {
-        vms: Arc::new(vm::Vms::default()),
+        vms: Arc::new(vm::Vms::new(port)),
         slots: Arc::new(Semaphore::new(capacity as usize)),
     };
     let router = Router::new()
@@ -189,8 +193,8 @@ pub async fn entry(labels: Vec<String>, capacity: u32) -> Result<(), Box<dyn Err
         .route("/output/{id}/{name}", get(get_output))
         .with_state(shared);
 
-    println!("worker listening on http://[::1]:{LISTEN_PORT}");
-    let listener = TcpListener::bind(("::", LISTEN_PORT)).await?;
+    println!("worker listening on http://[::1]:{port}");
+    let listener = TcpListener::bind(("::", port)).await?;
     // start-task learns the boss's address from the connection it arrives on.
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, service).await?;
@@ -467,7 +471,7 @@ async fn read_start_task(mut form: Multipart) -> Result<StartTask, Failure> {
     let bad = |e: MultipartError| (StatusCode::BAD_REQUEST, e.body_text());
     let (mut pipedef, mut stage, mut task, mut target) = (None, None, None, None);
     let (mut pipeline, mut run, mut commit) = (None, None, None);
-    let (mut boss_token, mut boss_name) = (None, None);
+    let (mut boss_token, mut boss_name, mut boss_port) = (None, None, None);
     while let Some(field) = form.next_field().await.map_err(bad)? {
         let name = field.name().unwrap_or_default().to_string();
         let value = Some(field.text().await.map_err(bad)?);
@@ -481,6 +485,15 @@ async fn read_start_task(mut form: Multipart) -> Result<StartTask, Failure> {
             "commit" => commit = value,
             "boss_token" => boss_token = value,
             "boss_name" => boss_name = value,
+            "boss_port" => {
+                let text = value.as_deref().unwrap_or("");
+                match text.parse::<u16>() {
+                    Ok(port) if port != 0 => boss_port = Some(port),
+                    _ => {
+                        return Err((StatusCode::BAD_REQUEST, format!("bad boss_port {text:?}")));
+                    }
+                }
+            }
             _ => return Err((StatusCode::BAD_REQUEST, format!("unknown field {name:?}"))),
         }
     }
@@ -495,6 +508,7 @@ async fn read_start_task(mut form: Multipart) -> Result<StartTask, Failure> {
         commit,
         boss_token,
         boss_name,
+        boss_port,
     })
 }
 
@@ -520,8 +534,12 @@ async fn start_task(
     let files = TaskFiles::create().map_err(internal)?;
 
     let target = python_target(&vms, req.target.as_deref())?;
-    // A task of a run talks to the boss, which is whoever just called.
-    let address = SocketAddr::new(caller.ip().to_canonical(), boss::LISTEN_PORT);
+    // A task of a run talks to the boss, which is whoever just called: IP from this connection,
+    // listen port from the form (TCP's source port is ephemeral).
+    let address = SocketAddr::new(
+        caller.ip().to_canonical(),
+        req.boss_port.unwrap_or(boss::LISTEN_PORT),
+    );
     let boss = boss_url(&req, address)?;
     if let (Some(_), Some(boss), Some(run)) = (&req.commit, &boss, &req.run) {
         let mut http = reqwest::Client::builder();
@@ -630,7 +648,7 @@ fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Valu
             let (port, key) = vms
                 .ssh(id)
                 .ok_or((StatusCode::NOT_FOUND, format!("no vm {id}")))?;
-            let reboot = format!("http://127.0.0.1:{LISTEN_PORT}/vm/{id}/reboot");
+            let reboot = format!("http://127.0.0.1:{}/vm/{id}/reboot", vms.port());
             serde_json::json!({"kind": "vm", "port": port, "key": key, "reboot": reboot})
         }
         Some(_) => return Err((StatusCode::BAD_REQUEST, "bad target".into())),
@@ -647,7 +665,7 @@ fn boss_url(req: &StartTask, address: SocketAddr) -> Result<Option<String>, Fail
         // Over HTTPS, the certificate is for a name the boss may have no DNS record for. The task
         // connects to the address the boss called from, and checks the certificate against the name.
         (Some(_), Some(run), Some(name)) if Uuid::parse_str(run).is_ok() && valid_host(name) => {
-            Some(format!("https://{name}:{}", boss::LISTEN_PORT))
+            Some(format!("https://{name}:{}", address.port()))
         }
         (None, None, None) => None,
         _ => {
@@ -725,3 +743,7 @@ async fn pump(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../test/worker.rs"]
+mod tests;
