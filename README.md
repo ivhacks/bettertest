@@ -92,7 +92,7 @@ class Test(Stage):
 A stage is a step, not a group: put each task in the first stage after everything it needs, and
 it runs as soon as it can.
 
-- `@task(vm="http://boss-host:7357/artifact/debian-13.qcow2", labels=[Label.x86])` runs a task in a VM instead.
+- `@task(vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2", labels=[Label.x86])` runs a task in a VM. The URL is the image's own; the worker downloads it.
 - `@task(labels=[Label.arm])` picks any connected worker that has that label. Declare labels once
   in the pipedef: `class Label(Labels): arm = "arm"`. The boss chooses at random among enrolled
   workers whose labels cover the task. A pipedef cannot name a worker by url. Workers take more
@@ -112,7 +112,10 @@ class Label(Labels):
     x86 = "x86"
 
 
-DEBIAN = Sandbox(labels=[Label.x86], vm="http://boss-host:7357/artifact/debian-13.qcow2")
+DEBIAN = Sandbox(
+    labels=[Label.x86],
+    vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+)
 
 
 class Install(Stage):

@@ -38,13 +38,13 @@ const CONTAINER_LABEL: &str = "bettertest.worker";
 
 #[derive(Serialize, Deserialize)]
 pub struct StartContainer {
-    // A docker image name, or the URL of a `docker save` tarball (like a boss artifact).
+    // A docker image name, or the URL of a `docker save` tarball. The pipedef names that source.
     pub image: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct StartVm {
-    // URL of a qcow2 disk image (like a boss artifact).
+    // URL of a qcow2 disk image, the image's own. The worker downloads it.
     pub image: String,
     // None means this worker's own.
     pub arch: Option<Arch>,
@@ -294,8 +294,8 @@ fn is_url(image: &str) -> bool {
     image.starts_with("http://") || image.starts_with("https://")
 }
 
-/// FNV-1a. A stable name for a cached download, derived from its URL. Artifacts never change once
-/// uploaded, so the URL alone says whether we already have the bytes.
+/// FNV-1a. A stable name for a cached download, derived from its URL. The pipedef names the source;
+/// this cache is the worker's, and a later change at the same URL is not fetched again.
 pub fn cache_key(url: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in url.bytes() {

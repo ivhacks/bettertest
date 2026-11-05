@@ -51,7 +51,8 @@ class Sandbox:
     pipedef:
 
         DEBIAN = Sandbox(
-            labels=[Label.x86], vm="http://boss:7357/artifact/debian-13.qcow2"
+            labels=[Label.x86],
+            vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
         )
 
     Then `@task(sandbox=DEBIAN)` runs a task in it. The boss starts it when the first stage that

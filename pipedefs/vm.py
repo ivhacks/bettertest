@@ -5,7 +5,8 @@ class Label(Labels):
     x86 = "x86"
 
 
-DEBIAN = "http://[::1]:7357/artifact/debian-13-genericcloud-amd64.qcow2"
+# The cloud image as Debian publishes it. The worker downloads this URL.
+DEBIAN = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 
 
 class Debian(Stage):

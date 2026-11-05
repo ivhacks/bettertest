@@ -9,11 +9,8 @@ in a Sandbox that lives across those stages.
 
 Each task runs in a checkout of the commit its run tests, and the packages travel to the install
 tasks as artifacts. The worker runs many tasks at once (worker --tasks 8). Tasks ask for the
-x86 label; enroll a worker that has it. The boss needs the cloud images as artifacts (the worker
-downloads these urls; on one machine the boss is local):
-    curl -T debian-13-genericcloud-amd64.qcow2 http://127.0.0.1:7357/artifact/debian-13-genericcloud-amd64.qcow2
-    curl -T Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 http://127.0.0.1:7357/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
-    curl -T debian-13-genericcloud-arm64.qcow2 http://127.0.0.1:7357/artifact/debian-13-genericcloud-arm64.qcow2
+x86 label; enroll a worker that has it. The VMs are the cloud images as the distros publish them.
+The worker downloads those URLs itself.
 """
 
 import os
@@ -36,28 +33,27 @@ from bettertest import (
 )
 
 # An enrolled worker with the x86 label, docker and qemu (x86_64 and aarch64). The packages build
-# in a container. Cloud images live on the boss; the worker downloads them. On one machine that
-# address is local. It is not which worker runs the task.
+# in a container. A vm is the cloud image's own URL; the worker downloads it.
 class Label(Labels):
     x86 = "x86"
 
 
-IMAGES = "http://127.0.0.1:7357"
 IMAGE = "debian:trixie"
 # Built by the Prepare stage from .bettertest/build.Dockerfile.
 BUILD_IMAGE = "bettertest-build"
 
 DEBIAN = Sandbox(
-    labels=[Label.x86], vm=f"{IMAGES}/artifact/debian-13-genericcloud-amd64.qcow2"
+    labels=[Label.x86],
+    vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
 )
 FEDORA = Sandbox(
     labels=[Label.x86],
-    vm=f"{IMAGES}/artifact/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+    vm="https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
 )
 # Emulated on an x86_64 worker, so slow, but the same vm, ssh and cloud-init plumbing.
 ARM = Sandbox(
     labels=[Label.x86],
-    vm=f"{IMAGES}/artifact/debian-13-genericcloud-arm64.qcow2",
+    vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2",
     arch="aarch64",
 )
 

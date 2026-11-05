@@ -20,7 +20,7 @@ from bettertest import Labels, Sandbox, Stage, task
 class Label(Labels):
     x86 = "x86"
 
-DEBIAN = Sandbox(labels=[Label.x86], vm="http://127.0.0.1:7357/artifact/debian.qcow2")
+DEBIAN = Sandbox(labels=[Label.x86], vm="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2")
 
 class Hello(Stage):
     labels = [Label.x86]
