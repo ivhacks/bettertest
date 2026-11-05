@@ -11,6 +11,13 @@ Each task runs in a checkout of the commit its run tests, and the packages trave
 tasks as artifacts. The worker runs many tasks at once (worker --tasks 8). Tasks ask for the
 x86 label; enroll a worker that has it. The VMs are the cloud images as the distros publish them.
 The worker downloads those URLs itself.
+
+Three VMs are resident at once from Build through Check, and each qemu is given 2048 MiB, so
+that is 6 GiB before qemu's own overhead and the package build running beside them. A 4 GiB
+worker cannot run this pipeline; give it about 8 GiB. Build starts four tasks at once, so
+--tasks 4 is enough to not queue there; a smaller capacity only queues, and the VMs still all
+stay up. The arm VM is emulated on x86 (qemu-system-aarch64 and UEFI firmware; boot gives up
+after 300s).
 """
 
 import os
@@ -351,9 +358,18 @@ print(f"index.html and {wasm} ({size} bytes) served")
 
 
 def check_tests_run() -> None:
+    # The package starts a worker on this machine. helloworld only names the x86 label, so the
+    # boss it just installed has no worker until this enrolls that one, the same as the workers page.
     in_vm_python("""
 import json, urllib.request
 boss = "http://localhost:7357"
+enroll = urllib.request.Request(
+    f"{boss}/api/add-worker",
+    data=json.dumps({"url": "http://localhost:7358"}).encode(),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+urllib.request.urlopen(enroll)
 start = urllib.request.Request(f"{boss}/api/start-run/helloworld", method="POST")
 run = json.load(urllib.request.urlopen(start))
 for line in urllib.request.urlopen(f"{boss}/api/run/{run['id']}/events"):
