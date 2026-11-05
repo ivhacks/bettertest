@@ -1,3 +1,5 @@
+<img src="brand/logo_assets/bettertest-gradient.svg" alt="" width="96">
+
 # bettertest
 
 CI that doesn't suck. One binary, pipelines written in real Python, a web UI that shows green and red
@@ -5,8 +7,9 @@ instantly. No YAML.
 
 - **One file.** The binary carries everything: the Python library, the web UI, the database. It is
   fully static, so it runs on any x86-64 or ARM64 Linux, whatever the distro.
-- **No root, no internet.** It runs as you, on ports above 1024, and keeps its history in
-  `/var/tmp/bettertest`. It was designed to be stood up in an airgapped room from a flash drive.
+- **Root and internet are optional.** The usual install is a package, with root, and most pipelines
+  use the internet. But it can also run as an ordinary user, on ports above 1024, keeping its history
+  in `/var/tmp/bettertest`, and be stood up in an airgapped room from a flash drive.
 - **Pipelines are Python.** Real code, real IDE support. A task can run in a container, in a VM
   (x86 or ARM, emulated or not), or straight on a machine, to toggle a GPIO pin or talk to a rig.
 
