@@ -16,6 +16,7 @@ pub struct PipelinePage {
     main: NodeRef,
     _resize: EventListener,
     _fonts: Option<EventListener>,
+    _stream: crate::Followed,
 }
 
 pub enum PipelineMsg {
@@ -35,8 +36,8 @@ impl Component for PipelinePage {
         let url = format!("/api/pipeline/{}/events", ctx.props().id);
         let link = ctx.link();
         let resized = link.callback(|()| PipelineMsg::Resized);
-        // Every page is a full page load, so the stream lives exactly as long as the component.
-        follow(
+        // The stream stops when the page is destroyed, which leaving it for another page does too.
+        let stream = follow(
             &url,
             link.callback(PipelineMsg::Live),
             link.callback(PipelineMsg::Notice),
@@ -53,6 +54,7 @@ impl Component for PipelinePage {
             _fonts: Some(EventListener::new(&fonts, "loadingdone", move |_| {
                 fonts_loaded.emit(())
             })),
+            _stream: stream,
         }
     }
 

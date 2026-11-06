@@ -109,7 +109,7 @@ core/                   bettertest (the binary)
   src/workdir.rs        /var/tmp/bettertest and its 0777/0666 permissions
   test/                 the tests of src/, one file per module they test
 frontend/               bettertest-frontend: Yew/wasm, built by trunk, embedded in the binary
-  src/main.rs           routing by path, who is logged in, following live streams from the boss
+  src/main.rs           client-side routing (History API), who is logged in, live streams
   src/pages/            one Yew component per page: pipeline, task, workers, settings, users, login
   src/passkey.rs        the browser's half of passkeys (WebAuthn's JSON forms)
   src/view.rs           pure view functions
@@ -273,7 +273,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 
 ### Frontend
 
-Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/`), Elm architecture, no function components or hooks. Every page is a full page load; the path picks the component. `/` redirects to the first pipeline.
+Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/`), Elm architecture, no function components or hooks. The shell (the wasm, its JS and the CSS) loads once. Links use the History API, so moving between pages does not fetch the shell again, only that page's data; back and forward restore the URL and the page. A refresh still works, because the boss serves `index.html` for every page. `/` redirects to the first pipeline. Hashed shell files are cached forever; `index.html` is not, because it is what names them.
 
 - Pipeline page: run grid (newest run on top, one column per task, grouped by stage; the header follows the current pipedef, so tasks a run predates show empty cells), "new run" button, spreadsheet-style pipeline tabs along the bottom. The grid is a CSS grid: each stage is √(its tasks) wide, so a stage of two is wider than a stage of one but each of its tasks narrower. Tasks sit 2px apart, stages 10px. Task names lie flat when they all fit. Otherwise they all tilt by one angle, the flattest that keeps neighbours a full line apart across (`label_layout`), measured after every render, on resize and once the fonts load. A stage whose columns are narrower than a line runs its tasks together into one bar, hides their names, and names the task in each cell's tooltip instead. Running cells pulse. A finished cell's tooltip says how long it took.
 - Task page: path (`pipeline / run / stage / task`) plus a state badge, the worker it ran on, how long it took and rerun buttons (once the run is over) at the right (counting up while it runs, from the boss's clock in the snapshot), then the live log. The log container is `flex-direction: column-reverse` so the browser keeps the newest line in view while the reader is at the bottom.

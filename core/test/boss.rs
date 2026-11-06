@@ -3,6 +3,7 @@
 
 use super::*;
 use std::collections::BTreeSet;
+use std::io::Read;
 
 fn task(name: &str) -> Task {
     Task {
@@ -446,6 +447,62 @@ fn labels_one_typo_away_are_named() {
          gpu. Connected workers: http://a (x86, gpu); http://b (arm). The workers page shows \
          them all."
     );
+}
+
+#[test]
+fn shell_bytes_are_gzipped_and_the_document_is_not_cached_forever() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ACCEPT_ENCODING,
+        "gzip, deflate, br".parse().unwrap(),
+    );
+    let css = b"body { color: black; background: #000; }\n".repeat(80);
+    let served = serve_bytes(&headers, "app-9f3c.css", "text/css", &css);
+    assert_eq!(served.status, StatusCode::OK);
+    assert_eq!(served.cache, "public, max-age=31536000, immutable");
+    assert_eq!(served.encoding.as_deref(), Some("gzip"));
+    assert!(served.vary);
+    assert!(served.body.len() < css.len());
+    let mut decoded = Vec::new();
+    flate2::read::GzDecoder::new(served.body.as_slice())
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, css);
+    // The gzip is remembered: a second request is the same bytes, not a second compression.
+    let again = serve_bytes(&headers, "app-9f3c.css", "text/css", &css);
+    assert_eq!(again.body, served.body);
+
+    let page = b"<!DOCTYPE html><html><body>bettertest</body></html>";
+    let document = serve_bytes(&headers, "index.html", "text/html", page);
+    assert_eq!(document.cache, "no-cache");
+    // Smaller than a gzip header, so it stays as it is. The first burst is the point, and a
+    // document this small already fits.
+    assert_eq!(document.encoding, None);
+    assert_eq!(document.body, page);
+
+    let png = vec![0_u8; 4000];
+    let image = serve_bytes(&headers, "favicon-32.v1.png", "image/png", &png);
+    assert_eq!(image.encoding, None);
+    assert!(!image.vary);
+    assert_eq!(image.body, png);
+
+    // Gzip would shrink this, and Chrome would then fetch it again anyway.
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><g></g></svg>"#.repeat(30);
+    let mark = serve_bytes(&headers, "mark.v1.svg", "image/svg+xml", &svg);
+    assert_eq!(mark.encoding, None);
+    assert_eq!(mark.body, svg);
+
+    headers.insert(
+        header::ACCEPT_ENCODING,
+        "gzip;q=0, identity".parse().unwrap(),
+    );
+    let refused = serve_bytes(&headers, "app-9f3c.css", "text/css", &css);
+    assert_eq!(refused.encoding, None);
+    assert_eq!(refused.body, css);
+
+    headers.insert(header::ACCEPT_ENCODING, "br".parse().unwrap());
+    let brotli_only = serve_bytes(&headers, "app.wasm", "application/wasm", &css);
+    assert_eq!(brotli_only.encoding, None);
 }
 
 #[test]

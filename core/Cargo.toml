@@ -16,6 +16,7 @@ axum = { version = "0.8", features = ["multipart"] }
 bettertest-shared = { path = "../shared" }
 clap = { version = "4", features = ["derive"] }
 fastrand = "2"
+flate2 = "1"
 reqwest = { version = "0.12", features = ["json", "multipart", "native-tls-vendored"] }
 openssl = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }

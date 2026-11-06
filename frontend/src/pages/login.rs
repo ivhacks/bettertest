@@ -18,11 +18,23 @@ pub enum LoginMsg {
     Refused(String),
 }
 
-/// Back to where the browser was sent to log in from, now logged in.
-fn logged_in() {
+/// Back to where the browser was sent to log in from, now logged in. Only an app path: a `next`
+/// of `//elsewhere` must not leave this boss.
+async fn logged_in() {
+    crate::load_me().await;
     let search = window().location().search().unwrap_or_default();
-    let next = search.strip_prefix("?next=").filter(|n| n.starts_with('/'));
-    let _ = window().location().set_href(next.unwrap_or("/"));
+    let next = search.strip_prefix("?next=").unwrap_or("");
+    let path = next.split(['?', '#']).next().unwrap_or(next);
+    let next = if next.starts_with('/')
+        && !next.starts_with("//")
+        && path != "/login"
+        && crate::is_app_path(path)
+    {
+        next
+    } else {
+        "/"
+    };
+    crate::navigate(next);
 }
 
 impl Component for LoginPage {
@@ -54,7 +66,7 @@ impl Component for LoginPage {
                 let link = ctx.link().clone();
                 spawn_local(async move {
                     match post_json("/api/login", &body).await {
-                        Ok(()) => logged_in(),
+                        Ok(()) => logged_in().await,
                         Err(e) => link.send_message(LoginMsg::Refused(e)),
                     }
                 });
@@ -70,7 +82,7 @@ impl Component for LoginPage {
                         false,
                     );
                     match login.await {
-                        Ok(_) => logged_in(),
+                        Ok(_) => logged_in().await,
                         Err(e) => link.send_message(LoginMsg::Refused(e)),
                     }
                 });
