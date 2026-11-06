@@ -1,5 +1,4 @@
-// One module per page. Every page is a full page load; `render` in main.rs picks the component
-// from the path.
+// One module per page. The shell stays up; `App` in main.rs picks the component from the path.
 
 pub mod login;
 pub mod pipeline;

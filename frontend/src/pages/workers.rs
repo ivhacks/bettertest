@@ -16,6 +16,7 @@ pub struct WorkersPage {
     // The worker the forget window asks about, while it is open.
     forgetting: Option<String>,
     _tick: Interval,
+    _stream: crate::Followed,
 }
 
 pub enum WorkersMsg {
@@ -34,7 +35,7 @@ impl Component for WorkersPage {
 
     fn create(ctx: &Context<Self>) -> Self {
         let link = ctx.link();
-        follow(
+        let stream = follow(
             "/api/workers/events",
             link.callback(WorkersMsg::Live),
             link.callback(WorkersMsg::Notice),
@@ -47,6 +48,7 @@ impl Component for WorkersPage {
             url: NodeRef::default(),
             forgetting: None,
             _tick: Interval::new(1_000, move || tick.emit(())),
+            _stream: stream,
         }
     }
 
