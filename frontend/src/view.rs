@@ -87,8 +87,8 @@ pub fn grid(
     layout: &GridLayout,
     cancel: &Callback<String>,
 ) -> Html {
-    // Room for a running run's cancel button beside its id. On a narrow screen the stylesheet
-    // widens `--run` so that button can be a real tap target; desktop stays 88px.
+    // Room for a running run's id and the cancel mark beside it. The mark stays this wide on a
+    // phone too; the stylesheet only grows the invisible tap target.
     let mut columns = String::from("var(--run, 88px)");
     for stage in &pipeline.stages {
         let each = stage_weight(stage.tasks.len()) / stage.tasks.len().max(1) as f64;

@@ -379,9 +379,9 @@ button.cancel:focus-visible svg {
     stroke: var(--background);
 }
 
-/* A phone header and a running row. The icon replaces the wrapping words, and the cancel control
-   grows into the space beside the run id instead of staying an 18px target in a wider cell.
-   Desktop, above, is unchanged. Rows without a cancel button stay the short grid. */
+/* A phone header. The icon replaces the wrapping words. The cancel mark stays the compact 18px
+   square from above, 6px from the run id; an invisible pad around it is the tap target, so the
+   row does not grow a filled square. Desktop, above, is unchanged. */
 @media (max-width: 640px) {
     /* Nav takes the next line. New Run and the account control are one group, so the icon
        cannot wrap onto the nav's line. From 360px down the wordmark steps down a size: that is
@@ -527,41 +527,62 @@ button.cancel:focus-visible svg {
         stroke-linecap: round;
     }
 
-    .grid {
-        --run: 112px;
+    /* The filled square stays 18px, clipped on its own layer, so the button's box can be clear
+       and the tap pad can stick out without the cut clipping the pad away. */
+    button.cancel {
+        background: transparent;
+        clip-path: none;
     }
 
-    button.cancel {
-        --cut: 6px;
-        width: 44px;
-        height: 44px;
-        margin: 0;
-        flex: none;
+    button.cancel:hover,
+    button.cancel:focus-visible,
+    button.cancel:active,
+    button.cancel.released {
+        background: transparent;
+    }
+
+    button.cancel.released {
+        animation: none;
+    }
+
+    button.cancel::before {
+        content: "";
+        inset: 0;
+        z-index: 0;
+        background: var(--fail);
+        clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
+                calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+    }
+
+    button.cancel:hover::before {
+        background: color-mix(in srgb, var(--fail), #ffffff 22%);
+    }
+
+    button.cancel:focus-visible::before,
+    button.cancel:active::before {
+        background: var(--text);
     }
 
     button.cancel svg {
-        width: 16px;
-        height: 16px;
+        position: relative;
+        z-index: 1;
     }
 
-    .run:has(> button.cancel) {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
+    button.cancel::after {
+        content: "";
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        left: 50%;
+        width: 44px;
+        height: 44px;
+        transform: translate(-50%, -50%);
     }
 
-    .grid .run:has(> button.cancel) {
-        display: flex;
-        justify-content: flex-end;
-        box-sizing: border-box;
-        padding-right: 4px;
-        padding-left: 4px;
-    }
-
-    .grid .cell {
-        height: auto;
-        min-height: 22px;
-        align-self: stretch;
+    /* The pad sticks out of the 18px mark. A wider gap than the desktop's 3px keeps that pad
+       off the next run's id, so a tap there does not cancel the run above. */
+    .grid {
+        row-gap: 10px;
     }
 }
 
