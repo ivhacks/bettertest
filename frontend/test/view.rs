@@ -109,7 +109,7 @@ fn grid_matches_tasks_by_name() {
             &Callback::noop()
         )),
         concat!(
-            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
+            r#"<table style="grid-template-columns: var(--run, 88px) minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
             r#"<th style="grid-column: span 2" class="stage"><span>Test</span></th></tr>"#,
             r#"<tr><th></th><th class="task first"><span>compile</span></th><th class="task first"><span>unit</span></th>"#,
@@ -134,7 +134,7 @@ fn tilted_names_and_dense_stages() {
     assert_eq!(
         to_html(&grid(&pipeline(), &[], &layout, &Callback::noop())),
         concat!(
-            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid tilted"><thead>"#,
+            r#"<table style="grid-template-columns: var(--run, 88px) minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid tilted"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
             r#"<th style="grid-column: span 2" class="stage"><span>Test</span></th></tr>"#,
             r#"<tr><th style="height: 84px"></th>"#,
@@ -707,7 +707,16 @@ fn users_show_how_each_can_log_in() {
     };
     assert_eq!(
         to_html(&account(&me, Callback::noop(), Callback::noop())),
-        r#"<span class="me">iv</span><button class="small">Add Passkey</button><button class="small">Log Out</button>"#
+        concat!(
+            r#"<span class="account-desktop"><span class="me">iv</span>"#,
+            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></span>"#,
+            r#"<details class="account"><summary aria-label="Account, iv">"#,
+            r#"<svg viewBox="0 0 24 24" aria-hidden="true" class="user">"#,
+            r#"<circle cx="12" cy="8" r="3.25"></circle>"#,
+            r#"<path d="M5.2 19.4c1.3-3.3 3.6-4.9 6.8-4.9s5.5 1.6 6.8 4.9"></path></svg>"#,
+            r#"</summary><div class="menu"><span class="me">iv</span>"#,
+            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></div></details>"#,
+        )
     );
     let me = Me {
         name: "logged out".into(),
@@ -716,7 +725,13 @@ fn users_show_how_each_can_log_in() {
     };
     assert_eq!(
         to_html(&account(&me, Callback::noop(), Callback::noop())),
-        r#"<a href="/login" class="page">Log In</a>"#
+        concat!(
+            r#"<a href="/login" aria-label="Log In" class="page login">"#,
+            r#"<svg viewBox="0 0 24 24" aria-hidden="true" class="user">"#,
+            r#"<circle cx="12" cy="8" r="3.25"></circle>"#,
+            r#"<path d="M5.2 19.4c1.3-3.3 3.6-4.9 6.8-4.9s5.5 1.6 6.8 4.9"></path></svg>"#,
+            r#"<span>Log In</span></a>"#,
+        )
     );
 }
 

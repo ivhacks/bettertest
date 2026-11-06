@@ -97,10 +97,22 @@ header .home img {
     height: 30px;
 }
 
-header > :not(.home, .spacer, button, .state, .worker, .runtime, .page, .add, .me)::before {
+header > :not(.home, .spacer, button, .state, .worker, .runtime, .page, .add, .me, .actions, .links, .account, .account-desktop)::before {
     content: "/";
     margin-right: 10px;
     color: var(--muted);
+}
+
+/* On a wide screen these are not boxes: their children sit in the header's own row. A narrow
+   screen turns them into a row of their own, below. */
+header .actions,
+header .links,
+header .account-desktop {
+    display: contents;
+}
+
+header details.account {
+    display: none;
 }
 
 header .spacer {
@@ -109,6 +121,24 @@ header .spacer {
 
 header .page {
     color: var(--muted);
+}
+
+/* "Log In" is two words, so a squeezed header wraps it onto a second line. From 640px down the
+   link is a 44px user icon; the words stay in the markup for the accessible name. */
+header a.login {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    white-space: nowrap;
+}
+
+header .user {
+    display: none;
+}
+
+header a.login:focus-visible {
+    outline: 2px solid var(--highlight);
+    outline-offset: 3px;
 }
 
 /* Buttons cut their top-left and bottom-right corners at 45 degrees. Outlined ones draw the border
@@ -336,6 +366,246 @@ button.cancel svg {
     fill: none;
     stroke: #ffffff;
     stroke-width: 2;
+}
+
+/* The button is clipped to its cut corners, so an outline or shadow never shows. Mixing 22% white
+   into the red is only about 1.3:1 against the red itself. Focus inverts to the page's text color,
+   which is at least 3.9:1 against that red, and the mark flips so it stays readable. */
+button.cancel:focus-visible {
+    background: var(--text);
+}
+
+button.cancel:focus-visible svg {
+    stroke: var(--background);
+}
+
+/* A phone header. The icon replaces the wrapping words. The cancel mark stays the compact 18px
+   square from above, 6px from the run id; an invisible pad around it is the tap target, so the
+   row does not grow a filled square. Desktop, above, is unchanged. */
+@media (max-width: 640px) {
+    /* Nav takes the next line. New Run and the account control are one group, so the icon
+       cannot wrap onto the nav's line. From 360px down the wordmark steps down a size: that is
+       what keeps the group on the wordmark's own row at 320px. */
+    header {
+        flex-wrap: wrap;
+        row-gap: 8px;
+    }
+
+    header .home {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    header .home img {
+        flex: none;
+    }
+
+    header .spacer {
+        min-width: 0;
+    }
+
+    header .actions {
+        display: inline-flex;
+        flex: none;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+    }
+
+    header .links {
+        display: flex;
+        flex: 1 0 100%;
+        align-items: center;
+        gap: 10px;
+    }
+
+    header .account-desktop {
+        display: none;
+    }
+
+    header details.account {
+        display: block;
+        position: relative;
+        z-index: 5;
+        flex: none;
+    }
+
+    header details.account summary {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        color: var(--text);
+        list-style: none;
+        cursor: pointer;
+    }
+
+    header details.account summary::-webkit-details-marker {
+        display: none;
+    }
+
+    header details.account summary::marker {
+        content: "";
+    }
+
+    header details.account summary:focus-visible {
+        outline: 2px solid var(--highlight);
+        outline-offset: 3px;
+    }
+
+    header details.account[open] .menu {
+        --cut: 6px;
+        position: absolute;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 5;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        box-sizing: border-box;
+        width: max-content;
+        min-width: 168px;
+        max-width: calc(100vw - 16px);
+        padding: 10px;
+        background: var(--line);
+        isolation: isolate;
+        clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
+                calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+    }
+
+    header details.account[open] .menu::before {
+        --inner: calc(var(--cut) - 0.586px);
+        content: "";
+        position: absolute;
+        inset: 1px;
+        z-index: -1;
+        background: var(--surface);
+        clip-path: polygon(var(--inner) 0, 100% 0, 100% calc(100% - var(--inner)),
+                calc(100% - var(--inner)) 100%, 0 100%, 0 var(--inner));
+    }
+
+    header details.account[open] .menu .me {
+        padding: 0 2px;
+    }
+
+    header details.account[open] .menu button {
+        width: 100%;
+        height: 44px;
+    }
+
+    header a.login {
+        position: relative;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        color: var(--text);
+    }
+
+    header a.login span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    header a.login .user,
+    header details.account .user {
+        display: block;
+        width: 24px;
+        height: 24px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+    }
+
+    /* The filled square stays 18px, clipped on its own layer, so the button's box can be clear
+       and the tap pad can stick out without the cut clipping the pad away. */
+    button.cancel {
+        background: transparent;
+        clip-path: none;
+    }
+
+    button.cancel:hover,
+    button.cancel:focus-visible,
+    button.cancel:active,
+    button.cancel.released {
+        background: transparent;
+    }
+
+    button.cancel.released {
+        animation: none;
+    }
+
+    button.cancel::before {
+        content: "";
+        inset: 0;
+        z-index: 0;
+        background: var(--fail);
+        clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
+                calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+    }
+
+    button.cancel:hover::before {
+        background: color-mix(in srgb, var(--fail), #ffffff 22%);
+    }
+
+    button.cancel:focus-visible::before,
+    button.cancel:active::before {
+        background: var(--text);
+    }
+
+    button.cancel svg {
+        position: relative;
+        z-index: 1;
+    }
+
+    button.cancel::after {
+        content: "";
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        left: 50%;
+        width: 44px;
+        height: 44px;
+        transform: translate(-50%, -50%);
+    }
+
+    /* The pad sticks out of the 18px mark. A wider gap than the desktop's 3px keeps that pad
+       off the next run's id, so a tap there does not cancel the run above. */
+    .grid {
+        row-gap: 10px;
+    }
+}
+
+/* A 28px wordmark plus New Run plus a 44px account control does not fit a 320px row. A step
+   smaller wordmark does, and the account control stays at the right end of that row. 375px and
+   up keep the larger wordmark. */
+@media (max-width: 360px) {
+    header {
+        padding-left: 8px;
+        padding-right: 8px;
+        column-gap: 6px;
+    }
+
+    header .home {
+        flex: 1 1 0;
+        margin-right: 0;
+        gap: 6px;
+        font-size: 22px;
+    }
+
+    header .spacer {
+        display: none;
+    }
 }
 
 .cell {
