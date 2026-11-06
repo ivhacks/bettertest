@@ -114,6 +114,7 @@ frontend/               bettertest-frontend: Yew/wasm, built by trunk, embedded 
   src/passkey.rs        the browser's half of passkeys (WebAuthn's JSON forms)
   src/view.rs           pure view functions
   test/view.rs          their exact-HTML tests
+  test/shell.py         playwright: the document burst, the shell staying put, Syeve beside it
   style.css             the brand guide's tokens, type and cut corners
   assets/               fonts (with their OFL licenses), the mark, favicons; copied as they are
 brand/                  the brand guide: style_guide.typ (Typst source), style_guide.pdf built from it by
@@ -274,7 +275,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 
 ### Frontend
 
-Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/`), Elm architecture, no function components or hooks. The shell (the wasm, its JS and the CSS) loads once. Links use the History API, so moving between pages does not fetch the shell again, only that page's data; back and forward restore the URL and the page. A refresh still works, because the boss serves `index.html` for every page. `/` redirects to the first pipeline. Hashed shell files are cached forever; `index.html` is not, because it is what names them.
+Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/`), Elm architecture, no function components or hooks. The shell (the wasm, its JS and the CSS) loads once. Links use the History API, so moving between pages does not fetch the shell again, only that page's data; back and forward restore the URL and the page. A refresh still works, because the boss serves `index.html` for every page. `/` redirects to the first pipeline. Hashed shell files are cached forever; `index.html` is not, because it is what names them. The first document is the chrome burst; Syeve rides after it. See First load.
 
 - Pipeline page: run grid (newest run on top, one column per task, grouped by stage; the header follows the current pipedef, so tasks a run predates show empty cells), "new run" button, spreadsheet-style pipeline tabs along the bottom. The grid is a CSS grid: each stage is √(its tasks) wide, so a stage of two is wider than a stage of one but each of its tasks narrower. Tasks sit 2px apart, stages 10px. Task names lie flat when they all fit. Otherwise they all tilt by one angle, the flattest that keeps neighbours a full line apart across (`label_layout`), measured after every render, on resize and once the fonts load. A stage whose columns are narrower than a line runs its tasks together into one bar, hides their names, and names the task in each cell's tooltip instead. Running cells pulse. A finished cell's tooltip says how long it took. The run id at the start of a row links to that run's results (`/pipeline/{pipeline}?run={run}`), shown instead of the grid: how many tasks passed, failed (a test failed), errored (failed without a failed test: crashed, timed out, or never called `tests()`), are running, pending or skipped, how many tests they ran and failed, then every task with its outcome, stage, how long it took and its tests, failures first and the slowest first within each outcome.
 - Task page: path (`pipeline / run / stage / task`) plus a state badge, the worker it ran on, how long it took and rerun buttons (once the run is over) at the right (counting up while it runs, from the boss's clock in the snapshot), then the live log. The log container is `flex-direction: column-reverse` so the browser keeps the newest line in view while the reader is at the bottom.
@@ -284,6 +285,20 @@ Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/
 - Archivo is narrower than the system font it replaced, so UI text is sized for the old width rather than the guide's point sizes (copy 18px, grid labels 20px at width 62). Stage names keep their case. Buttons and links are in Title Case ("New Run").
 - Looks follow `brand/style_guide.pdf`. Black ground, white type. Red is for primary buttons, orange for highlights. Pass green and fail red are the product's own colors. Fonts are Archivo (variable, moved along its width axis: 62 for labels and the grid, 80 for copy) and Martian Mono for code and logs, both self-hosted from `frontend/assets/` because the UI must work airgapped. Buttons and pop-up windows cut their top-left and bottom-right corners at 45° (10px, 6px small, 16px windows). The grid and logs stay square. Assets in `frontend/assets/` are served as immutable without a content hash, so a changed one needs a new `.vN` name.
 - One override of the guide, by Iv: the gradient mark goes on white at any size, not only from 48px up.
+
+### First load
+
+The first ~14KB on the wire paints the chrome. The same first visit loads Syeve, the AI, so the whole visit will not fit in that budget. Both stand. Tracked by [#6](https://github.com/ivhacks/bettertest/issues/6) (the frame) and [#7](https://github.com/ivhacks/bettertest/issues/7) (Syeve in the background). This section is the guide for that work.
+
+The standard is Nathaniel, [Why your website should be under 14kB in size](https://endtimes.dev/why-your-website-should-be-under-14kb-in-size/). A new TCP connection sends about 10 packets first, 10 × 1460 = 14600 bytes of payload after headers, then waits for an ACK. Fitting the compressed first response, headers included, in that burst saves a round trip. 14KB compressed is roughly 50KB uncompressed. When the page cannot fit, the first 14KB still has to render something useful. Some servers start with a larger window, and HTTP/3 still recommends a similar first burst. Treat 14KB as that rule of thumb.
+
+What the burst is for is the HTML document, whichever page the URL names. `index.html` carries a few lines of critical CSS and the word "bettertest", so the frame is on screen before the stylesheet, the wasm, and Syeve. The boss gzips it when that is smaller, and sends `Cache-Control: no-cache`, because the document is what names the hashed shell. Keep that document inside the burst. Leave the wasm, the fonts, and Syeve out of it.
+
+Syeve loads on that first visit no matter which page it is. It starts in the background once the frame is visible, so the chrome is already up, and it stays part of that visit. A 14KB total is impossible on a first load, and shrinking the visit by skipping Syeve is the wrong fix. Syeve is not in the app yet; #6 and #7 are the work.
+
+After the first visit the shell stays. Hashed JS, wasm, and CSS, and the versioned files under `assets/`, are `public, max-age=31536000, immutable`. An in-app link pushes history and swaps the page component; the request is that page's live stream. Back and forward restore the URL and the page. A reload rechecks `index.html` and takes the shell from cache.
+
+`frontend/test/shell.py` (cargo: `shell_nav::shell_stays_across_navigation`) measures this. The 14KB assertion is the document's `transferSize`, headers included. The same run downloads a Syeve payload larger than the burst and requires the document check to stay on the document. It fails when an in-app navigation transfers the shell or any other large body, when a repeat load transfers a large cached asset again, or when the document itself exceeds the burst.
 
 ## HTTP API
 
