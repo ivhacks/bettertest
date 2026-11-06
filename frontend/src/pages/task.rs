@@ -3,7 +3,6 @@
 use crate::{PageProps, account, cancel_run, follow, monotonic, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
-use gloo::utils::window;
 use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
@@ -15,6 +14,7 @@ pub struct TaskPage {
     clock: (u64, f64),
     notice: Option<String>,
     _tick: Interval,
+    _stream: crate::Followed,
 }
 
 pub enum TaskMsg {
@@ -33,7 +33,7 @@ impl Component for TaskPage {
     fn create(ctx: &Context<Self>) -> Self {
         let url = format!("/api/task/{}/events", ctx.props().id);
         let link = ctx.link();
-        follow(
+        let stream = follow(
             &url,
             link.callback(|live| TaskMsg::Live(Box::new(live))),
             link.callback(TaskMsg::Notice),
@@ -44,6 +44,7 @@ impl Component for TaskPage {
             clock: (0, 0.0),
             notice: None,
             _tick: Interval::new(1_000, move || tick.emit(())),
+            _stream: stream,
         }
     }
 
@@ -91,7 +92,7 @@ impl Component for TaskPage {
                                 Some(t) => format!("/task/{}", t.id),
                                 None => format!("/pipeline/{}", rerun.pipeline),
                             };
-                            let _ = window().location().set_href(&page);
+                            crate::navigate(&page);
                         }
                         Err(e) => {
                             link.send_message(TaskMsg::Notice(format!("could not rerun: {e}")))
