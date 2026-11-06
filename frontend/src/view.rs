@@ -11,9 +11,11 @@ pub fn header(crumbs: Html, right: Html) -> Html {
             { crumbs }
             <span class="spacer"></span>
             { right }
-            <a class="page" href="/workers">{ "Workers" }</a>
-            <a class="page" href="/settings">{ "Settings" }</a>
-            <a class="page" href="/users">{ "Users" }</a>
+            <nav class="links">
+                <a class="page" href="/workers">{ "Workers" }</a>
+                <a class="page" href="/settings">{ "Settings" }</a>
+                <a class="page" href="/users">{ "Users" }</a>
+            </nav>
         </header>
     }
 }
@@ -315,14 +317,42 @@ pub fn settings(
     }
 }
 
+/// A head and shoulders, the mobile face of the account control. Decorative: the control's words
+/// or its accessible name say what it does.
+fn user_icon() -> Html {
+    html! {
+        <svg class="user" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.25"></circle>
+            <path d="M5.2 19.4c1.3-3.3 3.6-4.9 6.8-4.9s5.5 1.6 6.8 4.9"></path>
+        </svg>
+    }
+}
+
 /// Who is logged in, with a way out; or a way in, for the logged-out user.
+///
+/// Both faces are in the markup. Desktop shows the name and the two actions. A narrow screen
+/// shows one icon, the same one as Log In, and the actions sit in its menu so they cannot wrap
+/// onto their own row. The stylesheet picks which face is on screen.
 pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEvent>) -> Html {
     if me.logged_in {
+        let label = format!("Account, {}", me.name);
         html! {
             <>
-                <span class="me">{ &me.name }</span>
-                <button class="small" onclick={passkey}>{ "Add Passkey" }</button>
-                <button class="small" onclick={logout}>{ "Log Out" }</button>
+                <span class="account-desktop">
+                    <span class="me">{ &me.name }</span>
+                    <button class="small" onclick={passkey.clone()}>{ "Add Passkey" }</button>
+                    <button class="small" onclick={logout.clone()}>{ "Log Out" }</button>
+                </span>
+                <details class="account">
+                    <summary aria-label={label}>
+                        { user_icon() }
+                    </summary>
+                    <div class="menu">
+                        <span class="me">{ &me.name }</span>
+                        <button class="small" onclick={passkey}>{ "Add Passkey" }</button>
+                        <button class="small" onclick={logout}>{ "Log Out" }</button>
+                    </div>
+                </details>
             </>
         }
     } else {
@@ -330,10 +360,7 @@ pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEve
         // accessible name; the stylesheet decides which one is on screen.
         html! {
             <a class="page login" href="/login" aria-label="Log In">
-                <svg class="user" viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="12" cy="8" r="3.25"></circle>
-                    <path d="M5.2 19.4c1.3-3.3 3.6-4.9 6.8-4.9s5.5 1.6 6.8 4.9"></path>
-                </svg>
+                { user_icon() }
                 <span>{ "Log In" }</span>
             </a>
         }

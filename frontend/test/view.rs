@@ -707,7 +707,16 @@ fn users_show_how_each_can_log_in() {
     };
     assert_eq!(
         to_html(&account(&me, Callback::noop(), Callback::noop())),
-        r#"<span class="me">iv</span><button class="small">Add Passkey</button><button class="small">Log Out</button>"#
+        concat!(
+            r#"<span class="account-desktop"><span class="me">iv</span>"#,
+            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></span>"#,
+            r#"<details class="account"><summary aria-label="Account, iv">"#,
+            r#"<svg viewBox="0 0 24 24" aria-hidden="true" class="user">"#,
+            r#"<circle cx="12" cy="8" r="3.25"></circle>"#,
+            r#"<path d="M5.2 19.4c1.3-3.3 3.6-4.9 6.8-4.9s5.5 1.6 6.8 4.9"></path></svg>"#,
+            r#"</summary><div class="menu"><span class="me">iv</span>"#,
+            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></div></details>"#,
+        )
     );
     let me = Me {
         name: "logged out".into(),

@@ -182,9 +182,11 @@ impl Component for PipelinePage {
             }) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
             None => html! {},
         };
+        // New Run and the account control share `.actions`, so a narrow row cannot wrap the icon
+        // onto the line under them and park it to the left of the nav.
         html! {
             <>
-                { view::header(html! {}, html! { <>{ start }{ account() }</> }) }
+                { view::header(html! {}, html! { <span class="actions">{ start }{ account() }</span> }) }
                 { view::notice(&self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
                 { tabs }

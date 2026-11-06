@@ -97,10 +97,22 @@ header .home img {
     height: 30px;
 }
 
-header > :not(.home, .spacer, button, .state, .worker, .runtime, .page, .add, .me)::before {
+header > :not(.home, .spacer, button, .state, .worker, .runtime, .page, .add, .me, .actions, .links, .account, .account-desktop)::before {
     content: "/";
     margin-right: 10px;
     color: var(--muted);
+}
+
+/* On a wide screen these are not boxes: their children sit in the header's own row. A narrow
+   screen turns them into a row of their own, below. */
+header .actions,
+header .links,
+header .account-desktop {
+    display: contents;
+}
+
+header details.account {
+    display: none;
 }
 
 header .spacer {
@@ -120,7 +132,7 @@ header a.login {
     white-space: nowrap;
 }
 
-header a.login .user {
+header .user {
     display: none;
 }
 
@@ -371,11 +383,117 @@ button.cancel:focus-visible svg {
    grows into the space beside the run id instead of staying an 18px target in a wider cell.
    Desktop, above, is unchanged. Rows without a cancel button stay the short grid. */
 @media (max-width: 640px) {
-    /* The wordmark and New Run already fill a 320px row. Wrap the rest onto the next line
-       so the login icon stays a 44px target on screen instead of sliding off the right edge. */
+    /* Nav takes the next line. New Run and the account control are one group, so the icon
+       cannot wrap onto the nav's line. From 360px down the wordmark steps down a size: that is
+       what keeps the group on the wordmark's own row at 320px. */
     header {
         flex-wrap: wrap;
         row-gap: 8px;
+    }
+
+    header .home {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    header .home img {
+        flex: none;
+    }
+
+    header .spacer {
+        min-width: 0;
+    }
+
+    header .actions {
+        display: inline-flex;
+        flex: none;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+    }
+
+    header .links {
+        display: flex;
+        flex: 1 0 100%;
+        align-items: center;
+        gap: 10px;
+    }
+
+    header .account-desktop {
+        display: none;
+    }
+
+    header details.account {
+        display: block;
+        position: relative;
+        z-index: 5;
+        flex: none;
+    }
+
+    header details.account summary {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        color: var(--text);
+        list-style: none;
+        cursor: pointer;
+    }
+
+    header details.account summary::-webkit-details-marker {
+        display: none;
+    }
+
+    header details.account summary::marker {
+        content: "";
+    }
+
+    header details.account summary:focus-visible {
+        outline: 2px solid var(--highlight);
+        outline-offset: 3px;
+    }
+
+    header details.account[open] .menu {
+        --cut: 6px;
+        position: absolute;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 5;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        box-sizing: border-box;
+        width: max-content;
+        min-width: 168px;
+        max-width: calc(100vw - 16px);
+        padding: 10px;
+        background: var(--line);
+        isolation: isolate;
+        clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
+                calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+    }
+
+    header details.account[open] .menu::before {
+        --inner: calc(var(--cut) - 0.586px);
+        content: "";
+        position: absolute;
+        inset: 1px;
+        z-index: -1;
+        background: var(--surface);
+        clip-path: polygon(var(--inner) 0, 100% 0, 100% calc(100% - var(--inner)),
+                calc(100% - var(--inner)) 100%, 0 100%, 0 var(--inner));
+    }
+
+    header details.account[open] .menu .me {
+        padding: 0 2px;
+    }
+
+    header details.account[open] .menu button {
+        width: 100%;
+        height: 44px;
     }
 
     header a.login {
@@ -398,7 +516,8 @@ button.cancel:focus-visible svg {
         border: 0;
     }
 
-    header a.login .user {
+    header a.login .user,
+    header details.account .user {
         display: block;
         width: 24px;
         height: 24px;
@@ -443,6 +562,28 @@ button.cancel:focus-visible svg {
         height: auto;
         min-height: 22px;
         align-self: stretch;
+    }
+}
+
+/* A 28px wordmark plus New Run plus a 44px account control does not fit a 320px row. A step
+   smaller wordmark does, and the account control stays at the right end of that row. 375px and
+   up keep the larger wordmark. */
+@media (max-width: 360px) {
+    header {
+        padding-left: 8px;
+        padding-right: 8px;
+        column-gap: 6px;
+    }
+
+    header .home {
+        flex: 1 1 0;
+        margin-right: 0;
+        gap: 6px;
+        font-size: 22px;
+    }
+
+    header .spacer {
+        display: none;
     }
 }
 
