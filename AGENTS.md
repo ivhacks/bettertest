@@ -368,8 +368,8 @@ Worker :7358 (`--worker-port`)
 ### With root: the .deb or .rpm
 
 ```sh
-sudo apt install ./bettertest_0.1.0_amd64.deb      # Debian, Ubuntu
-sudo dnf install ./bettertest-0.1.0-1.x86_64.rpm   # Fedora, RHEL
+sudo apt install ./bettertest_0.2.0_amd64.deb      # Debian, Ubuntu
+sudo dnf install ./bettertest-0.2.0-1.x86_64.rpm   # Fedora, RHEL
 ```
 
 Both packages do the same: each installs `/usr/bin/bettertest`, creates a `bettertest` system user (member of `docker` and `kvm`), and enables and starts `bettertest-boss` (port 7357 unless `--boss-port`, pipelines from `/etc/bettertest/pipedefs`, which ships `helloworld.py`) and `bettertest-worker` (port 7358 unless `--worker-port`). Both restart on failure and start on boot. A worker a pipedef names by url is enrolled when that pipeline is loaded. `helloworld.py` asks for the `x86` label instead, so enroll that worker once, on the workers page or with `POST /api/add-worker` and `{"url":"http://[::1]:7358"}` when it is on the same machine. Add a pipedef to `/etc/bettertest/pipedefs` and `systemctl restart bettertest-boss`. Depends only on `python3`, since the binary is static; recommends docker, qemu and openssh-client for sandboxes. Data stays in `/var/tmp/bettertest`, even on purge. The packages declare the `docker` group themselves (`g docker -` in sysusers.d), so rpm sees it provided and installs without docker present.
@@ -410,7 +410,7 @@ Open `http://boss-host:7357`. History lives in `/var/tmp/bettertest` and survive
 ./build.sh                                   # trunk release build of the frontend, then cargo release
 ./deb.sh                                     # after build.sh: target/debian/bettertest_<version>_<arch>.deb
 ./rpm.sh                                     # after build.sh: target/rpm/bettertest-<version>-1.<arch>.rpm
-./release.sh 0.1.0                           # both archs, every package, into dist/0.1.0/
+./release.sh 0.2.0                           # both archs, every package, into dist/0.2.0/
 target/x86_64-unknown-linux-musl/release/bettertest unified pipedefs   # http://[::1]:7357
 cd frontend && trunk serve                   # :8080, proxies /api/ to :7357, hot reload
 cargo test                                   # core (SSE decoder) + frontend (exact HTML)
@@ -431,9 +431,9 @@ cargo test                                   # core (SSE decoder) + frontend (ex
 Semantic versioning, from `core/Cargo.toml`'s version; a release is the tag `v<version>` on master plus a Forgejo release of that name with `release.sh`'s files attached. `./release.sh <version>` (on x86_64, zig on PATH) refuses a version Cargo.toml does not have, then builds each architecture once and packages it, so all of an architecture's files carry the same binary (rpm's post-install scripts are off so it does not re-strip it):
 
 ```
-dist/0.1.0/  bettertest-0.1.0-x86_64-linux  bettertest-0.1.0-aarch64-linux
-             bettertest_0.1.0_amd64.deb     bettertest_0.1.0_arm64.deb
-             bettertest-0.1.0-1.x86_64.rpm  bettertest-0.1.0-1.aarch64.rpm   SHA256SUMS
+dist/0.2.0/  bettertest-0.2.0-x86_64-linux  bettertest-0.2.0-aarch64-linux
+             bettertest_0.2.0_amd64.deb     bettertest_0.2.0_arm64.deb
+             bettertest-0.2.0-1.x86_64.rpm  bettertest-0.2.0-1.aarch64.rpm   SHA256SUMS
 ```
 
 To release: bump the version in `core/Cargo.toml` in a PR, merge it, tag the merge commit, run `release.sh`, and create the release on Forgejo with the files.
