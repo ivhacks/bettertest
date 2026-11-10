@@ -2,6 +2,7 @@
 // everything here can be tested by comparing exact html.
 
 use bettertest_shared::*;
+use std::collections::HashMap;
 use yew::prelude::*;
 
 pub fn header(crumbs: Html, right: Html) -> Html {
@@ -133,13 +134,20 @@ fn cell_classes(layout: &GridLayout, stage: usize, task: usize) -> Classes {
 }
 
 fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout, cancel: &Callback<String>) -> Html {
-    let cells = pipeline.stages.iter().enumerate().flat_map(|(s, stage)| {
-        stage.tasks.iter().enumerate().map(move |(t, task)| {
-            let task_run = run
-                .stages
+    // By (stage, task): a stage can have thousands of tasks, too many to search for each cell.
+    let task_runs: HashMap<(&str, &str), &TaskRun> = run
+        .stages
+        .iter()
+        .flat_map(|s| {
+            s.tasks
                 .iter()
-                .find(|r| r.name == stage.name)
-                .and_then(|r| r.tasks.iter().find(|r| r.name == task.name));
+                .map(move |t| ((s.name.as_str(), t.name.as_str()), t))
+        })
+        .collect();
+    let cells = pipeline.stages.iter().enumerate().flat_map(|(s, stage)| {
+        let task_runs = &task_runs;
+        stage.tasks.iter().enumerate().map(move |(t, task)| {
+            let task_run = task_runs.get(&(stage.name.as_str(), task.name.as_str()));
             let place = cell_classes(layout, s, t);
             match task_run {
                 Some(t) => {
