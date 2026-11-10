@@ -25,7 +25,7 @@ pub fn open() -> Result<Db, Box<dyn Error>> {
 }
 
 /// Turns on foreign keys, and gives a new db the schema.
-fn prepare(conn: Connection) -> rusqlite::Result<Db> {
+pub(crate) fn prepare(conn: Connection) -> rusqlite::Result<Db> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     let tables: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_schema WHERE type = 'table'",

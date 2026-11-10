@@ -804,20 +804,25 @@ pub(super) async fn run_in_sandbox(
 
 /// The tasks share one sandbox. They run one at a time, in order, each building on the one before,
 /// and once one fails the rest are skipped; or, in a `parallel` stage, all at once. Starting the
-/// sandbox shows in the first task's log, stopping it in the log of the last task to end.
+/// sandbox shows in the first task's log, stopping it in the log of the last task to end. Tasks a
+/// rerun carried over (only a `parallel` stage has them) do not run again, but count.
 pub(super) async fn run_shared_stage(
     r: &Running,
     stage: &Stage,
     sandbox: &Sandbox,
     stage_run: &StageRun,
 ) -> bool {
-    let Some(first) = stage_run.tasks.first() else {
-        return true;
+    let (carried, fresh): (Vec<_>, Vec<_>) = (stage.tasks.iter())
+        .zip(&stage_run.tasks)
+        .partition(|(_, task_run)| task_run.carried_from.is_some());
+    let carried_passed = carried.iter().all(|(_, t)| t.state == TaskState::Pass);
+    let Some((_, first)) = fresh.first() else {
+        return carried_passed;
     };
     // Nothing can run when the sandbox cannot: the first task says why, and the rest are skipped.
     let none_ran = |why: String| {
         r.refuse(first.id, why);
-        for task_run in stage_run.tasks.iter().skip(1) {
+        for (_, task_run) in fresh.iter().skip(1) {
             r.skip(task_run.id);
         }
         false
@@ -832,7 +837,7 @@ pub(super) async fn run_shared_stage(
         Err(e) => return none_ran(e),
     };
     if sandbox.parallel {
-        return run_together(r, stage, stage_run, &worker, &target).await;
+        return run_together(r, &stage.name, &fresh, &worker, &target).await && carried_passed;
     }
 
     // The stage holds one slot of its worker from its first task to its sandbox stopping: each task
@@ -841,7 +846,7 @@ pub(super) async fn run_shared_stage(
     let mut passed = true;
     let mut ended: Option<(Uuid, bool)> = None;
     let mut last = first.id;
-    for (task, task_run) in stage.tasks.iter().zip(&stage_run.tasks) {
+    for &(task, task_run) in &fresh {
         if !passed || r.is_cancelled() {
             r.skip(task_run.id);
             continue;
@@ -874,32 +879,36 @@ pub(super) async fn run_shared_stage(
 
 /// The tasks of a `parallel` stage, all at once in its sandbox, which is up on `worker` already.
 /// Each holds a slot of that worker while it runs (the first has one: it started the sandbox), so a
-/// worker that takes fewer tasks at once runs them a few at a time. A failed task fails the stage
-/// but stops none of the others.
+/// worker that takes fewer tasks at once runs them a few at a time, in the order the pipedef
+/// defines them. A failed task fails the stage but stops none of the others.
 pub(super) async fn run_together(
     r: &Running,
-    stage: &Stage,
-    stage_run: &StageRun,
+    stage: &str,
+    tasks_here: &[(&Task, &TaskRun)],
     worker: &str,
     target: &client::Target,
 ) -> bool {
-    let first = stage_run.tasks.first().map(|t| t.id);
+    let first = tasks_here.first().map(|(_, t)| t.id);
     let mut tasks = JoinSet::new();
-    for (task, task_run) in stage.tasks.iter().zip(&stage_run.tasks) {
-        let (r, stage, task, id) = (r.clone(), stage.name.clone(), task.clone(), task_run.id);
+    let mut passed = true;
+    for (task, task_run) in tasks_here {
+        let id = task_run.id;
+        // One claim at a time, so slots go to the tasks in order, and a freed slot wakes one
+        // waiting task rather than all of them.
+        if Some(id) != first
+            && let Err(e) = r.claim(id, Some(worker), &[]).await
+        {
+            passed &= r.refuse(id, e);
+            continue;
+        }
+        let (r, stage, task) = (r.clone(), stage.to_string(), (*task).clone());
         let (worker, target) = (worker.to_string(), target.clone());
         tasks.spawn(async move {
-            if Some(id) != first
-                && let Err(e) = r.claim(id, Some(&worker), &[]).await
-            {
-                return (id, r.refuse(id, e));
-            }
             let passed = r.run_task(id, &worker, &stage, &task, &target).await;
             r.end(id, passed);
             (id, passed)
         });
     }
-    let mut passed = true;
     let mut last = first;
     while let Some(joined) = tasks.join_next().await {
         match joined {

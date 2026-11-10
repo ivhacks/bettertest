@@ -456,3 +456,117 @@ fn unknown_stages_and_tasks() {
     let missing = carry_over(&earlier, &pipeline(), Some("Build"), Some("unit"));
     assert_eq!(missing.unwrap_err().1, "no task Build.unit in app");
 }
+
+/// A boss with an empty db in memory, which knows the workers `up`.
+fn boss(up: BTreeMap<String, Watched>) -> Shared {
+    let db = db::prepare(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+    Arc::new(Boss {
+        pipedefs: Mutex::new(BTreeMap::new()),
+        repos: vec![],
+        going: Mutex::new(HashMap::new()),
+        db: Mutex::new(db),
+        workers: Mutex::new(up),
+        task_tokens: Mutex::new(HashMap::new()),
+        ceremonies: Mutex::new(HashMap::new()),
+        events: broadcast::channel(4096).0,
+        freed: Notify::new(),
+        http: client::http().unwrap(),
+        tls: None,
+        port: LISTEN_PORT,
+    })
+}
+
+/// A worker that runs every task it is sent in a moment.
+async fn quick_worker() -> String {
+    let start_task = || async {
+        sleep(Duration::from_millis(5)).await;
+        (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            "event: exit\ndata: 0\n\n",
+        )
+    };
+    let app = Router::new().route("/start-task", post(start_task));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// Runs a `parallel` stage of tasks t0 to t39 on a worker that takes two at once, rerunning task
+/// `rerun` of `earlier` if given: whether it passed, and the tasks it started, in order.
+async fn parallel_stage(rerun: Option<(&Run, &str)>) -> (bool, Vec<String>) {
+    let url = quick_worker().await;
+    let boss = boss(workers(&[(&url, &["x86"], 0, 2)]));
+    let mut events = boss.events.subscribe();
+    let sandbox = Sandbox {
+        worker: Some(url),
+        labels: vec![],
+        image: None,
+        vm: None,
+        arch: None,
+        parallel: true,
+    };
+    let stage = Stage {
+        name: "Test".into(),
+        sandbox: Some(sandbox.clone()),
+        tasks: (0..40).map(|i| task(&format!("t{i}"))).collect(),
+    };
+    let pipeline = Pipeline {
+        stages: vec![stage.clone()],
+        sandboxes: Default::default(),
+    };
+    let carried = match rerun {
+        Some((earlier, name)) => carry_over(earlier, &pipeline, Some("Test"), Some(name)).unwrap(),
+        None => BTreeMap::new(),
+    };
+    let run = boss
+        .db()
+        .insert_run("app", &pipeline, None, &carried)
+        .unwrap();
+    let r = Running {
+        boss: boss.clone(),
+        run: Arc::new(run.clone()),
+        source: "".into(),
+        cancelled: watch::channel(None).1,
+        spanning: Spanning::default(),
+    };
+    let passed = run_shared_stage(&r, &stage, &sandbox, &run.stages[0]).await;
+    let mut started = vec![];
+    while let Ok(event) = events.try_recv() {
+        if let Event::TaskStarted { task, .. } = event
+            && let Some((_, name)) = run.locate(task)
+        {
+            started.push(name.to_string());
+        }
+    }
+    (passed, started)
+}
+
+/// An earlier run of `parallel_stage` in which t7 failed.
+fn t7_failed() -> Run {
+    let names: Vec<String> = (0..40).map(|i| format!("t{i}")).collect();
+    let tasks: Vec<(&str, TaskState)> = (names.iter())
+        .map(|n| (n.as_str(), if n == "t7" { Fail } else { Pass }))
+        .collect();
+    run(&[("Test", &tasks)])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parallel_stage_starts_its_tasks_in_the_order_the_pipedef_defines_them() {
+    let names: Vec<String> = (0..40).map(|i| format!("t{i}")).collect();
+    assert_eq!(parallel_stage(None).await, (true, names));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rerunning_a_task_of_a_parallel_stage_runs_only_that_task() {
+    let earlier = t7_failed();
+    assert_eq!(
+        parallel_stage(Some((&earlier, "t7"))).await,
+        (true, vec!["t7".to_string()])
+    );
+    // A sibling that failed before still fails the stage.
+    assert_eq!(
+        parallel_stage(Some((&earlier, "t8"))).await,
+        (false, vec!["t8".to_string()])
+    );
+}
