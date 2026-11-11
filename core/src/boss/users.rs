@@ -269,15 +269,7 @@ pub(super) async fn add_user(
             format!("{name:?} cannot be a user's name"),
         ));
     }
-    if new.password.chars().count() < 8 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "a password has at least 8 characters".into(),
-        ));
-    }
-    let password = new.password;
-    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
-    let hash = hash.await.map_err(internal)?.map_err(internal)?;
+    let hash = hash_password(new.password).await?;
     let mut db = boss.db();
     let id = db.add_user(name, new.role).map_err(|e| match e {
         rusqlite::Error::SqliteFailure(f, _)
@@ -292,6 +284,24 @@ pub(super) async fn add_user(
     })?;
     db.set_password(id, &hash).map_err(internal)?;
     Ok(StatusCode::CREATED)
+}
+
+/// A new password's hash, once it is long enough. Argon2 takes a moment of CPU and memory on
+/// purpose: off the async threads.
+async fn hash_password(password: String) -> Result<String, Failure> {
+    if password.chars().count() < 8 {
+        let short = "a password has at least 8 characters";
+        return Err((StatusCode::BAD_REQUEST, short.into()));
+    }
+    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
+    hash.await.map_err(internal)?.map_err(internal)
+}
+
+/// `name` and a number past every one in `labels`, so no two of a user's certificates or
+/// passkeys share a name, revoked or not.
+fn next_label<'a>(name: &str, labels: impl Iterator<Item = &'a String>) -> String {
+    let numbers = labels.filter_map(|label| label.rsplit(' ').next()?.parse::<u32>().ok());
+    format!("{name} {}", numbers.max().unwrap_or(0) + 1)
 }
 
 /// Refuses a change to users that would leave nobody able to administer the boss.
@@ -344,15 +354,7 @@ pub(super) async fn set_password(
     if set.id == 0 {
         return Err((StatusCode::BAD_REQUEST, "logged out has no password".into()));
     }
-    if set.password.chars().count() < 8 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "a password has at least 8 characters".into(),
-        ));
-    }
-    let password = set.password;
-    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
-    let hash = hash.await.map_err(internal)?.map_err(internal)?;
+    let hash = hash_password(set.password).await?;
     boss.db().set_password(set.id, &hash).map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -437,14 +439,7 @@ pub(super) async fn new_certificate(
             ),
         ));
     }
-    // Numbered on from the newest, so no two of a user's certificates share a name, revoked or not.
-    let newest = owner
-        .certs
-        .iter()
-        .filter_map(|c| c.label.rsplit(' ').next()?.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    let label = format!("{} {}", owner.name, newest + 1);
+    let label = next_label(&owner.name, owner.certs.iter().map(|c| &c.label));
     let name = owner.name.clone();
     let made = tokio::task::spawn_blocking({
         let label = label.clone();
@@ -604,13 +599,7 @@ pub(super) async fn new_passkey(
     if db.passkey(&credential).map_err(internal)?.is_some() {
         return Err((StatusCode::CONFLICT, "that passkey is added already".into()));
     }
-    // Numbered on from the newest, so no two of a user's passkeys share a name.
-    let newest = keys
-        .iter()
-        .filter_map(|k| k.label.rsplit(' ').next()?.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    let label = format!("{name} {}", newest + 1);
+    let label = next_label(&name, keys.iter().map(|k| &k.label));
     db.add_passkey(user, &label, &credential, &record)
         .map_err(internal)?;
     Ok(Json(PasskeyAdded { label }))
@@ -650,16 +639,12 @@ pub(super) async fn passkey_login(
         .map_err(|e| refused(format!("the passkey says nothing of whose it is: {e}")))?;
     let credential = passkey::credential_key(id);
     let found = boss.db().passkey(&credential).map_err(internal)?;
+    let found = found.filter(|(_, user, _)| passkey::user(handle) == *user);
     let Some((row, user, record)) = found else {
         return Err(refused(
             "that passkey is not, or no longer, anyone's".into(),
         ));
     };
-    if passkey::user(handle) != user {
-        return Err(refused(
-            "that passkey is not, or no longer, anyone's".into(),
-        ));
-    }
     let mut key: webauthn_rs::prelude::Passkey = serde_json::from_str(&record).map_err(internal)?;
     let result = webauthn
         .finish_discoverable_authentication_v2(&finish.credential, state, &key)
