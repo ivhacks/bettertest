@@ -81,7 +81,7 @@ fn two_tasks(db: &mut Db) -> (Uuid, Uuid) {
             stream: LogStream::Stdout,
             line: "hello".into(),
         };
-        db.append_log(id, &line).unwrap();
+        db.append_log(id, std::slice::from_ref(&line)).unwrap();
         let artifact = Artifact {
             name: "app.deb".into(),
             size: 3,
@@ -162,7 +162,7 @@ fn running_tasks_are_never_expired() {
         stream: LogStream::Stdout,
         line: "still going".into(),
     };
-    db.append_log(id, &line).unwrap();
+    db.append_log(id, std::slice::from_ref(&line)).unwrap();
     let now = START + 1000 * DAY;
     assert_eq!(db.expire_logs(now - DAY, now, 100).unwrap(), 0);
     assert_eq!(db.log(id).unwrap().len(), 1);

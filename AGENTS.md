@@ -260,7 +260,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 
 - sqlite at `/var/tmp/bettertest/bettertest.db`, rusqlite bundled, WAL, `synchronous=NORMAL`, foreign keys on.
 - **No migrations, until release.** `schema.sql` is the schema, as if the db had never been any other way. A new db gets it; a db with any tables is used as it is. Every change to it is a breaking one: change `schema.sql` in place, and delete the old db. No version tracking, no upgrade code, no compatibility with older dbs or older workers: none of that until Iv says bettertest is released and backward compatibility starts to matter.
-- Tables: `pl_runs`, `stage_runs`, `task_runs`, `log_lines` (one row per line, written as it arrives). Order is insertion order (`rowid`).
+- Tables: `pl_runs`, `stage_runs`, `task_runs`, `log_lines` (one row per line; the lines a task prints within 20 ms of each other are written in one transaction). Order is insertion order (`rowid`).
 - **Heartbeats.** The boss writes its own heartbeat to the `heartbeats` table every 15 s, and a worker's whenever its `/events` stream says anything (a keep-alive every 15 s). Once one is gone, the db says when it went.
 - Runs a dead boss left `running` are failed on the next start. Their running tasks end at the boss's last heartbeat, not at the restart, with a log line giving that time.
 - A worker that goes quiet is down since its last heartbeat, not since the boss gave up on it 45 s later. A running task's stream from its worker carries keep-alives too: a task whose worker says nothing for 45 s fails ("lost http://…: it has said nothing for 45s"), so a frozen or unplugged worker cannot hang a run.
