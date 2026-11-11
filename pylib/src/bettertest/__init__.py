@@ -450,7 +450,8 @@ def reboot() -> None:
     if sandbox["kind"] != "vm":
         raise RuntimeError("reboot() needs the task to run in a vm")
     print("$ reboot", flush=True)
-    import urllib.request  # see _get
+    import urllib.error  # see _get
+    import urllib.request
 
     request = urllib.request.Request(sandbox["reboot"], method="POST")
     try:
