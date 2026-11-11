@@ -402,8 +402,13 @@ def _in_container(commands: str, command: str) -> int:
         for fifo in ("out", "err", "exit"):
             os.mkfifo(os.path.join(here, fifo))
             os.chmod(os.path.join(here, fifo), 0o666)
-        with open(commands, "w") as f:
-            f.write(f"{name}\n")
+        try:
+            # Without O_NONBLOCK, opening it waits forever for a container that is gone.
+            fifo = os.open(commands, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as e:
+            raise RuntimeError(f"the container is not running: {e}") from e
+        os.write(fifo, f"{name}\n".encode())
+        os.close(fifo)
         # In the order the shell opens them, or both sides wait forever.
         out = os.open(os.path.join(here, "out"), os.O_RDONLY)
         err = os.open(os.path.join(here, "err"), os.O_RDONLY)

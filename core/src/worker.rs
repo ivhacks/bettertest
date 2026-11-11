@@ -259,12 +259,12 @@ async fn start_container(Json(req): Json<StartContainer>) -> Result<Json<Started
 /// The container's main process, from start to delete: it runs each command run() names in
 /// `commands`, in the background, so tasks of a parallel stage run at the same time, without a
 /// docker exec each (60 ms). The outer subshell exits at once, so tini reaps the command.
-const SERVE_COMMANDS: &str = r#"while :; do
-    while read -r name; do
-        d=/.bettertest/$name
-        ( { sh "$d/command" < /dev/null > "$d/out" 2> "$d/err"; echo $? > "$d/exit"; } & )
-    done < /.bettertest/commands
-done"#;
+/// Opened for writing too, the FIFO never reads as ended: closing it to reopen would throw away a
+/// name written in between.
+const SERVE_COMMANDS: &str = r#"while read -r name; do
+    d=/.bettertest/$name
+    ( { sh "$d/command" < /dev/null > "$d/out" 2> "$d/err"; echo $? > "$d/exit"; } & )
+done 0<> /.bettertest/commands"#;
 
 /// The directory on the worker a container shares with the tasks that run commands in it.
 fn channel(id: &str) -> Result<PathBuf, String> {

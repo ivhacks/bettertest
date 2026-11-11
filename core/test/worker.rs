@@ -4,6 +4,7 @@
 use super::*;
 use std::{
     io::{Read, Write},
+    os::unix::fs::OpenOptionsExt,
     net::{IpAddr, Ipv4Addr},
     time::Duration,
 };
@@ -208,35 +209,26 @@ else:
     );
 }
 
-#[tokio::test]
-async fn run_sends_commands_into_the_container_and_back() {
-    let url = worker(1).await;
-    let client = reqwest::Client::new();
+async fn start_container(client: &reqwest::Client, url: &str, image: &str) -> String {
     let started: Started = client
         .post(format!("{url}/start-container"))
-        .json(&serde_json::json!({"image": "debian:trixie"}))
+        .json(&serde_json::json!({"image": image}))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let pipedef = "\
-from bettertest import Stage, run, task
+    started.id
+}
 
-
-class C(Stage):
-    @task()
-    def commands():
-        run('echo out; echo err >&2; cd /tmp && touch here')
-        run('ls /tmp/here && false')
-        run('echo never')
-";
+/// The SSE stream of task C.commands of `pipedef`, run in container `id`, up to its exit.
+async fn run_in_container(client: &reqwest::Client, url: &str, id: &str, pipedef: &str) -> String {
     let form = reqwest::multipart::Form::new()
-        .text("pipedef", pipedef)
+        .text("pipedef", pipedef.to_string())
         .text("stage", "C")
         .text("task", "commands")
-        .text("target", format!("container:{}", started.id));
+        .text("target", format!("container:{id}"));
     let mut response = client
         .post(format!("{url}/start-task"))
         .multipart(form)
@@ -249,15 +241,36 @@ class C(Stage):
         let chunk = chunk.await.unwrap().unwrap().unwrap();
         log.push_str(&String::from_utf8_lossy(&chunk));
     }
+    log
+}
+
+fn events(log: &str, event: &str) -> Vec<String> {
+    let prefix = format!("event: {event}\ndata: ");
+    (log.split("\n\n"))
+        .filter_map(|e| e.strip_prefix(&prefix).map(str::to_string))
+        .collect()
+}
+
+#[tokio::test]
+async fn run_sends_commands_into_the_container_and_back() {
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let id = start_container(&client, &url, "debian:trixie").await;
+    let pipedef = "\
+from bettertest import Stage, run, task
+
+
+class C(Stage):
+    @task()
+    def commands():
+        run('echo out; echo err >&2; cd /tmp && touch here')
+        run('ls /tmp/here && false')
+        run('echo never')
+";
+    let log = run_in_container(&client, &url, &id, pipedef).await;
     // Stdout and stderr come through pipes of their own, so only each one's order is certain.
-    let lines = |event: &str| -> Vec<String> {
-        let prefix = format!("event: {event}\ndata: ");
-        (log.split("\n\n"))
-            .filter_map(|e| e.strip_prefix(&prefix).map(str::to_string))
-            .collect()
-    };
     assert_eq!(
-        lines("stdout"),
+        events(&log, "stdout"),
         [
             "$ echo out; echo err >&2; cd /tmp && touch here",
             "out",
@@ -265,18 +278,74 @@ class C(Stage):
             "/tmp/here",
         ]
     );
-    assert_eq!(lines("stderr"), ["err"]);
-    assert_eq!(lines("exit"), ["1"]);
-    drop(response);
-    let channel = channel(&started.id).unwrap();
+    assert_eq!(events(&log, "stderr"), ["err"]);
+    assert_eq!(events(&log, "exit"), ["1"]);
+    let channel = channel(&id).unwrap();
     assert!(channel.join("commands").exists());
     let deleted = client
-        .delete(format!("{url}/container/{}", started.id))
+        .delete(format!("{url}/container/{id}"))
         .send()
         .await
         .unwrap();
     assert!(deleted.status().is_success(), "{}", deleted.status());
     assert!(!channel.exists());
+}
+
+#[tokio::test]
+async fn the_container_never_reads_its_commands_as_ended() {
+    // Its loop would close and reopen the FIFO at the end, throwing away a name written between.
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let id = start_container(&client, &url, "debian:trixie").await;
+    let commands = channel(&id).unwrap().join("commands");
+    let mut fifo = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(0o4000) // O_NONBLOCK
+        .open(&commands)
+        .unwrap();
+    // With no writer left a read gives 0 bytes: the end. A writer that is there gives WouldBlock.
+    let read = fifo.read(&mut [0; 1]);
+    assert_eq!(
+        read.map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::WouldBlock)
+    );
+    client
+        .delete(format!("{url}/container/{id}"))
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_command_for_a_stopped_container_fails_instead_of_waiting() {
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let id = start_container(&client, &url, "debian:trixie").await;
+    let stop = std::process::Command::new("docker")
+        .args(["kill", &id])
+        .output()
+        .unwrap();
+    assert!(stop.status.success());
+    let pipedef = "\
+from bettertest import Stage, run, task
+
+
+class C(Stage):
+    @task()
+    def commands():
+        run('true')
+";
+    let log = run_in_container(&client, &url, &id, pipedef);
+    let log = tokio::time::timeout(Duration::from_secs(30), log).await;
+    let log = log.expect("run() waited for a container that is gone");
+    assert_eq!(events(&log, "exit"), ["1"]);
+    let stderr = events(&log, "stderr").join("\n");
+    assert!(stderr.contains("RuntimeError: the container is not running"), "{stderr}");
+    client
+        .delete(format!("{url}/container/{id}"))
+        .send()
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -293,18 +362,10 @@ async fn deleting_a_container_deletes_the_volumes_its_image_declares() {
     assert!(build.wait().unwrap().success());
     let url = worker(1).await;
     let client = reqwest::Client::new();
-    let started: Started = client
-        .post(format!("{url}/start-container"))
-        .json(&serde_json::json!({"image": image}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let id = start_container(&client, &url, image).await;
     let format = "{{range .Mounts}}{{.Name}}{{end}}";
     let inspect = std::process::Command::new("docker")
-        .args(["inspect", "--format", format, &started.id])
+        .args(["inspect", "--format", format, &id])
         .output()
         .unwrap();
     let volume = String::from_utf8(inspect.stdout).unwrap();
@@ -318,7 +379,7 @@ async fn deleting_a_container_deletes_the_volumes_its_image_declares() {
     };
     assert!(exists(), "no volume {volume:?}");
     let deleted = client
-        .delete(format!("{url}/container/{}", started.id))
+        .delete(format!("{url}/container/{id}"))
         .send()
         .await
         .unwrap();
