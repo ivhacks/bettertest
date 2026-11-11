@@ -85,15 +85,9 @@ pub(super) fn who(
         .iter()
         .find(|u| u.builtin)
         .map_or(Role::None, |u| u.role);
-    let cookies = headers
-        .get(header::COOKIE)
-        .and_then(|c| c.to_str().ok())
-        .unwrap_or_default();
+    let cookies = text_header(headers, header::COOKIE);
     let now = now();
-    let authorization = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|a| a.to_str().ok())
-        .unwrap_or_default();
+    let authorization = text_header(headers, header::AUTHORIZATION);
     // Logging in never takes away what logged out may do.
     let me = |name, role: Role| Me {
         name,
@@ -137,6 +131,14 @@ pub(super) fn who(
         logged_in: false,
     };
     Ok((logged_out, None))
+}
+
+/// Header `name` as text, or "" without one.
+fn text_header(headers: &HeaderMap, name: header::HeaderName) -> &str {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
 }
 
 /// Lets a request through if who sent it may do what it asks (see auth::needed). Otherwise 401 or
@@ -231,11 +233,7 @@ pub(super) async fn logout(
     State(boss): State<Shared>,
     headers: HeaderMap,
 ) -> Result<Response, Failure> {
-    let cookies = headers
-        .get(header::COOKIE)
-        .and_then(|c| c.to_str().ok())
-        .unwrap_or_default();
-    if let Some(token) = auth::session_token(cookies) {
+    if let Some(token) = auth::session_token(text_header(&headers, header::COOKIE)) {
         boss.db()
             .end_session(&auth::token_hash(token), now())
             .map_err(internal)?;
