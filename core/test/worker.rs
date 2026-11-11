@@ -4,8 +4,8 @@
 use super::*;
 use std::{
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
     net::{IpAddr, Ipv4Addr},
+    os::unix::fs::OpenOptionsExt,
     time::Duration,
 };
 
@@ -229,7 +229,12 @@ async fn run_in_container(client: &reqwest::Client, url: &str, id: &str, pipedef
     run_task(client, url, Some(&format!("container:{id}")), pipedef).await
 }
 
-async fn run_task(client: &reqwest::Client, url: &str, target: Option<&str>, pipedef: &str) -> String {
+async fn run_task(
+    client: &reqwest::Client,
+    url: &str,
+    target: Option<&str>,
+    pipedef: &str,
+) -> String {
     let mut form = reqwest::multipart::Form::new()
         .text("pipedef", pipedef.to_string())
         .text("stage", "C")
@@ -348,7 +353,10 @@ class C(Stage):
     let log = log.expect("run() waited for a container that is gone");
     assert_eq!(events(&log, "exit"), ["1"]);
     let stderr = events(&log, "stderr").join("\n");
-    assert!(stderr.contains("RuntimeError: the container is not running"), "{stderr}");
+    assert!(
+        stderr.contains("RuntimeError: the container is not running"),
+        "{stderr}"
+    );
     client
         .delete(format!("{url}/container/{id}"))
         .send()

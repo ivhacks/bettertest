@@ -17,7 +17,12 @@ use axum::{
 use bettertest_shared::{Arch, WorkerInfo, valid_artifact_name};
 use serde::{Deserialize, Serialize};
 use std::{
-    convert::Infallible, error::Error, fs, io, net::SocketAddr, path::PathBuf, process::Stdio,
+    convert::Infallible,
+    error::Error,
+    fs, io,
+    net::SocketAddr,
+    path::PathBuf,
+    process::Stdio,
     sync::{Arc, Mutex},
 };
 use tokio::{
@@ -293,7 +298,12 @@ async fn remove_leftover_containers() -> Result<(), String> {
     let ids: Vec<&str> = ids.split_whitespace().collect();
     if !ids.is_empty() {
         println!("removing {} leftover containers", ids.len());
-        output(Command::new("docker").args(["rm", "--force", "--volumes"]).args(&ids)).await?;
+        output(
+            Command::new("docker")
+                .args(["rm", "--force", "--volumes"])
+                .args(&ids),
+        )
+        .await?;
     }
     Ok(())
 }
