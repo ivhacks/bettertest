@@ -209,6 +209,77 @@ else:
 }
 
 #[tokio::test]
+async fn run_sends_commands_into_the_container_and_back() {
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let started: Started = client
+        .post(format!("{url}/start-container"))
+        .json(&serde_json::json!({"image": "debian:trixie"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pipedef = "\
+from bettertest import Stage, run, task
+
+
+class C(Stage):
+    @task()
+    def commands():
+        run('echo out; echo err >&2; cd /tmp && touch here')
+        run('ls /tmp/here && false')
+        run('echo never')
+";
+    let form = reqwest::multipart::Form::new()
+        .text("pipedef", pipedef)
+        .text("stage", "C")
+        .text("task", "commands")
+        .text("target", format!("container:{}", started.id));
+    let mut response = client
+        .post(format!("{url}/start-task"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    let mut log = String::new();
+    while !log.contains("event: exit\ndata: ") || !log.ends_with("\n\n") {
+        let chunk = tokio::time::timeout(Duration::from_secs(20), response.chunk());
+        let chunk = chunk.await.unwrap().unwrap().unwrap();
+        log.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    // Stdout and stderr come through pipes of their own, so only each one's order is certain.
+    let lines = |event: &str| -> Vec<String> {
+        let prefix = format!("event: {event}\ndata: ");
+        (log.split("\n\n"))
+            .filter_map(|e| e.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    };
+    assert_eq!(
+        lines("stdout"),
+        [
+            "$ echo out; echo err >&2; cd /tmp && touch here",
+            "out",
+            "$ ls /tmp/here && false",
+            "/tmp/here",
+        ]
+    );
+    assert_eq!(lines("stderr"), ["err"]);
+    assert_eq!(lines("exit"), ["1"]);
+    drop(response);
+    let channel = channel(&started.id).unwrap();
+    assert!(channel.join("commands").exists());
+    let deleted = client
+        .delete(format!("{url}/container/{}", started.id))
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+    assert!(!channel.exists());
+}
+
+#[tokio::test]
 async fn deleting_a_container_deletes_the_volumes_its_image_declares() {
     let image = "bettertest-test-volume";
     let mut build = std::process::Command::new("docker")

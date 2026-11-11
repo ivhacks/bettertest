@@ -171,8 +171,10 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
     if let Err(e) = vm::remove_leftovers() {
         eprintln!("could not remove leftover vms: {e}");
     }
-    if let Err(e) = remove_leftover_task_files() {
-        eprintln!("could not remove leftover task files: {e}");
+    for name in ["tasks", "containers"] {
+        if let Err(e) = remove_leftovers(name) {
+            eprintln!("could not remove leftover {name}: {e}");
+        }
     }
 
     let shared = Shared {
@@ -235,29 +237,47 @@ async fn start_container(Json(req): Json<StartContainer>) -> Result<Json<Started
     } else {
         req.image
     };
-    // The container idles until it is deleted. run() docker-execs commands into it.
-    let id = output(
-        Command::new("docker")
-            .args(["run", "--detach", "--init", "--label", CONTAINER_LABEL])
-            .args([
-                "--entrypoint",
-                "/bin/sh",
-                &image,
-                "-c",
-                "while :; do sleep 3600; done",
-            ]),
-    )
-    .await
-    .map_err(internal)?;
-    Ok(Json(Started {
-        id: id.trim().to_string(),
-    }))
+    let id = Uuid::new_v4().to_string();
+    let channel = channel(&id).map_err(internal)?;
+    workdir::shared_dir(&channel).map_err(internal)?;
+    let commands = channel.join("commands");
+    output(Command::new("mkfifo").args(["-m", "666"]).arg(&commands))
+        .await
+        .map_err(internal)?;
+    let mount = format!("{}:/.bettertest:z", channel.display());
+    let mut run = Command::new("docker");
+    run.args(["run", "--detach", "--init", "--label", CONTAINER_LABEL])
+        .args(["--name", &id, "--volume", &mount])
+        .args(["--entrypoint", "/bin/sh", &image, "-c", SERVE_COMMANDS]);
+    if let Err(e) = output(&mut run).await {
+        let _ = fs::remove_dir_all(&channel);
+        return Err(internal(e));
+    }
+    Ok(Json(Started { id }))
 }
 
-async fn delete_container(Path(id): Path<String>) -> Result<(), Failure> {
+/// The container's main process, from start to delete: it runs each command run() names in
+/// `commands`, in the background, so tasks of a parallel stage run at the same time, without a
+/// docker exec each (60 ms). The outer subshell exits at once, so tini reaps the command.
+const SERVE_COMMANDS: &str = r#"while :; do
+    while read -r name; do
+        d=/.bettertest/$name
+        ( { sh "$d/command" < /dev/null > "$d/out" 2> "$d/err"; echo $? > "$d/exit"; } & )
+    done < /.bettertest/commands
+done"#;
+
+/// The directory on the worker a container shares with the tasks that run commands in it.
+fn channel(id: &str) -> Result<PathBuf, String> {
+    let containers = workdir::dir("containers").map_err(|e| e.to_string())?;
+    Ok(containers.join(id))
+}
+
+async fn delete_container(Path(id): Path<Uuid>) -> Result<(), Failure> {
+    let id = id.to_string();
     output(Command::new("docker").args(["rm", "--force", "--volumes", &id]))
         .await
         .map_err(internal)?;
+    fs::remove_dir_all(channel(&id).map_err(internal)?).map_err(internal)?;
     Ok(())
 }
 
@@ -469,8 +489,9 @@ async fn vm_ready(State(vms): State<Arc<vm::Vms>>, Path(id): Path<String>) -> St
     }
 }
 
-fn remove_leftover_task_files() -> io::Result<()> {
-    for entry in fs::read_dir(workdir::dir("tasks")?)? {
+/// Empties `/var/tmp/bettertest/<name>`.
+fn remove_leftovers(name: &str) -> io::Result<()> {
+    for entry in fs::read_dir(workdir::dir(name)?)? {
         fs::remove_dir_all(entry?.path())?;
     }
     Ok(())
@@ -657,7 +678,10 @@ async fn start_task(
 fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Value, Failure> {
     Ok(match target.map(|t| t.split_once(':')) {
         None => serde_json::Value::Null,
-        Some(Some(("container", id))) => serde_json::json!({"kind": "container", "id": id}),
+        Some(Some(("container", id))) => {
+            let commands = channel(id).map_err(internal)?.join("commands");
+            serde_json::json!({"kind": "container", "id": id, "commands": commands})
+        }
         Some(Some(("vm", id))) => {
             let (port, key) = vms
                 .ssh(id)

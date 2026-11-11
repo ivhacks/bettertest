@@ -1,14 +1,11 @@
 import enum
-import http.client
 import json
 import os
 import re
 import shutil
-import socket
-import ssl
 import subprocess
+import threading
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -75,7 +72,7 @@ class Sandbox:
 
 
 # Where run() and copy() send things. The glue script sets this before calling a task:
-#   {"kind": "container", "id": "<docker container id>"}
+#   {"kind": "container", "id": "<docker container name>", "commands": "<its commands fifo>"}
 #   {"kind": "vm", "port": <ssh port on 127.0.0.1>, "key": "<private key path>", "reboot": "<url>"}
 #   None when the task has no sandbox
 _target: dict | None = None
@@ -371,7 +368,9 @@ def run(command: str) -> None:
     sandbox = _sandbox()
     print(f"$ {command}", flush=True)
     if sandbox["kind"] == "container":
-        _call(["docker", "exec", sandbox["id"], "/bin/sh", "-c", command])
+        code = _in_container(sandbox["commands"], command)
+        if code != 0:
+            raise SystemExit(code)
     else:
         port = str(sandbox["port"])
         _call(
@@ -386,6 +385,43 @@ def run(command: str) -> None:
                 command,
             ]
         )
+
+
+def _in_container(commands: str, command: str) -> int:
+    """Runs `command` in the container with the shell it idles in (see worker.rs), which is much
+    quicker than a docker exec: names a directory beside `commands` holding the command and fifos
+    for its stdout, stderr and exit code. Returns the exit code."""
+    name = os.urandom(8).hex()
+    here = os.path.join(os.path.dirname(commands), name)
+    os.mkdir(here)
+    try:
+        # Whoever runs the next worker clears out what a killed task left here.
+        os.chmod(here, 0o777)
+        Path(here, "command").write_text(command)
+        # The container's user is likely another one, and umask would lock it out.
+        for fifo in ("out", "err", "exit"):
+            os.mkfifo(os.path.join(here, fifo))
+            os.chmod(os.path.join(here, fifo), 0o666)
+        with open(commands, "w") as f:
+            f.write(f"{name}\n")
+        # In the order the shell opens them, or both sides wait forever.
+        out = os.open(os.path.join(here, "out"), os.O_RDONLY)
+        err = os.open(os.path.join(here, "err"), os.O_RDONLY)
+        errors = threading.Thread(target=_pump, args=(err, 2))
+        errors.start()
+        _pump(out, 1)
+        errors.join()
+        return int(Path(here, "exit").read_text())
+    finally:
+        shutil.rmtree(here)
+
+
+def _pump(source: int, sink: int) -> None:
+    while chunk := os.read(source, 65536):
+        view = memoryview(chunk)
+        while view:
+            view = view[os.write(sink, view) :]
+    os.close(source)
 
 
 def copy(local: str | Path, remote: str) -> None:
@@ -409,6 +445,8 @@ def reboot() -> None:
     if sandbox["kind"] != "vm":
         raise RuntimeError("reboot() needs the task to run in a vm")
     print("$ reboot", flush=True)
+    import urllib.request  # see _get
+
     request = urllib.request.Request(sandbox["reboot"], method="POST")
     try:
         with urllib.request.urlopen(request) as response:
@@ -493,17 +531,28 @@ def _task_files(cant: str) -> dict:
     return _files
 
 
-def _get(url: str) -> http.client.HTTPResponse:
+def _get(url: str):
     """GETs `url` from the boss. Over HTTPS its certificate is for a name DNS may not know, so this
     connects to the address the boss called the worker from and checks the certificate against the
-    name in the url."""
+    name in the url, with the machine's trust store."""
+    # Here, not at the top: most tasks never get here, and importing these takes 25 ms.
+    import http.client
+    import socket
+    import ssl
+
     address = _files.get("boss_address") if _files else None
     parsed = urllib.parse.urlsplit(url)
     path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
     if parsed.scheme == "https" and address:
         host, _, port = address.rpartition(":")
-        connection = _BossConnection(
-            parsed.hostname or "", (host.strip("[]"), int(port))
+        context = ssl.create_default_context()
+        connection = http.client.HTTPSConnection(
+            parsed.hostname or "", int(port), context=context
+        )
+        # A connection that has its socket already does not open one to the name.
+        connection.sock = context.wrap_socket(
+            socket.create_connection((host.strip("[]"), int(port))),
+            server_hostname=parsed.hostname,
         )
     else:
         connection = http.client.HTTPConnection(parsed.netloc)
@@ -512,20 +561,6 @@ def _get(url: str) -> http.client.HTTPResponse:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     connection.request("GET", path, headers=headers)
     return connection.getresponse()
-
-
-class _BossConnection(http.client.HTTPSConnection):
-    """HTTPS to `address`, checking the certificate against `name` with the machine's trust store."""
-
-    def __init__(self, name: str, address: tuple[str, int]):
-        super().__init__(name, address[1], context=ssl.create_default_context())
-        self._address = address
-
-    def connect(self) -> None:
-        self.sock = self._context.wrap_socket(  # ty: ignore[unresolved-attribute]
-            socket.create_connection(self._address, self.timeout),
-            server_hostname=self.host,
-        )
 
 
 def _fetch(url: str, parts: list[str], announce: str | None) -> Path:
