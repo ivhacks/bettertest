@@ -70,8 +70,8 @@ pub(super) async fn pipeline_events(
         Ok(Some(PipelineSnapshot {
             name: name.clone(),
             pipelines: pipelines.clone(),
-            pipeline: pipeline.clone(),
-            runs: db.runs(&name, RECENT_RUNS as i64)?,
+            pipeline: pipeline.clone().map(Arc::new),
+            runs: db.runs(&name, RECENT_RUNS as i64)?.into_iter().map(Arc::new).collect(),
         }))
     };
     let wanted = |snapshot: &PipelineSnapshot, event: &Event| match event {

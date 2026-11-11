@@ -79,13 +79,8 @@ pub fn label_layout(columns: &[f64], labels: &[f64], line: f64) -> (f64, f64) {
 
 /// One row per run, newest on top. The columns are the tasks of the pipedef as it is now. A run
 /// from before a task existed shows an empty cell there. A CSS grid, one track per task, each
-/// stage `stage_weight` wide; stages sit further apart than tasks.
-pub fn grid(
-    pipeline: &Pipeline,
-    runs: &[Run],
-    layout: &GridLayout,
-    cancel: &Callback<String>,
-) -> Html {
+/// stage `stage_weight` wide; stages sit further apart than tasks. `rows` are `run_row`s.
+pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
     // Room for a running run's cancel button beside its id.
     let mut columns = String::from("88px");
     for stage in &pipeline.stages {
@@ -121,7 +116,7 @@ pub fn grid(
                 </tr>
             </thead>
             <tbody>
-                { for runs.iter().map(|run| run_row(pipeline, run, layout, cancel)) }
+                { rows }
             </tbody>
         </table>
     }
@@ -133,7 +128,12 @@ fn cell_classes(layout: &GridLayout, stage: usize, task: usize) -> Classes {
     classes!((task == 0).then_some("first"), dense.then_some("dense"))
 }
 
-fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout, cancel: &Callback<String>) -> Html {
+pub fn run_row(
+    pipeline: &Pipeline,
+    run: &Run,
+    layout: &GridLayout,
+    cancel: &Callback<String>,
+) -> Html {
     // By (stage, task): a stage can have thousands of tasks, too many to search for each cell.
     let task_runs: HashMap<(&str, &str), &TaskRun> = run
         .stages

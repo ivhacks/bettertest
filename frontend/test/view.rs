@@ -102,12 +102,13 @@ fn grid_matches_tasks_by_name() {
         commit: None,
     }];
     assert_eq!(
-        to_html(&grid(
-            &pipeline(),
-            &runs,
-            &GridLayout::default(),
-            &Callback::noop()
-        )),
+        to_html(&grid(&pipeline(), &GridLayout::default(), {
+            let layout = GridLayout::default();
+            let rows = runs
+                .iter()
+                .map(|run| run_row(&pipeline(), run, &layout, &Callback::noop()));
+            html! { { for rows } }
+        })),
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
@@ -132,7 +133,7 @@ fn tilted_names_and_dense_stages() {
         dense: vec![false, true],
     };
     assert_eq!(
-        to_html(&grid(&pipeline(), &[], &layout, &Callback::noop())),
+        to_html(&grid(&pipeline(), &layout, html! {})),
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid tilted"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,

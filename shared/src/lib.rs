@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 // Pipeline structure, as dumped by the pipedef. This is the definition, not an instance.
@@ -222,9 +222,9 @@ pub struct PipelineSnapshot {
     // Every pipeline the boss knows, for the tabs.
     pub pipelines: Vec<String>,
     // The pipedef as it is right now. Err holds python's complaint when it does not parse.
-    pub pipeline: Result<Pipeline, String>,
-    // Newest first.
-    pub runs: Vec<Run>,
+    pub pipeline: Result<Arc<Pipeline>, String>,
+    // Newest first. Shared, so a page can tell a run that did not change by its pointer alone.
+    pub runs: Vec<Arc<Run>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -488,14 +488,18 @@ impl PipelineSnapshot {
     pub fn apply(&mut self, event: &Event) {
         match event {
             Event::RunStarted(run) if run.pipeline == self.name => {
-                self.runs.insert(0, run.clone());
+                self.runs.insert(0, Arc::new(run.clone()));
                 self.runs.truncate(RECENT_RUNS);
             }
-            _ => {
-                for run in &mut self.runs {
-                    run.apply(event);
+            Event::TaskStarted { run: id, .. }
+            | Event::TaskState { run: id, .. }
+            | Event::RunFinished { run: id, .. } => {
+                // Only the run the event changes becomes a new one.
+                if let Some(run) = self.runs.iter_mut().find(|run| run.id == *id) {
+                    Arc::make_mut(run).apply(event);
                 }
             }
+            _ => {}
         }
     }
 }
@@ -556,3 +560,7 @@ impl WorkersSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../test/lib.rs"]
+mod tests;
