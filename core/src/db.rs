@@ -330,10 +330,7 @@ impl Db {
                         worker: row.get(3)?,
                         started: row.get::<_, Option<i64>>(4)?.map(from_sql),
                         ended: row.get::<_, Option<i64>>(5)?.map(from_sql),
-                        carried_from: row
-                            .get::<_, Option<String>>(6)?
-                            .as_deref()
-                            .and_then(uuid),
+                        carried_from: row.get::<_, Option<String>>(6)?.as_deref().and_then(uuid),
                         tests: match (row.get(7)?, row.get(8)?) {
                             (Some(total), Some(failed)) => Some(Tests {
                                 total: from_sql(total),

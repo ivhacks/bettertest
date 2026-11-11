@@ -71,11 +71,17 @@ pub(super) async fn pipeline_events(
             name: name.clone(),
             pipelines: pipelines.clone(),
             pipeline: pipeline.clone().map(Arc::new),
-            runs: db.runs(&name, RECENT_RUNS as i64)?.into_iter().map(Arc::new).collect(),
+            runs: db
+                .runs(&name, RECENT_RUNS as i64)?
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
         }))
     };
     let wanted = |snapshot: &PipelineSnapshot, event: &Event| {
-        event.run().is_some_and(|(pipeline, _)| pipeline == snapshot.name)
+        event
+            .run()
+            .is_some_and(|(pipeline, _)| pipeline == snapshot.name)
     };
     live(boss, snapshot, wanted)
 }
@@ -976,7 +982,9 @@ impl client::TaskIo for BossTask<'_> {
             task: self.id,
             tests,
         };
-        let written = self.boss.record(|db| Ok((event, db.set_tests(self.id, tests)?)));
+        let written = self
+            .boss
+            .record(|db| Ok((event, db.set_tests(self.id, tests)?)));
         if let Err(e) = written {
             eprintln!("could not record the tests of task {}: {e}", self.id);
         }

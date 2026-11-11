@@ -1,6 +1,6 @@
 // The settings page: retention, and whether the boss speaks HTTPS.
 
-use crate::{account, view};
+use crate::{account, fetch, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
@@ -41,11 +41,7 @@ impl Component for SettingsPage {
     fn create(ctx: &Context<Self>) -> Self {
         let link = ctx.link().clone();
         spawn_local(async move {
-            let loaded = match Request::get("/api/settings").send().await {
-                Ok(response) => response.json::<Settings>().await,
-                Err(e) => Err(e),
-            };
-            match loaded {
+            match fetch(Request::get("/api/settings").build()).await {
                 Ok(settings) => link.send_message(SettingsMsg::Loaded(settings)),
                 Err(e) => {
                     link.send_message(SettingsMsg::Notice(format!("could not load them: {e}")))
@@ -54,11 +50,7 @@ impl Component for SettingsPage {
         });
         let link = ctx.link().clone();
         spawn_local(async move {
-            let https = match Request::get("/api/https").send().await {
-                Ok(response) => response.json::<Option<Https>>().await,
-                Err(e) => Err(e),
-            };
-            match https {
+            match fetch(Request::get("/api/https").build()).await {
                 Ok(https) => link.send_message(SettingsMsg::Https(https)),
                 Err(e) => {
                     link.send_message(SettingsMsg::Notice(format!("could not load HTTPS: {e}")))
@@ -94,21 +86,9 @@ impl Component for SettingsPage {
                 };
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let request = match Request::put("/api/settings").json(&settings) {
-                        Ok(request) => request,
-                        Err(e) => return link.send_message(SettingsMsg::Notice(e.to_string())),
-                    };
-                    let swept = match request.send().await {
-                        Ok(response) if response.ok() => response.json::<Swept>().await,
-                        Ok(response) => {
-                            let body = response.text().await.unwrap_or_default();
-                            return link.send_message(SettingsMsg::Notice(body));
-                        }
-                        Err(e) => Err(e),
-                    };
-                    match swept {
+                    match fetch(Request::put("/api/settings").json(&settings)).await {
                         Ok(swept) => link.send_message(SettingsMsg::Saved(settings, swept)),
-                        Err(e) => link.send_message(SettingsMsg::Notice(e.to_string())),
+                        Err(e) => link.send_message(SettingsMsg::Notice(e)),
                     }
                 });
                 return false;

@@ -53,7 +53,13 @@ fn an_event_replaces_only_the_run_it_changes() {
         run: Uuid::from_u128(9),
         state: RunState::Pass,
     });
-    assert!(snapshot.runs.iter().zip(&before).all(|(a, b)| Arc::ptr_eq(a, b)));
+    assert!(
+        snapshot
+            .runs
+            .iter()
+            .zip(&before)
+            .all(|(a, b)| Arc::ptr_eq(a, b))
+    );
 }
 
 #[test]

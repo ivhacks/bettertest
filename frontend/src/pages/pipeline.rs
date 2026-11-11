@@ -1,7 +1,7 @@
 // The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs. With
 // ?run=<id>, what the tasks of that run came to instead of the grid.
 
-use crate::{PageProps, account, cancel_run, follow, view};
+use crate::{PageProps, account, cancel_run, follow, send, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
@@ -92,17 +92,10 @@ impl Component for PipelinePage {
                 let link = ctx.link().clone();
                 // The new run shows up through the live stream like any other change.
                 spawn_local(async move {
-                    match Request::post(&url).send().await {
-                        Ok(response) if response.ok() => {}
-                        Ok(response) => {
-                            let body = response.text().await.unwrap_or_default();
-                            link.send_message(PipelineMsg::Notice(format!(
-                                "could not start a run: {body}"
-                            )));
-                        }
-                        Err(e) => link.send_message(PipelineMsg::Notice(format!(
+                    if let Err(e) = send(Request::post(&url).build()).await {
+                        link.send_message(PipelineMsg::Notice(format!(
                             "could not start a run: {e}"
-                        ))),
+                        )));
                     }
                 });
                 return false;
@@ -182,24 +175,29 @@ impl Component for PipelinePage {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},
         };
-        let run = (self.snapshot.as_ref()).zip(self.run.as_ref()).map(|(snapshot, id)| {
-            let found = snapshot.runs.iter().find(|run| run.id.to_string() == *id);
-            (id, found)
-        });
+        let run = (self.snapshot.as_ref())
+            .zip(self.run.as_ref())
+            .map(|(snapshot, id)| {
+                let found = snapshot.runs.iter().find(|run| run.id.to_string() == *id);
+                (id, found)
+            });
         let mut crumbs = html! {};
         let body = match (&self.snapshot, run) {
             (_, Some((_, Some(run)))) => {
                 crumbs = view::run_page_crumbs(run, &self.cancel);
                 view::results(run)
             }
-            (_, Some((id, None))) => {
-                view::notice(&Some(format!("run {id} is not one of the {RECENT_RUNS} newest")))
-            }
-            (Some(PipelineSnapshot {
-                pipeline: Ok(pipeline),
-                runs,
-                ..
-            }), None) => {
+            (_, Some((id, None))) => view::notice(&Some(format!(
+                "run {id} is not one of the {RECENT_RUNS} newest"
+            ))),
+            (
+                Some(PipelineSnapshot {
+                    pipeline: Ok(pipeline),
+                    runs,
+                    ..
+                }),
+                None,
+            ) => {
                 let rows = runs.iter().map(|run| {
                     html! {
                         <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
@@ -208,9 +206,12 @@ impl Component for PipelinePage {
                 });
                 view::grid(pipeline, &self.layout, html! { { for rows } })
             }
-            (Some(PipelineSnapshot {
-                pipeline: Err(e), ..
-            }), None) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
+            (
+                Some(PipelineSnapshot {
+                    pipeline: Err(e), ..
+                }),
+                None,
+            ) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
             (None, _) => html! {},
         };
         html! {

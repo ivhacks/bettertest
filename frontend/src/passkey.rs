@@ -2,6 +2,7 @@
 // authenticator made as JSON; the browser turns one into the other (parse...FromJSON, toJSON), so
 // this side only carries JSON.
 
+use gloo_net::http::Request;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(inline_js = r#"
@@ -54,8 +55,7 @@ pub async fn ceremony(
     url: &str,
     create: bool,
 ) -> Result<String, String> {
-    let options = post(options_url, body.to_string()).await?;
-    let options: serde_json::Value = serde_json::from_str(&options).map_err(|e| e.to_string())?;
+    let options: serde_json::Value = crate::fetch(Request::post(options_url).json(&body)).await?;
     let public_key = options["publicKey"].to_string();
     let answer = match create {
         true => create_passkey(public_key).await,
@@ -65,17 +65,5 @@ pub async fn ceremony(
     let credential: serde_json::Value =
         serde_json::from_str(&answer.as_string().unwrap_or_default()).map_err(|e| e.to_string())?;
     let finish = serde_json::json!({ "ceremony": options["ceremony"], "credential": credential });
-    post(url, finish.to_string()).await
-}
-
-async fn post(url: &str, body: String) -> Result<String, String> {
-    let request = gloo_net::http::Request::post(url)
-        .header("content-type", "application/json")
-        .body(body)
-        .map_err(|e| e.to_string())?;
-    match request.send().await {
-        Ok(response) if response.ok() => response.text().await.map_err(|e| e.to_string()),
-        Ok(response) => Err(response.text().await.unwrap_or_default()),
-        Err(e) => Err(e.to_string()),
-    }
+    crate::post_json(url, &finish).await
 }

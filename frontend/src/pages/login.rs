@@ -54,7 +54,7 @@ impl Component for LoginPage {
                 let link = ctx.link().clone();
                 spawn_local(async move {
                     match post_json("/api/login", &body).await {
-                        Ok(()) => logged_in(),
+                        Ok(_) => logged_in(),
                         Err(e) => link.send_message(LoginMsg::Refused(e)),
                     }
                 });
