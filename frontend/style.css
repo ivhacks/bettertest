@@ -399,7 +399,8 @@ header .runtime {
     color: #ffffff;
 }
 
-.state.fail {
+.state.fail,
+.state.error {
     background: var(--fail);
     color: #ffffff;
 }
@@ -510,35 +511,9 @@ input:focus {
 }
 
 .totals {
+    display: flex;
+    gap: 16px;
     margin: 0 0 16px;
-}
-
-.totals .total {
-    margin-right: 24px;
-}
-
-.total.fail,
-.total.error {
-    color: var(--fail);
-}
-
-.results .outcome {
-    padding-left: 10px;
-    border-left: 4px solid var(--line);
-    text-transform: uppercase;
-}
-
-.outcome.pass {
-    border-left-color: var(--pass);
-}
-
-.outcome.fail,
-.outcome.error {
-    border-left-color: var(--fail);
-}
-
-.outcome.running {
-    border-left-color: var(--running);
 }
 
 .results .number {

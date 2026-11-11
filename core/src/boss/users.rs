@@ -94,24 +94,20 @@ pub(super) fn who(
         .get(header::AUTHORIZATION)
         .and_then(|a| a.to_str().ok())
         .unwrap_or_default();
+    // Logging in never takes away what logged out may do.
+    let me = |name, role: Role| Me {
+        name,
+        role: role.max(logged_out),
+        logged_in: true,
+    };
     if let Some(token) = auth::bearer(authorization) {
         let hash = auth::token_hash(token);
         // A running task reads what its run needs; nothing more.
         if lock(&boss.task_tokens).contains_key(&hash) {
-            let me = Me {
-                name: "a running task".into(),
-                role: Role::Read.max(logged_out),
-                logged_in: true,
-            };
-            return Ok((me, None));
+            return Ok((me("a running task".into(), Role::Read), None));
         }
         if let Some((id, name, role)) = db.api_token(&hash).map_err(internal)? {
-            let me = Me {
-                name,
-                role: role.max(logged_out),
-                logged_in: true,
-            };
-            return Ok((me, Some(id)));
+            return Ok((me(name, role), Some(id)));
         }
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -126,31 +122,21 @@ pub(super) fn who(
                 db.extend_session(&hash, now + auth::SESSION_MS)
                     .map_err(internal)?;
             }
-            let me = Me {
-                name,
-                role: role.max(logged_out),
-                logged_in: true,
-            };
-            return Ok((me, Some(id)));
+            return Ok((me(name, role), Some(id)));
         }
     }
     // A client certificate the browser presented over HTTPS logs its user in on every request.
     if let Some(fingerprint) = peer.and_then(|p| p.certificate.as_deref())
         && let Some((id, name, role)) = db.certificate_user(fingerprint).map_err(internal)?
     {
-        let me = Me {
-            name,
-            role: role.max(logged_out),
-            logged_in: true,
-        };
-        return Ok((me, Some(id)));
+        return Ok((me(name, role), Some(id)));
     }
-    let me = Me {
+    let logged_out = Me {
         name: "logged out".into(),
         role: logged_out,
         logged_in: false,
     };
-    Ok((me, None))
+    Ok((logged_out, None))
 }
 
 /// Lets a request through if who sent it may do what it asks (see auth::needed). Otherwise 401 or

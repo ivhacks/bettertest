@@ -256,14 +256,14 @@ pub fn results(run: &Run) -> Html {
     tasks.sort_by_key(|(_, task)| (rank(task), std::cmp::Reverse(took(task))));
     let totals = OUTCOMES.iter().filter_map(|o| {
         let n = tasks.iter().filter(|(_, task)| outcome(task) == *o).count();
-        (n > 0).then(|| html! { <span class={classes!("total", *o)}>{ format!("{n} {o}") }</span> })
+        (n > 0).then(|| html! { <span class={classes!("state", *o)}>{ format!("{n} {o}") }</span> })
     });
     let tests = tasks.iter().filter_map(|(_, task)| task.tests);
     let (total, failed) = tests.fold((0, 0), |(t, f), tests| (t + tests.total, f + tests.failed));
     let rows = tasks.iter().map(|(stage, task)| {
         html! {
             <tr>
-                <td class={classes!("outcome", outcome(task))}>{ outcome(task) }</td>
+                <td><span class={classes!("state", outcome(task))}>{ outcome(task) }</span></td>
                 <td>{ *stage }</td>
                 <td><a href={format!("/task/{}", task.id)}>{ &task.name }</a></td>
                 <td class="number">{ for took(task).map(duration) }</td>
@@ -276,7 +276,7 @@ pub fn results(run: &Run) -> Html {
         <>
             <p class="totals">
                 { for totals }
-                <span class="total">{ format!("{} tests, {} failed", count(total), count(failed)) }</span>
+                <span>{ format!("{} tests, {} failed", count(total), count(failed)) }</span>
             </p>
             <table class="results">
                 <tr><th></th><th>{ "Stage" }</th><th>{ "Task" }</th><th>{ "Took" }</th><th>{ "Tests" }</th><th>{ "Failed" }</th></tr>
@@ -441,6 +441,18 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
         revoke,
         remove,
     } = actions;
+    // Each with its label, and when it expires if it does.
+    let credentials = |listed: &mut dyn Iterator<Item = (i64, &String, Option<String>)>| {
+        let listed: Vec<Html> = listed
+            .map(|(credential, label, title)| html! {
+                <span class="cert" {title}>
+                    { label }
+                    <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
+                </span>
+            })
+            .collect();
+        html! { <td class="certs">if listed.is_empty() { { "-" } }{ for listed }</td> }
+    };
     let count = |n: u32| {
         if n == 0 {
             "-".to_string()
@@ -496,30 +508,8 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                                 <td colspan="4" class="hint">{ "Anyone who has not logged in" }</td>
                             } else {
                                 <td>{ if u.passwords > 0 { "set" } else { "-" } }</td>
-                                <td class="certs">
-                                    if u.certs.is_empty() { { "-" } }
-                                    { for u.certs.iter().map(|c| {
-                                        let credential = c.id;
-                                        html! {
-                                            <span class="cert" title={format!("expires {}", c.expires)}>
-                                                { &c.label }
-                                                <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
-                                            </span>
-                                        }
-                                    }) }
-                                </td>
-                                <td class="certs">
-                                    if u.keys.is_empty() { { "-" } }
-                                    { for u.keys.iter().map(|k| {
-                                        let credential = k.id;
-                                        html! {
-                                            <span class="cert">
-                                                { &k.label }
-                                                <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
-                                            </span>
-                                        }
-                                    }) }
-                                </td>
+                                { credentials(&mut u.certs.iter().map(|c| (c.id, &c.label, Some(format!("expires {}", c.expires))))) }
+                                { credentials(&mut u.keys.iter().map(|k| (k.id, &k.label, None))) }
                                 <td>{ count(u.tokens) }</td>
                             }
                             <td class="actions">{ for actions }</td>

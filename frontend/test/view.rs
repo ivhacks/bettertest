@@ -820,16 +820,16 @@ fn results_put_failures_first_then_the_slowest() {
     };
     let row = |o: &str, stage: &str, n: u128, name: &str, took: &str, tests: &str, failed: &str| {
         format!(
-            r#"<tr><td class="outcome {o}">{o}</td><td>{stage}</td><td><a href="/task/{}">{name}</a></td><td class="number">{took}</td><td class="number">{tests}</td><td class="number">{failed}</td></tr>"#,
+            r#"<tr><td><span class="state {o}">{o}</span></td><td>{stage}</td><td><a href="/task/{}">{name}</a></td><td class="number">{took}</td><td class="number">{tests}</td><td class="number">{failed}</td></tr>"#,
             id(n)
         )
     };
     // Failed without a failed test (none reported, or none failed) is an error, not a failure.
     let expected = [
         concat!(
-            r#"<p class="totals"><span class="total fail">1 fail</span><span class="total error">2 error</span>"#,
-            r#"<span class="total skipped">1 skipped</span><span class="total pass">2 pass</span>"#,
-            r#"<span class="total">1,032,528 tests, 2 failed</span></p><table class="results">"#,
+            r#"<p class="totals"><span class="state fail">1 fail</span><span class="state error">2 error</span>"#,
+            r#"<span class="state skipped">1 skipped</span><span class="state pass">2 pass</span>"#,
+            r#"<span>1,032,528 tests, 2 failed</span></p><table class="results">"#,
             r#"<tr><th></th><th>Stage</th><th>Task</th><th>Took</th><th>Tests</th><th>Failed</th></tr>"#,
         )
         .to_string(),
