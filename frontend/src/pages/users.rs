@@ -255,6 +255,7 @@ impl Component for UsersPage {
                 </div>
             }
         });
+        let done = html! { <div class="buttons"><button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button></div> };
         let token_window = self.new_token.as_ref().map(|(name, token)| {
             html! {
                 <div class="backdrop">
@@ -262,9 +263,7 @@ impl Component for UsersPage {
                         <h2>{ format!("A token for {name}") }</h2>
                         <p>{ "Shown this once: copy it now. Scripts and curl send it as" }</p>
                         <pre class="token">{ format!("Authorization: Bearer {token}") }</pre>
-                        <div class="buttons">
-                            <button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button>
-                        </div>
+                        { done.clone() }
                     </div>
                 </div>
             }
@@ -281,9 +280,7 @@ impl Component for UsersPage {
                             { ", then import it into the browser (Settings, Certificates, Import) with this password. Both are shown this once." }
                         </p>
                         <pre class="token">{ password }</pre>
-                        <div class="buttons">
-                            <button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button>
-                        </div>
+                        { done.clone() }
                     </div>
                 </div>
             }

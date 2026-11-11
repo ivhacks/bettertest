@@ -45,8 +45,7 @@ pub fn new_shared_file(path: &Path) -> io::Result<File> {
 /// Like `new_shared_file`, but an existing file is fine and left alone.
 pub fn shared_file(path: &Path) -> io::Result<()> {
     match new_shared_file(path) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
+        Err(e) if e.kind() != ErrorKind::AlreadyExists => Err(e),
+        _ => Ok(()),
     }
 }

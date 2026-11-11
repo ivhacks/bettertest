@@ -270,7 +270,7 @@ pub async fn entry(
     Ok(())
 }
 
-type Failure = (StatusCode, String);
+pub(crate) type Failure = (StatusCode, String);
 
 /// Milliseconds since 1970. A clock set before 1970 reads as 1970.
 fn now() -> u64 {
@@ -278,7 +278,7 @@ fn now() -> u64 {
     since.map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn internal(e: impl ToString) -> Failure {
+pub(crate) fn internal(e: impl ToString) -> Failure {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 

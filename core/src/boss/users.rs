@@ -221,12 +221,16 @@ pub(super) fn start_session(boss: &Boss, user: i64) -> Result<Response, Failure>
     boss.db()
         .add_session(&hash, user, now() + auth::SESSION_MS)
         .map_err(internal)?;
-    let max_age = auth::SESSION_MS / 1000;
+    Ok(session_cookie(&token, auth::SESSION_MS / 1000))
+}
+
+/// Sets the session cookie to `token`, for `max_age` seconds.
+fn session_cookie(token: &str, max_age: u64) -> Response {
     let cookie = format!(
         "{}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}",
         auth::COOKIE
     );
-    Ok(([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response())
+    ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
 }
 
 pub(super) async fn logout(
@@ -238,11 +242,7 @@ pub(super) async fn logout(
             .end_session(&auth::token_hash(token), now())
             .map_err(internal)?;
     }
-    let cookie = format!(
-        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-        auth::COOKIE
-    );
-    Ok(([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response())
+    Ok(session_cookie("", 0))
 }
 
 pub(super) async fn get_users(State(boss): State<Shared>) -> Result<Json<Vec<User>>, Failure> {
@@ -530,12 +530,7 @@ pub(super) async fn new_passkey_options(
     let name = boss.db().user_name(user).map_err(internal)?;
     let name = name.ok_or_else(|| not_found(format!("user {user}")))?;
     let existing = user_passkeys(&boss, user)?;
-    if existing.len() >= MOST_PASSKEYS {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first"),
-        ));
-    }
+    room_for_passkey(&name, existing.len())?;
     // An authenticator that already holds one of the user's passkeys says so instead of making
     // another.
     let exclude = existing.iter().map(|k| k.cred_id().clone()).collect();
@@ -552,6 +547,15 @@ pub(super) async fn new_passkey_options(
         "ceremony": ceremony,
         "publicKey": options,
     })))
+}
+
+/// Refuses another passkey to a user who has `count`, at most.
+fn room_for_passkey(name: &str, count: usize) -> Result<(), Failure> {
+    if count < MOST_PASSKEYS {
+        return Ok(());
+    }
+    let why = format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first");
+    Err((StatusCode::CONFLICT, why))
 }
 
 /// What the browser sends back to finish a ceremony: its id, and the credential in its JSON form
@@ -588,12 +592,7 @@ pub(super) async fn new_passkey(
         return Err(not_found(format!("user {user}")));
     };
     let keys = db.passkeys(user).map_err(internal)?;
-    if keys.len() >= MOST_PASSKEYS {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first"),
-        ));
-    }
+    room_for_passkey(&name, keys.len())?;
     if db.passkey(&credential).map_err(internal)?.is_some() {
         return Err((StatusCode::CONFLICT, "that passkey is added already".into()));
     }
