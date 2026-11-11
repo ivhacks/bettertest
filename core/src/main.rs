@@ -1,3 +1,12 @@
+// std's println! and eprintln! panic when the write fails (a full disk under `> boss.log`, a closed
+// pipe), and a panic ends the process. These drop the line instead, in every module below.
+macro_rules! println {
+    ($($t:tt)*) => {{ use std::io::Write as _; let _ = writeln!(std::io::stdout(), $($t)*); }};
+}
+macro_rules! eprintln {
+    ($($t:tt)*) => {{ use std::io::Write as _; let _ = writeln!(std::io::stderr(), $($t)*); }};
+}
+
 mod auth;
 mod boss;
 mod client;
