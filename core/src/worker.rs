@@ -255,7 +255,7 @@ async fn start_container(Json(req): Json<StartContainer>) -> Result<Json<Started
 }
 
 async fn delete_container(Path(id): Path<String>) -> Result<(), Failure> {
-    output(Command::new("docker").args(["rm", "--force", &id]))
+    output(Command::new("docker").args(["rm", "--force", "--volumes", &id]))
         .await
         .map_err(internal)?;
     Ok(())
@@ -268,7 +268,7 @@ async fn remove_leftover_containers() -> Result<(), String> {
     let ids: Vec<&str> = ids.split_whitespace().collect();
     if !ids.is_empty() {
         println!("removing {} leftover containers", ids.len());
-        output(Command::new("docker").args(["rm", "--force"]).args(&ids)).await?;
+        output(Command::new("docker").args(["rm", "--force", "--volumes"]).args(&ids)).await?;
     }
     Ok(())
 }

@@ -207,3 +207,50 @@ else:
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[tokio::test]
+async fn deleting_a_container_deletes_the_volumes_its_image_declares() {
+    let image = "bettertest-test-volume";
+    let mut build = std::process::Command::new("docker")
+        .args(["build", "--quiet", "--tag", image, "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let dockerfile = b"FROM debian:trixie\nVOLUME /work\n";
+    build.stdin.take().unwrap().write_all(dockerfile).unwrap();
+    assert!(build.wait().unwrap().success());
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let started: Started = client
+        .post(format!("{url}/start-container"))
+        .json(&serde_json::json!({"image": image}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let format = "{{range .Mounts}}{{.Name}}{{end}}";
+    let inspect = std::process::Command::new("docker")
+        .args(["inspect", "--format", format, &started.id])
+        .output()
+        .unwrap();
+    let volume = String::from_utf8(inspect.stdout).unwrap();
+    let volume = volume.trim();
+    let exists = || {
+        let inspect = std::process::Command::new("docker")
+            .args(["volume", "inspect", volume])
+            .output()
+            .unwrap();
+        inspect.status.success()
+    };
+    assert!(exists(), "no volume {volume:?}");
+    let deleted = client
+        .delete(format!("{url}/container/{}", started.id))
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+    assert!(!exists(), "{volume} outlived its container");
+}
