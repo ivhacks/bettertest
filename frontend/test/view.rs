@@ -69,7 +69,7 @@ fn pipeline() -> Pipeline {
 #[test]
 fn grid_matches_tasks_by_name() {
     // Run #1 predates the e2e task, so its e2e cell is empty.
-    let runs = vec![Run {
+    let runs = [Run {
         id: id(1),
         pipeline: "app".into(),
         state: RunState::Running,
@@ -778,6 +778,15 @@ fn tabs_mark_the_current_pipeline() {
     assert_eq!(
         to_html(&tabs(&["app".into(), "docs".into()], "docs")),
         r#"<nav class="tabs"><a href="/pipeline/app" class="tab">app</a><a href="/pipeline/docs" class="tab current">docs</a></nav>"#
+    );
+}
+
+/// A results link to a run the snapshot no longer holds names the run, not the pipeline.
+#[test]
+fn not_recent_names_the_run() {
+    assert_eq!(
+        to_html(&not_recent("6dfde7")),
+        r#"<pre class="notice">run 6dfde7 is not one of the 50 newest</pre>"#
     );
 }
 

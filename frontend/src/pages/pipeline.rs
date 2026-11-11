@@ -184,10 +184,7 @@ impl Component for PipelinePage {
                         crumbs = view::run_page_crumbs(run, &self.cancel);
                         view::results(run)
                     }
-                    None => {
-                        let why = format!("run {id} is not one of the {RECENT_RUNS} newest");
-                        view::notice(&Some(why))
-                    }
+                    None => view::not_recent(id),
                 }
             }
             (Some(snapshot), None) => match &snapshot.pipeline {

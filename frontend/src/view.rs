@@ -26,6 +26,11 @@ pub fn notice(text: &Option<String>) -> Html {
     }
 }
 
+/// In place of the results of run `id`, which the snapshot does not hold.
+pub fn not_recent(id: &str) -> Html {
+    notice(&Some(format!("run {id} is not one of the {RECENT_RUNS} newest")))
+}
+
 /// One tab per pipeline along the bottom, like sheets in a spreadsheet.
 pub fn tabs(names: &[String], current: &str) -> Html {
     html! {
