@@ -14,10 +14,12 @@ pub(super) struct Going {
 pub(super) type Cancelled = watch::Receiver<Option<String>>;
 
 /// Reads and parses the pipedef fresh every time, so edits show up without restarting the boss. A
-/// pipedef in a repo is read from the default branch, as of the last fetch.
+/// pipedef in a repo is read at `commit`, or else from the default branch as of the last fetch. A
+/// pipedef file has no history: it is read as it is now.
 pub(super) async fn load_pipeline(
     boss: &Boss,
     name: &str,
+    commit: Option<&Commit>,
 ) -> Result<(String, Result<Pipeline, String>), Failure> {
     let pipedef = boss
         .pipedef(name)
@@ -27,11 +29,8 @@ pub(super) async fn load_pipeline(
             .await
             .map_err(|e| internal(format!("could not read {}: {e}", path.display())))?,
         Pipedef::Repo { repo, path } => {
-            let repo = boss
-                .repos
-                .get(*repo)
-                .ok_or_else(|| internal("no such repo"))?;
-            match repo.show("HEAD", path).await {
+            let at = commit.map_or("HEAD", |commit| commit.sha.as_str());
+            match boss.repo(*repo)?.show(at, path).await {
                 Ok(source) => source,
                 Err(e) => return Ok((String::new(), Err(e))),
             }
@@ -49,7 +48,7 @@ pub(super) async fn get_pipeline(
     State(boss): State<Shared>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<Pipeline>, Failure> {
-    let (_, pipeline) = load_pipeline(&boss, &name).await?;
+    let (_, pipeline) = load_pipeline(&boss, &name, None).await?;
     pipeline
         .map(Json)
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))
@@ -59,7 +58,7 @@ pub(super) async fn pipeline_events(
     State(boss): State<Shared>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, Failure> {
-    let (_, pipeline) = load_pipeline(&boss, &name).await?;
+    let (_, pipeline) = load_pipeline(&boss, &name, None).await?;
     if let Ok(pipeline) = &pipeline {
         for url in pipeline.workers() {
             boss.enroll(url);
@@ -92,35 +91,25 @@ pub(super) async fn start_run(
     AxumPath(name): AxumPath<String>,
     headers: HeaderMap,
 ) -> Result<Json<Run>, Failure> {
-    let link = link(&boss, &headers, &name);
-    let no_carry = BTreeMap::new();
-    let run = match boss.pipedef(&name) {
-        Some(Pipedef::Repo { repo, path }) => {
+    let commit = match boss.pipedef(&name) {
+        Some(Pipedef::Repo { repo, .. }) => {
             boss.fetch(repo).await;
-            let repo = boss
-                .repos
-                .get(repo)
-                .ok_or_else(|| internal("no such repo"))?;
-            let commit = repo.head().await.map_err(internal)?;
-            let source = repo.show(&commit.sha, &path).await.map_err(internal)?;
-            let pipeline = pipedef::parse(&source).await;
-            let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
-            begin_run(
-                &boss,
-                &name,
-                pipeline,
-                source,
-                Some(commit),
-                link,
-                &no_carry,
-            )?
+            Some(boss.repo(repo)?.head().await.map_err(internal)?)
         }
-        _ => {
-            let (source, pipeline) = load_pipeline(&boss, &name).await?;
-            let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
-            begin_run(&boss, &name, pipeline, source, None, link, &no_carry)?
-        }
+        _ => None,
     };
+    let (source, pipeline) = load_pipeline(&boss, &name, commit.as_ref()).await?;
+    let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let link = link(&boss, &headers, &name);
+    let run = begin_run(
+        &boss,
+        &name,
+        pipeline,
+        source,
+        commit,
+        link,
+        &BTreeMap::new(),
+    )?;
     Ok(Json(run))
 }
 
@@ -217,10 +206,7 @@ pub(super) async fn push_hook(
         .position(|r| r.full_name.eq_ignore_ascii_case(&push.repository.full_name))
         .ok_or_else(|| not_found(format!("repo {}", push.repository.full_name)))?;
     boss.fetch(index).await;
-    let repo = boss
-        .repos
-        .get(index)
-        .ok_or_else(|| internal("no such repo"))?;
+    let repo = boss.repo(index)?;
 
     let mut runs = vec![];
     let found = repo.pipedefs(&push.after).await.map_err(internal)?;
@@ -290,41 +276,17 @@ pub(super) async fn cancel_run(
     }
 }
 
-pub(super) async fn rerun_run(
-    State(boss): State<Shared>,
-    AxumPath(run): AxumPath<String>,
-    headers: HeaderMap,
-) -> Result<Json<Run>, Failure> {
-    rerun(boss, &headers, &run, None, None).await
-}
-
-pub(super) async fn rerun_stage(
-    State(boss): State<Shared>,
-    AxumPath((run, stage)): AxumPath<(String, String)>,
-    headers: HeaderMap,
-) -> Result<Json<Run>, Failure> {
-    rerun(boss, &headers, &run, Some(&stage), None).await
-}
-
-pub(super) async fn rerun_task(
-    State(boss): State<Shared>,
-    AxumPath((run, stage, task)): AxumPath<(String, String, String)>,
-    headers: HeaderMap,
-) -> Result<Json<Run>, Failure> {
-    rerun(boss, &headers, &run, Some(&stage), Some(&task)).await
-}
-
-/// Starts a new run of the pipeline at the commit run `id` tested, which runs `stage` (or only its
-/// `task`) and every stage after it again, and carries over the results of the rest (see
-/// `carry_over`). No stage reruns all of it. Returns the new run.
+/// `/api/rerun/{run}[/{stage}[/{task}]]`: starts a new run of the pipeline at the commit `run`
+/// tested, which runs `stage` (or only its `task`) and every stage after it again, and carries over
+/// the results of the rest (see `carry_over`). No stage reruns all of it. Returns the new run.
 pub(super) async fn rerun(
-    boss: Shared,
-    headers: &HeaderMap,
-    id: &str,
-    stage: Option<&str>,
-    task: Option<&str>,
+    State(boss): State<Shared>,
+    AxumPath(rerun): AxumPath<String>,
+    headers: HeaderMap,
 ) -> Result<Json<Run>, Failure> {
-    let id = parse_id(id)?;
+    let mut parts = rerun.split('/');
+    let id = parse_id(parts.next().unwrap_or_default())?;
+    let (stage, task) = (parts.next(), parts.next());
     let earlier = boss.db().run(id).map_err(internal)?;
     let earlier = earlier.ok_or_else(|| not_found(format!("run {id}")))?;
     if earlier.state == RunState::Running {
@@ -336,22 +298,11 @@ pub(super) async fn rerun(
             ),
         ));
     }
-    // The pipedef as it was at the run's commit. A pipedef file has no history: it is read now.
-    let (source, pipeline) = match (boss.pipedef(&earlier.pipeline), &earlier.commit) {
-        (Some(Pipedef::Repo { repo, path }), Some(commit)) => {
-            let repo = boss
-                .repos
-                .get(repo)
-                .ok_or_else(|| internal("no such repo"))?;
-            let source = repo.show(&commit.sha, &path).await.map_err(internal)?;
-            let pipeline = pipedef::parse(&source).await;
-            (source, pipeline)
-        }
-        _ => load_pipeline(&boss, &earlier.pipeline).await?,
-    };
+    let commit = earlier.commit.as_ref();
+    let (source, pipeline) = load_pipeline(&boss, &earlier.pipeline, commit).await?;
     let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
     let carried = carry_over(&earlier, &pipeline, stage, task)?;
-    let link = link(&boss, headers, &earlier.pipeline);
+    let link = link(&boss, &headers, &earlier.pipeline);
     let name = earlier.pipeline.clone();
     let run = begin_run(
         &boss,
@@ -574,9 +525,14 @@ impl Running {
         self.cancelled.borrow().is_some()
     }
 
-    /// Records that task `id` is over: passed or failed, or skipped if the run was cancelled.
+    /// Records that task `id` is over: passed or failed. One cut short because its run was cancelled
+    /// did not fail: it is skipped, like the tasks that never started.
     fn end(&self, id: Uuid, passed: bool) {
-        let state = outcome(passed, &self.cancelled);
+        let state = match passed {
+            true => TaskState::Pass,
+            false if self.is_cancelled() => TaskState::Skipped,
+            false => TaskState::Fail,
+        };
         self.boss.set_task_state(&self.run, id, state);
     }
 
@@ -1023,24 +979,6 @@ impl client::TaskIo for BossTask<'_> {
     }
 }
 
-/// A task cut short because its run was cancelled did not fail: it is skipped, like the tasks
-/// that never started.
-pub(super) fn outcome(passed: bool, cancelled: &Cancelled) -> TaskState {
-    if !passed && cancelled.borrow().is_some() {
-        TaskState::Skipped
-    } else {
-        pass_or_fail(passed)
-    }
-}
-
-pub(super) fn pass_or_fail(passed: bool) -> TaskState {
-    if passed {
-        TaskState::Pass
-    } else {
-        TaskState::Fail
-    }
-}
-
 pub(super) async fn get_run(
     State(boss): State<Shared>,
     AxumPath(id): AxumPath<String>,
@@ -1077,11 +1015,8 @@ pub(super) async fn get_source(
             run.pipeline
         )));
     };
-    let repo = boss
-        .repos
-        .get(repo)
-        .ok_or_else(|| internal("no such repo"))?;
-    let mut archive = repo
+    let mut archive = boss
+        .repo(repo)?
         .archive(&commit.sha)
         .map_err(internal)?
         .spawn()
