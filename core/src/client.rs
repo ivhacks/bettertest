@@ -6,7 +6,7 @@ use crate::{
     worker::{StartContainer, StartVm, Started},
 };
 use bettertest_shared::{
-    Artifact, LogStream, Run, Sandbox, Stage, Task, duration, valid_artifact_name,
+    Artifact, LogLine, LogStream, Run, Sandbox, Stage, Task, duration, valid_artifact_name,
 };
 use reqwest::{Client, Response, multipart::Form};
 use std::{fs, path::Path, path::PathBuf, time::Duration};
@@ -30,6 +30,13 @@ pub enum Target {
 /// What a task hands back to whoever started it, and what it asks them for.
 pub trait TaskIo {
     fn log(&mut self, stream: LogStream, line: String);
+
+    /// Lines that arrived together, which the boss writes in one go.
+    fn log_lines(&mut self, lines: Vec<LogLine>) {
+        for line in lines {
+            self.log(line.stream, line.line);
+        }
+    }
 
     /// Where the artifacts the task publishes are saved.
     fn outputs(&self) -> Result<PathBuf, String>;
@@ -291,21 +298,33 @@ async fn start_task(
 
     let mut events = SseDecoder::default();
     let mut cancelled = io.cancelled();
-    loop {
+    // What the task printed waits up to LINES_WAIT to be logged with what it prints next.
+    let mut lines = vec![];
+    let mut log_at = None;
+    let exit = 'stream: loop {
+        let log_time = async {
+            match log_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
         // Hanging up makes the worker kill the task. The caller still stops its sandbox.
         let chunk = tokio::select! {
             chunk = tokio::time::timeout(QUIET, response.chunk()) => chunk,
-            reason = cancellation(&mut cancelled) => return Err(reason.into()),
+            reason = cancellation(&mut cancelled) => break Err(reason.into()),
+            () = log_time => {
+                io.log_lines(std::mem::take(&mut lines));
+                log_at = None;
+                continue;
+            }
         };
         let chunk = match chunk {
             Ok(Ok(Some(chunk))) => chunk,
-            Ok(Ok(None)) => break,
-            Ok(Err(e)) => {
-                return Err(format!("lost connection to {url}: {}", why(&e)).into());
-            }
+            Ok(Ok(None)) => break Err(format!("{url} ended without an exit code").into()),
+            Ok(Err(e)) => break Err(format!("lost connection to {url}: {}", why(&e)).into()),
             // Frozen, unplugged or gone off the network: a dead machine never says goodbye.
             Err(_) => {
-                return Err(format!(
+                break Err(format!(
                     "lost {worker}: it has said nothing for {}, not even a keep-alive",
                     duration(QUIET.as_millis().try_into().unwrap_or(u64::MAX))
                 )
@@ -314,9 +333,16 @@ async fn start_task(
         };
         for (event, data) in events.feed(&chunk) {
             match event.as_str() {
-                "stdout" => io.log(LogStream::Stdout, data),
-                "stderr" => io.log(LogStream::Stderr, data),
+                "stdout" => lines.push(LogLine {
+                    stream: LogStream::Stdout,
+                    line: data,
+                }),
+                "stderr" => lines.push(LogLine {
+                    stream: LogStream::Stderr,
+                    line: data,
+                }),
                 "artifact" => {
+                    io.log_lines(std::mem::take(&mut lines));
                     let outputs = io.outputs()?;
                     let artifact = save_artifact(http, worker, &data, &outputs).await?;
                     let size = artifact.size;
@@ -327,16 +353,23 @@ async fn start_task(
                     io.saved(artifact);
                 }
                 "exit" => {
-                    return data
+                    break 'stream data
                         .parse()
                         .map_err(|_| StartError::Failed(format!("bad exit code {data:?}")));
                 }
                 _ => {}
             }
         }
-    }
-    Err(format!("{url} ended without an exit code").into())
+        if !lines.is_empty() && log_at.is_none() {
+            log_at = Some(tokio::time::Instant::now() + LINES_WAIT);
+        }
+    };
+    io.log_lines(lines);
+    exit
 }
+
+/// One write per line would take most of the boss's time.
+const LINES_WAIT: Duration = Duration::from_millis(20);
 
 /// A running task's stream from its worker carries a keep-alive every 15 seconds. Silence for
 /// longer means the worker is gone, even when the connection never said so.

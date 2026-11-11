@@ -2,7 +2,7 @@
 // (or dispatch) decides what runs where, and starts and stops sandboxes explicitly, so they can be
 // shared by several tasks or started early to have them warm.
 
-use crate::{boss, client, pipedef, vm, workdir};
+use crate::{boss, client, lock, pipedef, vm, workdir};
 use axum::{
     Json, Router,
     body::Body,
@@ -17,13 +17,18 @@ use axum::{
 use bettertest_shared::{Arch, WorkerInfo, valid_artifact_name};
 use serde::{Deserialize, Serialize};
 use std::{
-    convert::Infallible, error::Error, fs, io, net::SocketAddr, path::PathBuf, process::Stdio,
-    sync::Arc,
+    convert::Infallible,
+    error::Error,
+    fs, io,
+    net::SocketAddr,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     net::TcpListener,
-    process::Command,
+    process::{Child, Command},
     spawn,
     sync::{Semaphore, mpsc},
 };
@@ -144,6 +149,9 @@ fn internal(e: impl ToString) -> Failure {
 struct Shared {
     vms: Arc<vm::Vms>,
     slots: Arc<Semaphore>,
+    /// Pythons started before there was a task for them, at most one a slot (see ready_python).
+    ready: Arc<Mutex<Vec<Child>>>,
+    capacity: usize,
 }
 
 impl FromRef<Shared> for Arc<vm::Vms> {
@@ -171,13 +179,17 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
     if let Err(e) = vm::remove_leftovers() {
         eprintln!("could not remove leftover vms: {e}");
     }
-    if let Err(e) = remove_leftover_task_files() {
-        eprintln!("could not remove leftover task files: {e}");
+    for name in ["tasks", "containers"] {
+        if let Err(e) = remove_leftovers(name) {
+            eprintln!("could not remove leftover {name}: {e}");
+        }
     }
 
     let shared = Shared {
         vms: Arc::new(vm::Vms::new(port)),
         slots: Arc::new(Semaphore::new(capacity as usize)),
+        ready: Arc::default(),
+        capacity: capacity as usize,
     };
     let router = router(shared, labels, capacity);
 
@@ -235,29 +247,47 @@ async fn start_container(Json(req): Json<StartContainer>) -> Result<Json<Started
     } else {
         req.image
     };
-    // The container idles until it is deleted. run() docker-execs commands into it.
-    let id = output(
-        Command::new("docker")
-            .args(["run", "--detach", "--init", "--label", CONTAINER_LABEL])
-            .args([
-                "--entrypoint",
-                "/bin/sh",
-                &image,
-                "-c",
-                "while :; do sleep 3600; done",
-            ]),
-    )
-    .await
-    .map_err(internal)?;
-    Ok(Json(Started {
-        id: id.trim().to_string(),
-    }))
-}
-
-async fn delete_container(Path(id): Path<String>) -> Result<(), Failure> {
-    output(Command::new("docker").args(["rm", "--force", &id]))
+    let id = Uuid::new_v4().to_string();
+    let channel = channel(&id).map_err(internal)?;
+    workdir::shared_dir(&channel).map_err(internal)?;
+    let commands = channel.join("commands");
+    output(Command::new("mkfifo").args(["-m", "666"]).arg(&commands))
         .await
         .map_err(internal)?;
+    let mount = format!("{}:/.bettertest:z", channel.display());
+    let mut run = Command::new("docker");
+    run.args(["run", "--detach", "--init", "--label", CONTAINER_LABEL])
+        .args(["--name", &id, "--volume", &mount])
+        .args(["--entrypoint", "/bin/sh", &image, "-c", SERVE_COMMANDS]);
+    if let Err(e) = output(&mut run).await {
+        let _ = fs::remove_dir_all(&channel);
+        return Err(internal(e));
+    }
+    Ok(Json(Started { id }))
+}
+
+/// The container's main process, from start to delete: it runs each command run() names in
+/// `commands`, in the background, so tasks of a parallel stage run at the same time, without a
+/// docker exec each (60 ms). The outer subshell exits at once, so tini reaps the command.
+/// Opened for writing too, the FIFO never reads as ended: closing it to reopen would throw away a
+/// name written in between.
+const SERVE_COMMANDS: &str = r#"while read -r name; do
+    d=/.bettertest/$name
+    ( { sh "$d/command" < /dev/null > "$d/out" 2> "$d/err"; echo $? > "$d/exit"; } & )
+done 0<> /.bettertest/commands"#;
+
+/// The directory on the worker a container shares with the tasks that run commands in it.
+fn channel(id: &str) -> Result<PathBuf, String> {
+    let containers = workdir::dir("containers").map_err(|e| e.to_string())?;
+    Ok(containers.join(id))
+}
+
+async fn delete_container(Path(id): Path<Uuid>) -> Result<(), Failure> {
+    let id = id.to_string();
+    output(Command::new("docker").args(["rm", "--force", "--volumes", &id]))
+        .await
+        .map_err(internal)?;
+    fs::remove_dir_all(channel(&id).map_err(internal)?).map_err(internal)?;
     Ok(())
 }
 
@@ -268,7 +298,12 @@ async fn remove_leftover_containers() -> Result<(), String> {
     let ids: Vec<&str> = ids.split_whitespace().collect();
     if !ids.is_empty() {
         println!("removing {} leftover containers", ids.len());
-        output(Command::new("docker").args(["rm", "--force"]).args(&ids)).await?;
+        output(
+            Command::new("docker")
+                .args(["rm", "--force", "--volumes"])
+                .args(&ids),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -469,8 +504,9 @@ async fn vm_ready(State(vms): State<Arc<vm::Vms>>, Path(id): Path<String>) -> St
     }
 }
 
-fn remove_leftover_task_files() -> io::Result<()> {
-    for entry in fs::read_dir(workdir::dir("tasks")?)? {
+/// Empties `/var/tmp/bettertest/<name>`.
+fn remove_leftovers(name: &str) -> io::Result<()> {
+    for entry in fs::read_dir(workdir::dir(name)?)? {
         fs::remove_dir_all(entry?.path())?;
     }
     Ok(())
@@ -564,19 +600,21 @@ async fn start_task(
             .map_err(internal)?;
     }
 
-    // python -u: unbuffered, so lines show up as the task prints them, not in bursts.
-    let mut child = Command::new("python3")
-        .args(["-u", "-c", pipedef::GLUE, "start", &req.stage, &req.task])
-        .current_dir(files.src())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // If the caller hangs up, the stream below is dropped, and with it the task.
-        .kill_on_drop(true)
-        // A group of its own, so whatever python starts can be killed with it.
-        .process_group(0)
-        .spawn()
-        .map_err(|e| internal(format!("could not start python3: {e}")))?;
+    let ready = lock(&shared.ready).pop();
+    let mut child = match ready {
+        Some(child) => child,
+        None => ready_python().await.map_err(internal)?,
+    };
+    let (ready, capacity) = (shared.ready.clone(), shared.capacity);
+    spawn(async move {
+        // Failing, it fails the next task too, which says why.
+        if let Ok(child) = ready_python().await {
+            let mut ready = lock(&ready);
+            if ready.len() < capacity {
+                ready.push(child);
+            }
+        }
+    });
     let group = child.id().map(ProcessGroup);
     let (Some(mut stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -593,7 +631,9 @@ async fn start_task(
         "pipeline": req.pipeline,
         "run": req.run,
     });
-    let payload = pipedef::glue_stdin(&req.pipedef, target, task_files);
+    let task = Some((req.stage.as_str(), req.task.as_str()));
+    let src = files.src();
+    let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src));
 
     let (tx, rx) = mpsc::channel::<Event>(64);
     spawn(async move {
@@ -652,12 +692,37 @@ async fn start_task(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+/// A python that has the library and waits for the rest of glue.py's input, to start a task. Most of
+/// starting a task is starting python and the library.
+async fn ready_python() -> Result<Child, String> {
+    // python -u: unbuffered, so lines show up as the task prints them, not in bursts.
+    let mut child = Command::new("python3")
+        .args(["-u", "-c", pipedef::GLUE, "start"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // If the caller hangs up, the stream below is dropped, and with it the task.
+        .kill_on_drop(true)
+        // A group of its own, so whatever python starts can be killed with it.
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("could not start python3: {e}"))?;
+    let stdin = child.stdin.as_mut().ok_or("python3 is missing a pipe")?;
+    // Fits in the pipe, so this does not wait for python.
+    let library = pipedef::library_line();
+    stdin.write_all(&library).await.map_err(|e| e.to_string())?;
+    Ok(child)
+}
+
 /// Where run() in python sends commands: the task's sandbox, as `start-task` names it
 /// (`container:<id>`, `vm:<id>`), or none.
 fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Value, Failure> {
     Ok(match target.map(|t| t.split_once(':')) {
         None => serde_json::Value::Null,
-        Some(Some(("container", id))) => serde_json::json!({"kind": "container", "id": id}),
+        Some(Some(("container", id))) => {
+            let commands = channel(id).map_err(internal)?.join("commands");
+            serde_json::json!({"kind": "container", "id": id, "commands": commands})
+        }
         Some(Some(("vm", id))) => {
             let (port, key) = vms
                 .ssh(id)

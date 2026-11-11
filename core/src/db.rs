@@ -180,13 +180,18 @@ impl Db {
         Ok(())
     }
 
-    pub fn append_log(&self, task: Uuid, line: &LogLine) -> rusqlite::Result<()> {
-        self.conn
-            .prepare_cached(
-                "INSERT INTO log_lines (task_run_id, stream, line) VALUES (?1, ?2, ?3)",
-            )?
-            .execute((task.to_string(), line.stream.as_str(), &line.line))?;
-        Ok(())
+    /// In one transaction: committing each line on its own takes most of the time.
+    pub fn append_log(&mut self, task: Uuid, lines: &[LogLine]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        let mut insert = tx.prepare_cached(
+            "INSERT INTO log_lines (task_run_id, stream, line) VALUES (?1, ?2, ?3)",
+        )?;
+        let task = task.to_string();
+        for line in lines {
+            insert.execute((&task, line.stream.as_str(), &line.line))?;
+        }
+        drop(insert);
+        tx.commit()
     }
 
     pub fn log(&self, task: Uuid) -> rusqlite::Result<Vec<LogLine>> {

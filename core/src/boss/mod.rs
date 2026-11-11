@@ -652,13 +652,22 @@ impl Boss {
     }
 
     fn log(&self, task: Uuid, stream: LogStream, line: String) {
-        let line = LogLine { stream, line };
-        let written = self.record(|db| {
-            db.append_log(task, &line)?;
-            Ok((Event::Log { task, line }, ()))
-        });
-        if let Err(e) = written {
-            eprintln!("could not record a log line of task {task}: {e}");
+        self.log_lines(task, vec![LogLine { stream, line }]);
+    }
+
+    /// Like `record`: what is written is broadcast under the same lock.
+    fn log_lines(&self, task: Uuid, lines: Vec<LogLine>) {
+        if lines.is_empty() {
+            return;
+        }
+        let mut db = self.db();
+        if let Err(e) = db.append_log(task, &lines) {
+            eprintln!("could not record log lines of task {task}: {e}");
+            return;
+        }
+        for line in lines {
+            // Err only means nobody is watching right now.
+            let _ = self.events.send(Event::Log { task, line });
         }
     }
 }

@@ -6,7 +6,8 @@ build makes (configure, make testfixture). Docker's layer cache makes that insta
 run. Test runs every script in one container of that image, as many at once as the worker takes
 (worker --tasks N), each in a directory of its own with SQLITE_TMPDIR there, as testrunner.tcl does.
 A script passes when testfixture exits 0, as under testrunner.tcl. The scripts run as a user other
-than root, since some of them check file permissions, which root ignores.
+than root, since some of them check file permissions, which root ignores. Their directories are
+on a volume, the worker's own disk: on the container's overlay filesystem some take a fifth longer.
 
 The image is Ubuntu 24.04 with clang 18, the machine the native runs this pipeline is measured
 against ran on. testfixture's speed depends on both: gcc 13 builds one a seventh slower, and on
@@ -37,8 +38,9 @@ RUN curl -fsSLO https://sqlite.org/2026/sqlite-src-{VERSION}.zip \\
     && rm sqlite-src-{VERSION}.zip
 WORKDIR /build
 RUN CC=clang /sqlite/configure && make -j"$(nproc)" testfixture
-RUN useradd --create-home tester
+RUN useradd --create-home tester && mkdir /work && chown tester /work
 USER tester
+VOLUME /work
 """
 
 SCRIPTS = """
@@ -1586,7 +1588,7 @@ class Test(Stage):
 def script(path: str):
     def test() -> None:
         run(
-            "dir=$(mktemp -d) && cd $dir && SQLITE_TMPDIR=$dir /build/testfixture"
+            "dir=$(mktemp -d -p /work) && cd $dir && SQLITE_TMPDIR=$dir /build/testfixture"
             f" /sqlite/{path}; code=$?; cd / && rm -rf $dir; exit $code"
         )
 

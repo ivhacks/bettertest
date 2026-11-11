@@ -972,6 +972,10 @@ impl client::TaskIo for BossTask<'_> {
         self.boss.log(self.id, stream, line);
     }
 
+    fn log_lines(&mut self, lines: Vec<LogLine>) {
+        self.boss.log_lines(self.id, lines);
+    }
+
     fn outputs(&self) -> Result<PathBuf, String> {
         task_artifacts_dir(self.id).map_err(|e| e.to_string())
     }

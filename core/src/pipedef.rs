@@ -1,4 +1,5 @@
 use bettertest_shared::Pipeline;
+use serde_json::Value;
 use std::process::Stdio;
 use tokio::{io::AsyncWriteExt, process::Command};
 
@@ -6,14 +7,29 @@ use tokio::{io::AsyncWriteExt, process::Command};
 pub const LIBRARY: &str = include_str!("../../pylib/src/bettertest/__init__.py");
 pub const GLUE: &str = include_str!("../scripts/glue.py");
 
-/// What glue.py reads from stdin. `target` tells run() where to send commands, `files` where the
-/// task's artifacts go and come from (both null while parsing).
-pub fn glue_stdin(pipedef: &str, target: serde_json::Value, files: serde_json::Value) -> Vec<u8> {
+/// The first line glue.py reads from stdin.
+pub fn library_line() -> Vec<u8> {
+    let mut line = serde_json::Value::from(LIBRARY).to_string().into_bytes();
+    line.push(b'\n');
+    line
+}
+
+/// What glue.py reads from stdin after the library. `target` tells run() where to send commands,
+/// `files` where the task's artifacts go and come from (both null while parsing). `task` is the
+/// stage and task to start, in the directory `cwd`.
+pub fn glue_stdin(
+    pipedef: &str,
+    target: Value,
+    files: Value,
+    task: Option<(&str, &str)>,
+    cwd: Option<&std::path::Path>,
+) -> Vec<u8> {
     serde_json::json!({
-        "bettertest": LIBRARY,
         "pipedef": pipedef,
         "target": target,
         "files": files,
+        "task": task,
+        "cwd": cwd,
     })
     .to_string()
     .into_bytes()
@@ -35,12 +51,10 @@ pub async fn parse(pipedef: &str) -> Result<Pipeline, String> {
     let Some(mut stdin) = child.stdin.take() else {
         return Err("python3 has no stdin".into());
     };
+    let mut input = library_line();
+    input.extend(glue_stdin(pipedef, Value::Null, Value::Null, None, None));
     stdin
-        .write_all(&glue_stdin(
-            pipedef,
-            serde_json::Value::Null,
-            serde_json::Value::Null,
-        ))
+        .write_all(&input)
         .await
         .map_err(|e| format!("could not send the pipedef to python3: {e}"))?;
     drop(stdin);
