@@ -175,44 +175,33 @@ impl Component for PipelinePage {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},
         };
-        let run = (self.snapshot.as_ref())
-            .zip(self.run.as_ref())
-            .map(|(snapshot, id)| {
-                let found = snapshot.runs.iter().find(|run| run.id.to_string() == *id);
-                (id, found)
-            });
         let mut crumbs = html! {};
-        let body = match (&self.snapshot, run) {
-            (_, Some((_, Some(run)))) => {
-                crumbs = view::run_page_crumbs(run, &self.cancel);
-                view::results(run)
-            }
-            (_, Some((id, None))) => view::notice(&Some(format!(
-                "run {id} is not one of the {RECENT_RUNS} newest"
-            ))),
-            (
-                Some(PipelineSnapshot {
-                    pipeline: Ok(pipeline),
-                    runs,
-                    ..
-                }),
-                None,
-            ) => {
-                let rows = runs.iter().map(|run| {
-                    html! {
-                        <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
-                            layout={self.layout.clone()} cancel={self.cancel.clone()} />
-                    }
-                });
-                view::grid(pipeline, &self.layout, html! { { for rows } })
-            }
-            (
-                Some(PipelineSnapshot {
-                    pipeline: Err(e), ..
-                }),
-                None,
-            ) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
+        let body = match (&self.snapshot, &self.run) {
             (None, _) => html! {},
+            (Some(snapshot), Some(id)) => {
+                match snapshot.runs.iter().find(|run| run.id.to_string() == *id) {
+                    Some(run) => {
+                        crumbs = view::run_page_crumbs(run, &self.cancel);
+                        view::results(run)
+                    }
+                    None => {
+                        let why = format!("run {id} is not one of the {RECENT_RUNS} newest");
+                        view::notice(&Some(why))
+                    }
+                }
+            }
+            (Some(snapshot), None) => match &snapshot.pipeline {
+                Ok(pipeline) => {
+                    let rows = snapshot.runs.iter().map(|run| {
+                        html! {
+                            <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
+                                layout={self.layout.clone()} cancel={self.cancel.clone()} />
+                        }
+                    });
+                    view::grid(pipeline, &self.layout, html! { { for rows } })
+                }
+                Err(e) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
+            },
         };
         html! {
             <>

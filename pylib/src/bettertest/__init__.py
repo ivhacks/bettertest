@@ -206,6 +206,20 @@ def _tasks(stage: type[Stage]) -> list[tuple[str, Any]]:
     ]
 
 
+def _sandbox_json(
+    owner: "type[Stage] | Sandbox", labels: list[str], parallel: bool
+) -> dict:
+    """A stage's own sandbox, or one of the pipeline's, as parse dumps it."""
+    return {
+        "worker": owner.worker,
+        "labels": labels,
+        "image": owner.image,
+        "vm": owner.vm,
+        "arch": owner.arch,
+        "parallel": parallel,
+    }
+
+
 def _label_values(owner: str, labels: Sequence[Labels]) -> list[str]:
     """The labels as workers know them. Only members of the pipedef's Labels class will do, so a
     label is always one the pipedef declared."""
@@ -281,18 +295,7 @@ def dump_json(pipedef: dict[str, Any]) -> str:
             raise ValueError(
                 f"stage {name}: arch is the architecture of a vm: give it a vm too"
             )
-        sandbox = (
-            {
-                "worker": stage.worker,
-                "labels": stage_labels,
-                "image": stage.image,
-                "vm": stage.vm,
-                "arch": stage.arch,
-                "parallel": stage.parallel,
-            }
-            if shared
-            else None
-        )
+        sandbox = _sandbox_json(stage, stage_labels, stage.parallel) if shared else None
 
         tasks = []
         for task_name, fn in _tasks(stage):
@@ -316,14 +319,8 @@ def dump_json(pipedef: dict[str, Any]) -> str:
                         f"{name}.{task_name}: its Sandbox is not one the pipedef declares at its"
                         " top level, like DEBIAN = Sandbox(...)"
                     )
-                used[sandbox_name] = {
-                    "worker": spanning.worker,
-                    "labels": _label_values(f"Sandbox {sandbox_name}", spanning.labels),
-                    "image": spanning.image,
-                    "vm": spanning.vm,
-                    "arch": spanning.arch,
-                    "parallel": False,
-                }
+                labels = _label_values(f"Sandbox {sandbox_name}", spanning.labels)
+                used[sandbox_name] = _sandbox_json(spanning, labels, False)
             worker = fn.bettertest_worker
             labels = _label_values(f"{name}.{task_name}", fn.bettertest_labels)
             if worker is None and not labels and spanning is None:
@@ -372,8 +369,8 @@ def run(command: str) -> str:
         code, output = _in_container(sandbox["commands"], command)
     else:
         port = str(sandbox["port"])
-        ssh = ["ssh", *_SSH_OPTIONS, "-i", sandbox["key"], "-p", port, "bt@127.0.0.1", command]
-        with subprocess.Popen(ssh, stdout=subprocess.PIPE) as process:
+        ssh = ["ssh", *_SSH_OPTIONS, "-i", sandbox["key"], "-p", port, "bt@127.0.0.1"]
+        with subprocess.Popen([*ssh, command], stdout=subprocess.PIPE) as process:
             output = _pump(process.stdout.fileno(), 1) if process.stdout else b""
             code = process.wait()
     if code != 0:

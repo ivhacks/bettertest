@@ -137,7 +137,8 @@ button {
             calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 
-button::before {
+button::before,
+.window::before {
     --inner: calc(var(--cut) - 0.586px);
     content: "";
     position: absolute;
@@ -563,14 +564,7 @@ input:focus {
 }
 
 .window::before {
-    --inner: calc(var(--cut) - 0.586px);
-    content: "";
-    position: absolute;
-    inset: 1px;
-    z-index: -1;
     background: var(--surface);
-    clip-path: polygon(var(--inner) 0, 100% 0, 100% calc(100% - var(--inner)),
-            calc(100% - var(--inner)) 100%, 0 100%, 0 var(--inner));
 }
 
 .window h2 {
