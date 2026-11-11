@@ -20,15 +20,13 @@ pub fn header(crumbs: Html, right: Html) -> Html {
 }
 
 pub fn notice(text: &Option<String>) -> Html {
-    match text {
-        Some(text) => html! { <pre class="notice">{ text }</pre> },
-        None => html! {},
-    }
+    html! { { for text.iter().map(|text| html! { <pre class="notice">{ text }</pre> }) } }
 }
 
 /// In place of the results of run `id`, which the snapshot does not hold.
 pub fn not_recent(id: &str) -> Html {
-    notice(&Some(format!("run {id} is not one of the {RECENT_RUNS} newest")))
+    let why = format!("run {id} is not one of the {RECENT_RUNS} newest");
+    notice(&Some(why))
 }
 
 /// One tab per pipeline along the bottom, like sheets in a spreadsheet.
