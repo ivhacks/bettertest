@@ -479,11 +479,15 @@ input:focus {
     border-color: var(--highlight);
 }
 
-.workers {
+.workers,
+.users,
+.results {
     border-collapse: collapse;
 }
 
-.workers th {
+.workers th,
+.users th,
+.results th {
     padding: 4px 16px 4px 0;
     color: var(--muted);
     font: 500 16px/1.2 var(--font);
@@ -493,10 +497,53 @@ input:focus {
     text-transform: uppercase;
 }
 
-.workers td {
+.workers td,
+.users td,
+.results td {
     padding: 6px 16px 6px 0;
     border-top: 1px solid var(--line);
     vertical-align: top;
+}
+
+.users td {
+    vertical-align: middle;
+}
+
+.totals {
+    margin: 0 0 16px;
+}
+
+.totals .total {
+    margin-right: 24px;
+}
+
+.total.fail,
+.total.error {
+    color: var(--fail);
+}
+
+.results .outcome {
+    padding-left: 10px;
+    border-left: 4px solid var(--line);
+    text-transform: uppercase;
+}
+
+.outcome.pass {
+    border-left-color: var(--pass);
+}
+
+.outcome.fail,
+.outcome.error {
+    border-left-color: var(--fail);
+}
+
+.outcome.running {
+    border-left-color: var(--running);
+}
+
+.results .number {
+    font-family: var(--mono);
+    text-align: right;
 }
 
 .workers .url {
@@ -611,26 +658,6 @@ input:focus {
 }
 
 /* Users and logging in */
-
-.users {
-    border-collapse: collapse;
-}
-
-.users th {
-    padding: 4px 16px 4px 0;
-    color: var(--muted);
-    font: 500 16px/1.2 var(--font);
-    font-stretch: 70%;
-    letter-spacing: 0.06em;
-    text-align: left;
-    text-transform: uppercase;
-}
-
-.users td {
-    padding: 6px 16px 6px 0;
-    border-top: 1px solid var(--line);
-    vertical-align: middle;
-}
 
 .users .name {
     font-family: var(--mono);

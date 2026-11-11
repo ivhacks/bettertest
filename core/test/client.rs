@@ -2,7 +2,7 @@
 // reach what it keeps private.
 
 use super::*;
-use bettertest_shared::{Artifact, LogStream, Run, Task};
+use bettertest_shared::{Artifact, LogStream, Run, Task, Tests};
 use std::{
     io::{Read, Write},
     path::PathBuf,
@@ -25,6 +25,7 @@ fn events_split_across_chunks() {
 struct Memo {
     lines: Vec<String>,
     wait: bool,
+    tests: Vec<Tests>,
 }
 
 impl TaskIo for Memo {
@@ -37,6 +38,10 @@ impl TaskIo for Memo {
     }
 
     fn saved(&mut self, _: Artifact) {}
+
+    fn tests(&mut self, tests: Tests) {
+        self.tests.push(tests);
+    }
 
     fn run(&self) -> Option<&Run> {
         None
@@ -138,6 +143,7 @@ async fn the_boss_retries_when_the_worker_is_briefly_busy() {
     let mut io = Memo {
         lines: vec![],
         wait: true,
+        tests: vec![],
     };
     let passed = run_task(
         &http().unwrap(),
@@ -168,6 +174,7 @@ async fn dispatch_does_not_retry_a_busy_worker() {
     let mut io = Memo {
         lines: vec![],
         wait: false,
+        tests: vec![],
     };
     let passed = run_task(
         &http().unwrap(),
@@ -202,5 +209,40 @@ fn multibyte_character_split_across_chunks() {
     assert_eq!(
         decoder.feed(&bytes[middle_of_emoji..]),
         vec![("stdout".to_string(), "🤘".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn test_counts_are_logged_and_kept() {
+    let (url, _) = serve(vec![http_reply(
+        "200 OK",
+        "event: stdout\ndata: 2 errors out of 1234 tests\n\nevent: tests\ndata: {\"total\":1234,\"failed\":2}\n\nevent: exit\ndata: 1\n\n",
+    )]);
+    let mut io = Memo {
+        lines: vec![],
+        wait: false,
+        tests: vec![],
+    };
+    let passed = run_task(
+        &http().unwrap(),
+        &url,
+        "",
+        "T",
+        &task(),
+        &Target::None,
+        &mut io,
+    )
+    .await;
+    assert!(!passed);
+    assert_eq!(
+        io.tests,
+        [Tests {
+            total: 1234,
+            failed: 2
+        }]
+    );
+    assert_eq!(
+        io.lines[..2],
+        ["2 errors out of 1234 tests", "1234 tests, 2 failed"]
     );
 }

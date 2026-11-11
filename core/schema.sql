@@ -33,6 +33,9 @@ CREATE TABLE task_runs (
     -- A rerun carries over the tasks it does not run again: the copy keeps the state, worker and
     -- times, and points at the task run that really ran, whose log and artifacts it shows.
     carried_from     TEXT,
+    -- How many tests it ran and how many failed, if it said with tests().
+    tests            INTEGER,
+    tests_failed     INTEGER,
     -- When retention deleted its log and its artifacts, so its page can say why they are gone.
     -- log_deleted_at is set on every task retention has dealt with, log or not.
     log_deleted_at   INTEGER,

@@ -178,7 +178,7 @@ pub fn run_row(
     html! {
         <tr>
             <th class={classes!("run", run.state.as_str())} title={commit}>
-                { cancel_button(run, cancel) }{ run.short_id() }
+                { cancel_button(run, cancel) }<a href={run_href(run)}>{ run.short_id() }</a>
             </th>
             { for cells }
         </tr>
@@ -200,18 +200,99 @@ fn cancel_button(run: &Run, cancel: &Callback<String>) -> Html {
     }
 }
 
-pub fn task_crumbs(snapshot: &TaskSnapshot, cancel: &Callback<String>) -> Html {
-    let run = &snapshot.run;
+/// The path to a run, at the left of the header: its pipeline, the run and what it tested.
+fn run_crumbs(run: &Run, cancel: &Callback<String>) -> Html {
     html! {
         <>
             <a href={format!("/pipeline/{}", run.pipeline)}>{ &run.pipeline }</a>
-            <span class="run">{ cancel_button(run, cancel) }{ run.short_id() }</span>
+            <span class="run">
+                { cancel_button(run, cancel) }<a href={run_href(run)}>{ run.short_id() }</a>
+            </span>
             { for run.commit.iter().map(|c| html! { <span class="commit">{ c.label() }</span> }) }
+        </>
+    }
+}
+
+pub fn task_crumbs(snapshot: &TaskSnapshot, cancel: &Callback<String>) -> Html {
+    html! {
+        <>
+            { run_crumbs(&snapshot.run, cancel) }
             <span>{ &snapshot.stage }</span>
             <span>{ &snapshot.task.name }</span>
             <span class={classes!("state", snapshot.task.state.as_str())}>{ snapshot.task.state.as_str() }</span>
         </>
     }
+}
+
+/// Where a run's results are: on its pipeline's page, in place of the grid.
+fn run_href(run: &Run) -> String {
+    format!("/pipeline/{}?run={}", run.pipeline, run.id)
+}
+
+pub fn run_page_crumbs(run: &Run, cancel: &Callback<String>) -> Html {
+    html! {
+        <>
+            { run_crumbs(run, cancel) }
+            <span class={classes!("state", run.state.as_str())}>{ run.state.as_str() }</span>
+        </>
+    }
+}
+
+/// What the tasks of a run came to: how many of them passed, failed and so on, and how many tests
+/// they ran, then every task, failures first and the slowest next. A task that failed without
+/// failing a test errored: it crashed, timed out, or never said what its tests did.
+pub fn results(run: &Run) -> Html {
+    let outcome = |task: &TaskRun| match (task.state, task.tests) {
+        (TaskState::Fail, Some(tests)) if tests.failed > 0 => "fail",
+        (TaskState::Fail, _) => "error",
+        (state, _) => state.as_str(),
+    };
+    const OUTCOMES: [&str; 6] = ["fail", "error", "running", "pending", "skipped", "pass"];
+    let rank = |task: &TaskRun| OUTCOMES.iter().position(|o| *o == outcome(task));
+    let took = |task: &TaskRun| task.state.is_over().then(|| task.runtime(0)).flatten();
+    let mut tasks: Vec<(&str, &TaskRun)> = (run.stages.iter())
+        .flat_map(|stage| stage.tasks.iter().map(|task| (stage.name.as_str(), task)))
+        .collect();
+    tasks.sort_by_key(|(_, task)| (rank(task), std::cmp::Reverse(took(task))));
+    let totals = OUTCOMES.iter().filter_map(|o| {
+        let n = tasks.iter().filter(|(_, task)| outcome(task) == *o).count();
+        (n > 0).then(|| html! { <span class={classes!("total", *o)}>{ format!("{n} {o}") }</span> })
+    });
+    let tests = tasks.iter().filter_map(|(_, task)| task.tests);
+    let (total, failed) = tests.fold((0, 0), |(t, f), tests| (t + tests.total, f + tests.failed));
+    let rows = tasks.iter().map(|(stage, task)| {
+        html! {
+            <tr>
+                <td class={classes!("outcome", outcome(task))}>{ outcome(task) }</td>
+                <td>{ *stage }</td>
+                <td><a href={format!("/task/{}", task.id)}>{ &task.name }</a></td>
+                <td class="number">{ for took(task).map(duration) }</td>
+                <td class="number">{ for task.tests.map(|t| count(t.total)) }</td>
+                <td class="number">{ for task.tests.map(|t| count(t.failed)) }</td>
+            </tr>
+        }
+    });
+    html! {
+        <>
+            <p class="totals">
+                { for totals }
+                <span class="total">{ format!("{} tests, {} failed", count(total), count(failed)) }</span>
+            </p>
+            <table class="results">
+                <tr><th></th><th>{ "Stage" }</th><th>{ "Task" }</th><th>{ "Took" }</th><th>{ "Tests" }</th><th>{ "Failed" }</th></tr>
+                { for rows }
+            </table>
+        </>
+    }
+}
+
+/// "1,031,284": a count, for people to read.
+fn count(n: u64) -> String {
+    let digits = n.to_string();
+    let groups: Vec<&str> = (digits.as_bytes().rchunks(3).rev())
+        .filter_map(|group| std::str::from_utf8(group).ok())
+        .collect();
+    groups.join(",")
 }
 
 /// Where and how long the task ran (so far, by `now`), for the right end of the header. Nothing

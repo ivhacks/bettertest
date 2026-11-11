@@ -74,15 +74,8 @@ pub(super) async fn pipeline_events(
             runs: db.runs(&name, RECENT_RUNS as i64)?.into_iter().map(Arc::new).collect(),
         }))
     };
-    let wanted = |snapshot: &PipelineSnapshot, event: &Event| match event {
-        Event::RunStarted(run) => run.pipeline == snapshot.name,
-        Event::TaskStarted { pipeline, .. }
-        | Event::TaskState { pipeline, .. }
-        | Event::RunFinished { pipeline, .. } => *pipeline == snapshot.name,
-        Event::Log { .. }
-        | Event::Artifact { .. }
-        | Event::Worker(_)
-        | Event::WorkerForgotten { .. } => false,
+    let wanted = |snapshot: &PipelineSnapshot, event: &Event| {
+        event.run().is_some_and(|(pipeline, _)| pipeline == snapshot.name)
     };
     live(boss, snapshot, wanted)
 }
@@ -976,6 +969,19 @@ impl client::TaskIo for BossTask<'_> {
         self.boss.log_lines(self.id, lines);
     }
 
+    fn tests(&mut self, tests: Tests) {
+        let event = Event::TaskTests {
+            pipeline: self.run.pipeline.clone(),
+            run: self.run.id,
+            task: self.id,
+            tests,
+        };
+        let written = self.boss.record(|db| Ok((event, db.set_tests(self.id, tests)?)));
+        if let Err(e) = written {
+            eprintln!("could not record the tests of task {}: {e}", self.id);
+        }
+    }
+
     fn outputs(&self) -> Result<PathBuf, String> {
         task_artifacts_dir(self.id).map_err(|e| e.to_string())
     }
@@ -1042,16 +1048,7 @@ pub(super) async fn run_events(
 ) -> Result<Response, Failure> {
     let id = parse_id(&id)?;
     let snapshot = move |db: &Db| db.run(id);
-    let wanted = |run: &Run, event: &Event| match event {
-        Event::TaskStarted { run: r, .. }
-        | Event::TaskState { run: r, .. }
-        | Event::RunFinished { run: r, .. } => *r == run.id,
-        Event::RunStarted(_)
-        | Event::Log { .. }
-        | Event::Artifact { .. }
-        | Event::Worker(_)
-        | Event::WorkerForgotten { .. } => false,
-    };
+    let wanted = |run: &Run, event: &Event| event.run().is_some_and(|(_, id)| id == run.id);
     live(boss, snapshot, wanted)
 }
 
@@ -1149,6 +1146,7 @@ pub(super) async fn task_events(
     let wanted = |snapshot: &TaskSnapshot, event: &Event| match event {
         Event::TaskStarted { task, .. }
         | Event::TaskState { task, .. }
+        | Event::TaskTests { task, .. }
         | Event::Log { task, .. }
         | Event::Artifact { task, .. } => *task == snapshot.task.id,
         Event::RunFinished { run, .. } => *run == snapshot.run.id,

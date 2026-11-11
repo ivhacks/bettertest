@@ -18,6 +18,7 @@ fn run(n: u128) -> Run {
                 started: None,
                 ended: None,
                 carried_from: None,
+                tests: None,
             }],
         }],
         commit: None,
@@ -53,4 +54,42 @@ fn an_event_replaces_only_the_run_it_changes() {
         state: RunState::Pass,
     });
     assert!(snapshot.runs.iter().zip(&before).all(|(a, b)| Arc::ptr_eq(a, b)));
+}
+
+#[test]
+fn test_counts_land_on_their_task() {
+    let tests = Tests {
+        total: 1234,
+        failed: 2,
+    };
+    let event = Event::TaskTests {
+        pipeline: "app".into(),
+        run: Uuid::from_u128(1),
+        task: Uuid::from_u128(101),
+        tests,
+    };
+    assert_eq!(event.run(), Some(("app", Uuid::from_u128(1))));
+    let mut snapshot = PipelineSnapshot {
+        name: "app".into(),
+        pipelines: vec!["app".into()],
+        pipeline: Err("not needed".into()),
+        runs: vec![Arc::new(run(2)), Arc::new(run(1))],
+    };
+    snapshot.apply(&event);
+    assert_eq!(snapshot.runs[1].stages[0].tasks[0].tests, Some(tests));
+    assert_eq!(snapshot.runs[0].stages[0].tasks[0].tests, None);
+    let mut snapshot = TaskSnapshot {
+        now: 0,
+        run: run(1),
+        carried_from: None,
+        log_deleted: None,
+        artifacts_deleted: None,
+        stage: "Test".into(),
+        task: run(1).stages[0].tasks[0].clone(),
+        lines: vec![],
+        artifacts: vec![],
+    };
+    snapshot.apply(&event);
+    assert_eq!(snapshot.task.tests, Some(tests));
+    assert_eq!(snapshot.run.stages[0].tasks[0].tests, Some(tests));
 }

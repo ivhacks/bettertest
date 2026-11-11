@@ -1,4 +1,5 @@
-// The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs.
+// The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs. With
+// ?run=<id>, what the tasks of that run came to instead of the grid.
 
 use crate::{PageProps, account, cancel_run, follow, view};
 use bettertest_shared::*;
@@ -19,6 +20,8 @@ pub struct PipelinePage {
     main: NodeRef,
     // Made once: a new callback would differ from the old one, and render every row again.
     cancel: Callback<String>,
+    // The run whose results show instead of the grid.
+    run: Option<String>,
     _resize: EventListener,
     _fonts: Option<EventListener>,
 }
@@ -56,6 +59,8 @@ impl Component for PipelinePage {
             measure: true,
             main: NodeRef::default(),
             cancel: link.callback(PipelineMsg::Cancel),
+            run: (window().location().search().ok())
+                .and_then(|query| Some(query.strip_prefix("?run=")?.to_string())),
             _resize: EventListener::new(&window(), "resize", move |_| resized.emit(())),
             _fonts: Some(EventListener::new(&fonts, "loadingdone", move |_| {
                 fonts_loaded.emit(())
@@ -114,7 +119,7 @@ impl Component for PipelinePage {
         let Ok(pipeline) = &snapshot.pipeline else {
             return;
         };
-        if !std::mem::take(&mut self.measure) {
+        if !std::mem::take(&mut self.measure) || self.run.is_some() {
             return;
         }
         let elements = |selector: &str| {
@@ -177,12 +182,24 @@ impl Component for PipelinePage {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},
         };
-        let body = match &self.snapshot {
-            Some(PipelineSnapshot {
+        let run = (self.snapshot.as_ref()).zip(self.run.as_ref()).map(|(snapshot, id)| {
+            let found = snapshot.runs.iter().find(|run| run.id.to_string() == *id);
+            (id, found)
+        });
+        let mut crumbs = html! {};
+        let body = match (&self.snapshot, run) {
+            (_, Some((_, Some(run)))) => {
+                crumbs = view::run_page_crumbs(run, &self.cancel);
+                view::results(run)
+            }
+            (_, Some((id, None))) => {
+                view::notice(&Some(format!("run {id} is not one of the {RECENT_RUNS} newest")))
+            }
+            (Some(PipelineSnapshot {
                 pipeline: Ok(pipeline),
                 runs,
                 ..
-            }) => {
+            }), None) => {
                 let rows = runs.iter().map(|run| {
                     html! {
                         <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
@@ -191,14 +208,14 @@ impl Component for PipelinePage {
                 });
                 view::grid(pipeline, &self.layout, html! { { for rows } })
             }
-            Some(PipelineSnapshot {
+            (Some(PipelineSnapshot {
                 pipeline: Err(e), ..
-            }) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
-            None => html! {},
+            }), None) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
+            (None, _) => html! {},
         };
         html! {
             <>
-                { view::header(html! {}, html! { <>{ start }{ account() }</> }) }
+                { view::header(crumbs, html! { <>{ start }{ account() }</> }) }
                 { view::notice(&self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
                 { tabs }

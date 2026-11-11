@@ -181,3 +181,37 @@ fn settings_default_to_keeping_everything() {
     db.set_settings(&Settings::default()).unwrap();
     assert_eq!(db.settings().unwrap(), Settings::default());
 }
+
+#[test]
+fn test_counts_stay_with_their_task_and_carry_over() {
+    let mut db = db();
+    let pipeline = Pipeline {
+        stages: vec![Stage {
+            name: "Test".into(),
+            sandbox: None,
+            tasks: vec![task("quick"), task("fts")],
+        }],
+        sandboxes: Default::default(),
+    };
+    let run = db
+        .insert_run("app", &pipeline, None, &BTreeMap::new())
+        .unwrap();
+    let quick = run.stages[0].tasks[0].id;
+    let tests = Tests {
+        total: 1_031_284,
+        failed: 3,
+    };
+    db.set_tests(quick, tests).unwrap();
+    let run = db.run(run.id).unwrap().unwrap();
+    assert_eq!(run.stages[0].tasks[0].tests, Some(tests));
+    assert_eq!(run.stages[0].tasks[1].tests, None);
+    let carried = BTreeMap::from([(
+        ("Test".to_string(), "quick".to_string()),
+        run.stages[0].tasks[0].clone(),
+    )]);
+    let rerun = db.insert_run("app", &pipeline, None, &carried).unwrap();
+    let rerun = db.run(rerun.id).unwrap().unwrap();
+    assert_eq!(rerun.stages[0].tasks[0].carried_from, Some(quick));
+    assert_eq!(rerun.stages[0].tasks[0].tests, Some(tests));
+    assert_eq!(rerun.stages[0].tasks[1].tests, None);
+}

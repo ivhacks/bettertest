@@ -623,6 +623,7 @@ async fn start_task(
     };
     let task_files = serde_json::json!({
         "outputs": files.outputs(),
+        "tests": files.dir.join("tests"),
         "inputs": files.inputs(),
         "boss": boss,
         "boss_token": req.boss_token,
@@ -680,6 +681,10 @@ async fn start_task(
             {
                 return;
             }
+        }
+        // What the task said of its tests with tests(), as one line of json.
+        if let Ok(tests) = fs::read_to_string(files.dir.join("tests")) {
+            let _ = tx.send(Event::default().event("tests").data(tests)).await;
         }
         let _ = tx
             .send(Event::default().event("exit").data(code.to_string()))

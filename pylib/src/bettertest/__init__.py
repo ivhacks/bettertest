@@ -363,34 +363,28 @@ def _call(argv: list[str | Path]) -> None:
         raise SystemExit(result.returncode)
 
 
-def run(command: str) -> None:
-    """Run a shell command inside this task's container or vm. A non-zero exit fails the task."""
+def run(command: str) -> str:
+    """Run a shell command inside this task's container or vm. Returns what it printed on stdout,
+    which goes to the task's log as well. A non-zero exit fails the task."""
     sandbox = _sandbox()
     print(f"$ {command}", flush=True)
     if sandbox["kind"] == "container":
-        code = _in_container(sandbox["commands"], command)
-        if code != 0:
-            raise SystemExit(code)
+        code, output = _in_container(sandbox["commands"], command)
     else:
         port = str(sandbox["port"])
-        _call(
-            [
-                "ssh",
-                *_SSH_OPTIONS,
-                "-i",
-                sandbox["key"],
-                "-p",
-                port,
-                "bt@127.0.0.1",
-                command,
-            ]
-        )
+        ssh = ["ssh", *_SSH_OPTIONS, "-i", sandbox["key"], "-p", port, "bt@127.0.0.1", command]
+        with subprocess.Popen(ssh, stdout=subprocess.PIPE) as process:
+            output = _pump(process.stdout.fileno(), 1) if process.stdout else b""
+            code = process.wait()
+    if code != 0:
+        raise SystemExit(code)
+    return output.decode(errors="replace")
 
 
-def _in_container(commands: str, command: str) -> int:
+def _in_container(commands: str, command: str) -> tuple[int, bytes]:
     """Runs `command` in the container with the shell it idles in (see worker.rs), which is much
     quicker than a docker exec: names a directory beside `commands` holding the command and fifos
-    for its stdout, stderr and exit code. Returns the exit code."""
+    for its stdout, stderr and exit code. Returns the exit code and what it printed on stdout."""
     name = os.urandom(8).hex()
     here = os.path.join(os.path.dirname(commands), name)
     os.mkdir(here)
@@ -414,19 +408,32 @@ def _in_container(commands: str, command: str) -> int:
         err = os.open(os.path.join(here, "err"), os.O_RDONLY)
         errors = threading.Thread(target=_pump, args=(err, 2))
         errors.start()
-        _pump(out, 1)
+        output = _pump(out, 1)
         errors.join()
-        return int(Path(here, "exit").read_text())
+        os.close(out)
+        os.close(err)
+        return int(Path(here, "exit").read_text()), output
     finally:
         shutil.rmtree(here)
 
 
-def _pump(source: int, sink: int) -> None:
+def _pump(source: int, sink: int) -> bytes:
+    """Copies `source` to `sink` until it ends. Returns what it copied."""
+    copied = bytearray()
     while chunk := os.read(source, 65536):
+        copied += chunk
         view = memoryview(chunk)
         while view:
             view = view[os.write(sink, view) :]
-    os.close(source)
+    return bytes(copied)
+
+
+def tests(*, total: int, failed: int) -> None:
+    """Say how many tests this task ran, and how many of them failed. The run's page adds them up
+    over every task."""
+    if _files is None:
+        raise RuntimeError("tests() only works inside a task")
+    Path(_files["tests"]).write_text(json.dumps({"total": total, "failed": failed}))
 
 
 def copy(local: str | Path, remote: str) -> None:
