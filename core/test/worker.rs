@@ -80,6 +80,8 @@ async fn worker(capacity: usize) -> String {
     let shared = Shared {
         vms: Arc::new(vm::Vms::new(1)),
         slots: Arc::new(Semaphore::new(capacity)),
+        ready: Arc::default(),
+        capacity,
     };
     let app = router(shared, vec!["x86".into()], capacity as u32);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -224,11 +226,17 @@ async fn start_container(client: &reqwest::Client, url: &str, image: &str) -> St
 
 /// The SSE stream of task C.commands of `pipedef`, run in container `id`, up to its exit.
 async fn run_in_container(client: &reqwest::Client, url: &str, id: &str, pipedef: &str) -> String {
-    let form = reqwest::multipart::Form::new()
+    run_task(client, url, Some(&format!("container:{id}")), pipedef).await
+}
+
+async fn run_task(client: &reqwest::Client, url: &str, target: Option<&str>, pipedef: &str) -> String {
+    let mut form = reqwest::multipart::Form::new()
         .text("pipedef", pipedef.to_string())
         .text("stage", "C")
-        .text("task", "commands")
-        .text("target", format!("container:{id}"));
+        .text("task", "commands");
+    if let Some(target) = target {
+        form = form.text("target", target.to_string());
+    }
     let mut response = client
         .post(format!("{url}/start-task"))
         .multipart(form)
@@ -385,4 +393,37 @@ async fn deleting_a_container_deletes_the_volumes_its_image_declares() {
         .unwrap();
     assert!(deleted.status().is_success(), "{}", deleted.status());
     assert!(!exists(), "{volume} outlived its container");
+}
+
+#[tokio::test]
+async fn each_task_runs_in_a_directory_of_its_own() {
+    // The second runs on the python the first one left ready, started before either directory was.
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let pipedef = "\
+import os
+
+from bettertest import Labels, Stage, task
+
+
+class L(Labels):
+    x86 = 'x86'
+
+
+class C(Stage):
+    labels = (L.x86,)
+
+    @task()
+    def commands():
+        print(os.getcwd())
+";
+    let mut dirs = vec![];
+    for _ in 0..2 {
+        let log = run_task(&client, &url, None, pipedef).await;
+        assert_eq!(events(&log, "exit"), ["0"], "{log}");
+        dirs.extend(events(&log, "stdout"));
+    }
+    assert_eq!(dirs.len(), 2);
+    assert!(dirs.iter().all(|d| d.ends_with("/src")), "{dirs:?}");
+    assert_ne!(dirs.first(), dirs.last());
 }

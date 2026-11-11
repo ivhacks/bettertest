@@ -2,7 +2,7 @@
 // (or dispatch) decides what runs where, and starts and stops sandboxes explicitly, so they can be
 // shared by several tasks or started early to have them warm.
 
-use crate::{boss, client, pipedef, vm, workdir};
+use crate::{boss, client, lock, pipedef, vm, workdir};
 use axum::{
     Json, Router,
     body::Body,
@@ -18,12 +18,12 @@ use bettertest_shared::{Arch, WorkerInfo, valid_artifact_name};
 use serde::{Deserialize, Serialize};
 use std::{
     convert::Infallible, error::Error, fs, io, net::SocketAddr, path::PathBuf, process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     net::TcpListener,
-    process::Command,
+    process::{Child, Command},
     spawn,
     sync::{Semaphore, mpsc},
 };
@@ -144,6 +144,9 @@ fn internal(e: impl ToString) -> Failure {
 struct Shared {
     vms: Arc<vm::Vms>,
     slots: Arc<Semaphore>,
+    /// Pythons started before there was a task for them, at most one a slot (see ready_python).
+    ready: Arc<Mutex<Vec<Child>>>,
+    capacity: usize,
 }
 
 impl FromRef<Shared> for Arc<vm::Vms> {
@@ -180,6 +183,8 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
     let shared = Shared {
         vms: Arc::new(vm::Vms::new(port)),
         slots: Arc::new(Semaphore::new(capacity as usize)),
+        ready: Arc::default(),
+        capacity: capacity as usize,
     };
     let router = router(shared, labels, capacity);
 
@@ -585,19 +590,21 @@ async fn start_task(
             .map_err(internal)?;
     }
 
-    // python -u: unbuffered, so lines show up as the task prints them, not in bursts.
-    let mut child = Command::new("python3")
-        .args(["-u", "-c", pipedef::GLUE, "start", &req.stage, &req.task])
-        .current_dir(files.src())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // If the caller hangs up, the stream below is dropped, and with it the task.
-        .kill_on_drop(true)
-        // A group of its own, so whatever python starts can be killed with it.
-        .process_group(0)
-        .spawn()
-        .map_err(|e| internal(format!("could not start python3: {e}")))?;
+    let ready = lock(&shared.ready).pop();
+    let mut child = match ready {
+        Some(child) => child,
+        None => ready_python().await.map_err(internal)?,
+    };
+    let (ready, capacity) = (shared.ready.clone(), shared.capacity);
+    spawn(async move {
+        // Failing, it fails the next task too, which says why.
+        if let Ok(child) = ready_python().await {
+            let mut ready = lock(&ready);
+            if ready.len() < capacity {
+                ready.push(child);
+            }
+        }
+    });
     let group = child.id().map(ProcessGroup);
     let (Some(mut stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -614,7 +621,9 @@ async fn start_task(
         "pipeline": req.pipeline,
         "run": req.run,
     });
-    let payload = pipedef::glue_stdin(&req.pipedef, target, task_files);
+    let task = Some((req.stage.as_str(), req.task.as_str()));
+    let src = files.src();
+    let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src));
 
     let (tx, rx) = mpsc::channel::<Event>(64);
     spawn(async move {
@@ -671,6 +680,28 @@ async fn start_task(
 
     let stream = ReceiverStream::new(rx).map(Ok::<_, Infallible>);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// A python that has the library and waits for the rest of glue.py's input, to start a task. Most of
+/// starting a task is starting python and the library.
+async fn ready_python() -> Result<Child, String> {
+    // python -u: unbuffered, so lines show up as the task prints them, not in bursts.
+    let mut child = Command::new("python3")
+        .args(["-u", "-c", pipedef::GLUE, "start"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // If the caller hangs up, the stream below is dropped, and with it the task.
+        .kill_on_drop(true)
+        // A group of its own, so whatever python starts can be killed with it.
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("could not start python3: {e}"))?;
+    let stdin = child.stdin.as_mut().ok_or("python3 is missing a pipe")?;
+    // Fits in the pipe, so this does not wait for python.
+    let library = pipedef::library_line();
+    stdin.write_all(&library).await.map_err(|e| e.to_string())?;
+    Ok(child)
 }
 
 /// Where run() in python sends commands: the task's sandbox, as `start-task` names it
