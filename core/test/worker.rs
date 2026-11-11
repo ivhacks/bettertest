@@ -435,3 +435,31 @@ class C(Stage):
     assert!(dirs.iter().all(|d| d.ends_with("/src")), "{dirs:?}");
     assert_ne!(dirs.first(), dirs.last());
 }
+
+#[tokio::test]
+async fn run_returns_what_the_command_printed_and_tests_reach_the_caller() {
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let id = start_container(&client, &url, "debian:trixie").await;
+    let pipedef = "\
+from bettertest import Stage, run, task, tests
+
+
+class C(Stage):
+    @task()
+    def commands():
+        out = run('echo 2 errors; echo out of 9 tests')
+        assert out == '2 errors\\nout of 9 tests\\n', repr(out)
+        tests(total=9, failed=2)
+";
+    let log = run_in_container(&client, &url, &id, pipedef).await;
+    client
+        .delete(format!("{url}/container/{id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(events(&log, "exit"), ["0"], "{log}");
+    assert_eq!(events(&log, "tests"), [r#"{"total": 9, "failed": 2}"#]);
+    // Before exit, so the caller has the counts when it records how the task ended.
+    assert!(log.find("event: tests") < log.find("event: exit"));
+}

@@ -62,6 +62,7 @@ fn run(states: &[(&str, &[(&str, TaskState)])]) -> Run {
                         started: None,
                         ended: None,
                         carried_from: None,
+                        tests: None,
                     })
                     .collect(),
             })
@@ -478,12 +479,14 @@ fn boss(up: BTreeMap<String, Watched>) -> Shared {
 
 /// A worker that runs every task it is sent in a moment.
 async fn quick_worker() -> String {
-    let start_task = || async {
+    worker_saying("event: exit\ndata: 0\n\n").await
+}
+
+/// A worker that answers every task it is sent with `stream`, in a moment.
+async fn worker_saying(stream: &'static str) -> String {
+    let start_task = move || async move {
         sleep(Duration::from_millis(5)).await;
-        (
-            [(header::CONTENT_TYPE, "text/event-stream")],
-            "event: exit\ndata: 0\n\n",
-        )
+        ([(header::CONTENT_TYPE, "text/event-stream")], stream)
     };
     let app = Router::new().route("/start-task", post(start_task));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -569,4 +572,59 @@ async fn rerunning_a_task_of_a_parallel_stage_runs_only_that_task() {
         parallel_stage(Some((&earlier, "t8"))).await,
         (false, vec!["t8".to_string()])
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_counts_a_task_reports_are_kept_and_sent_live() {
+    let url = worker_saying(concat!(
+        "event: tests\ndata: {\"total\": 1234, \"failed\": 2}\n\n",
+        "event: exit\ndata: 1\n\n",
+    ))
+    .await;
+    let boss = boss(workers(&[(&url, &["x86"], 0, 1)]));
+    let mut events = boss.events.subscribe();
+    let sandbox = Sandbox {
+        worker: Some(url),
+        labels: vec![],
+        image: None,
+        vm: None,
+        arch: None,
+        parallel: true,
+    };
+    let stage = Stage {
+        name: "Test".into(),
+        sandbox: Some(sandbox.clone()),
+        tasks: vec![task("fts")],
+    };
+    let pipeline = Pipeline {
+        stages: vec![stage.clone()],
+        sandboxes: Default::default(),
+    };
+    let run = boss
+        .db()
+        .insert_run("app", &pipeline, None, &BTreeMap::new())
+        .unwrap();
+    let r = Running {
+        boss: boss.clone(),
+        run: Arc::new(run.clone()),
+        source: "".into(),
+        cancelled: watch::channel(None).1,
+        spanning: Spanning::default(),
+    };
+    assert!(!run_shared_stage(&r, &stage, &sandbox, &run.stages[0]).await);
+    let tests = Tests {
+        total: 1234,
+        failed: 2,
+    };
+    let fts = run.stages[0].tasks[0].id;
+    let mut sent = vec![];
+    while let Ok(event) = events.try_recv() {
+        if let Event::TaskTests { task, tests, .. } = event {
+            sent.push((task, tests));
+        }
+    }
+    assert_eq!(sent, [(fts, tests)]);
+    let kept = boss.db().run(run.id).unwrap().unwrap();
+    assert_eq!(kept.stages[0].tasks[0].tests, Some(tests));
+    assert_eq!(kept.stages[0].tasks[0].state, Fail);
 }

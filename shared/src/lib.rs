@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 // Pipeline structure, as dumped by the pipedef. This is the definition, not an instance.
@@ -100,6 +100,15 @@ pub struct TaskRun {
     pub ended: Option<u64>,
     // In a rerun, a task it did not run again: the task run whose result it carries over.
     pub carried_from: Option<Uuid>,
+    // What the task said of its tests with tests(). None if it said nothing.
+    pub tests: Option<Tests>,
+}
+
+/// How many tests a task ran, and how many of them failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tests {
+    pub total: u64,
+    pub failed: u64,
 }
 
 impl TaskRun {
@@ -222,9 +231,9 @@ pub struct PipelineSnapshot {
     // Every pipeline the boss knows, for the tabs.
     pub pipelines: Vec<String>,
     // The pipedef as it is right now. Err holds python's complaint when it does not parse.
-    pub pipeline: Result<Pipeline, String>,
-    // Newest first.
-    pub runs: Vec<Run>,
+    pub pipeline: Result<Arc<Pipeline>, String>,
+    // Newest first. Shared, so a page can tell a run that did not change by its pointer alone.
+    pub runs: Vec<Arc<Run>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -400,6 +409,12 @@ pub enum Event {
         run: Uuid,
         state: RunState,
     },
+    TaskTests {
+        pipeline: String,
+        run: Uuid,
+        task: Uuid,
+        tests: Tests,
+    },
     Log {
         task: Uuid,
         line: LogLine,
@@ -415,6 +430,23 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// The pipeline and run the event is about, if it is about a run.
+    pub fn run(&self) -> Option<(&str, Uuid)> {
+        match self {
+            Event::RunStarted(run) => Some((&run.pipeline, run.id)),
+            Event::TaskStarted { pipeline, run, .. }
+            | Event::TaskState { pipeline, run, .. }
+            | Event::TaskTests { pipeline, run, .. }
+            | Event::RunFinished { pipeline, run, .. } => Some((pipeline, *run)),
+            Event::Log { .. }
+            | Event::Artifact { .. }
+            | Event::Worker(_)
+            | Event::WorkerForgotten { .. } => None,
+        }
+    }
+}
+
 impl Run {
     /// The first 6 hex digits of the id, the way git abbreviates commit hashes. For people to read;
     /// links and the API use the full id.
@@ -424,7 +456,9 @@ impl Run {
 
     pub fn apply(&mut self, event: &Event) {
         match event {
-            Event::TaskStarted { run, task, .. } | Event::TaskState { run, task, .. }
+            Event::TaskStarted { run, task, .. }
+            | Event::TaskState { run, task, .. }
+            | Event::TaskTests { run, task, .. }
                 if *run == self.id =>
             {
                 if let Some(t) = self.task_mut(*task) {
@@ -488,12 +522,14 @@ impl PipelineSnapshot {
     pub fn apply(&mut self, event: &Event) {
         match event {
             Event::RunStarted(run) if run.pipeline == self.name => {
-                self.runs.insert(0, run.clone());
+                self.runs.insert(0, Arc::new(run.clone()));
                 self.runs.truncate(RECENT_RUNS);
             }
             _ => {
-                for run in &mut self.runs {
-                    run.apply(event);
+                // Only the run the event changes becomes a new one.
+                let id = event.run().map(|(_, id)| id);
+                if let Some(run) = self.runs.iter_mut().find(|run| Some(run.id) == id) {
+                    Arc::make_mut(run).apply(event);
                 }
             }
         }
@@ -515,6 +551,7 @@ impl TaskRun {
                     self.ended = Some(*at);
                 }
             }
+            Event::TaskTests { tests, .. } => self.tests = Some(*tests),
             _ => {}
         }
     }
@@ -524,7 +561,9 @@ impl TaskSnapshot {
     pub fn apply(&mut self, event: &Event) {
         self.run.apply(event);
         match event {
-            Event::TaskStarted { task, .. } | Event::TaskState { task, .. }
+            Event::TaskStarted { task, .. }
+            | Event::TaskState { task, .. }
+            | Event::TaskTests { task, .. }
                 if *task == self.task.id =>
             {
                 self.task.apply(event)
@@ -556,3 +595,7 @@ impl WorkersSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../test/lib.rs"]
+mod tests;

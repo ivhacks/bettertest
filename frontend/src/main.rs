@@ -27,10 +27,7 @@ fn main() {
     fade_released_buttons();
     spawn_local(async {
         let path = window().location().pathname().unwrap_or_default();
-        let me = match Request::get("/api/me").send().await {
-            Ok(response) => response.json::<Me>().await.ok(),
-            Err(_) => None,
-        };
+        let me = fetch::<Me>(Request::get("/api/me").build()).await.ok();
         // A boss that lets nobody in without logging in sends everyone else to log in first.
         if let Some(me) = &me
             && me.role == Role::None
@@ -78,13 +75,8 @@ fn render(path: &str) {
 fn cancel_run(run: String, notice: Callback<String>) {
     spawn_local(async move {
         let url = format!("/api/cancel-run/{run}");
-        match Request::post(&url).send().await {
-            Ok(response) if response.ok() => {}
-            Ok(response) => {
-                let body = response.text().await.unwrap_or_default();
-                notice.emit(format!("could not cancel the run: {body}"));
-            }
-            Err(e) => notice.emit(format!("could not cancel the run: {e}")),
+        if let Err(e) = send(Request::post(&url).build()).await {
+            notice.emit(format!("could not cancel the run: {e}"));
         }
     });
 }
@@ -226,12 +218,23 @@ fn monotonic() -> f64 {
     window().performance().map_or(0.0, |p| p.now())
 }
 
-/// POSTs `body` as json to `url`. Err says what went wrong, for a notice.
-async fn post_json(url: &str, body: &impl serde::Serialize) -> Result<(), String> {
-    let request = Request::post(url).json(body).map_err(|e| e.to_string())?;
-    match request.send().await {
-        Ok(response) if response.ok() => Ok(()),
-        Ok(response) => Err(response.text().await.unwrap_or_default()),
-        Err(e) => Err(e.to_string()),
-    }
+/// Sends `request` to the boss and returns its reply. Err says why not, for a notice: what the boss
+/// said refusing it, or what went wrong on the way.
+async fn send(request: Result<Request, gloo_net::Error>) -> Result<String, String> {
+    let response = request.map_err(|e| e.to_string())?.send().await;
+    let response = response.map_err(|e| e.to_string())?;
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    if response.ok() { Ok(body) } else { Err(body) }
+}
+
+/// The boss's json reply to `request`, as `T`.
+async fn fetch<T: DeserializeOwned>(
+    request: Result<Request, gloo_net::Error>,
+) -> Result<T, String> {
+    serde_json::from_str(&send(request).await?).map_err(|e| e.to_string())
+}
+
+/// POSTs `body` as json to `url`, for the reply only to say whether it worked.
+async fn post_json(url: &str, body: &impl serde::Serialize) -> Result<String, String> {
+    send(Request::post(url).json(body)).await
 }

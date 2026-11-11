@@ -20,10 +20,13 @@ pub fn header(crumbs: Html, right: Html) -> Html {
 }
 
 pub fn notice(text: &Option<String>) -> Html {
-    match text {
-        Some(text) => html! { <pre class="notice">{ text }</pre> },
-        None => html! {},
-    }
+    html! { { for text.iter().map(|text| html! { <pre class="notice">{ text }</pre> }) } }
+}
+
+/// In place of the results of run `id`, which the snapshot does not hold.
+pub fn not_recent(id: &str) -> Html {
+    let why = format!("run {id} is not one of the {RECENT_RUNS} newest");
+    notice(&Some(why))
 }
 
 /// One tab per pipeline along the bottom, like sheets in a spreadsheet.
@@ -79,13 +82,8 @@ pub fn label_layout(columns: &[f64], labels: &[f64], line: f64) -> (f64, f64) {
 
 /// One row per run, newest on top. The columns are the tasks of the pipedef as it is now. A run
 /// from before a task existed shows an empty cell there. A CSS grid, one track per task, each
-/// stage `stage_weight` wide; stages sit further apart than tasks.
-pub fn grid(
-    pipeline: &Pipeline,
-    runs: &[Run],
-    layout: &GridLayout,
-    cancel: &Callback<String>,
-) -> Html {
+/// stage `stage_weight` wide; stages sit further apart than tasks. `rows` are `run_row`s.
+pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
     // Room for a running run's cancel button beside its id.
     let mut columns = String::from("88px");
     for stage in &pipeline.stages {
@@ -121,7 +119,7 @@ pub fn grid(
                 </tr>
             </thead>
             <tbody>
-                { for runs.iter().map(|run| run_row(pipeline, run, layout, cancel)) }
+                { rows }
             </tbody>
         </table>
     }
@@ -133,7 +131,12 @@ fn cell_classes(layout: &GridLayout, stage: usize, task: usize) -> Classes {
     classes!((task == 0).then_some("first"), dense.then_some("dense"))
 }
 
-fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout, cancel: &Callback<String>) -> Html {
+pub fn run_row(
+    pipeline: &Pipeline,
+    run: &Run,
+    layout: &GridLayout,
+    cancel: &Callback<String>,
+) -> Html {
     // By (stage, task): a stage can have thousands of tasks, too many to search for each cell.
     let task_runs: HashMap<(&str, &str), &TaskRun> = run
         .stages
@@ -178,7 +181,7 @@ fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout, cancel: &Callbac
     html! {
         <tr>
             <th class={classes!("run", run.state.as_str())} title={commit}>
-                { cancel_button(run, cancel) }{ run.short_id() }
+                { cancel_button(run, cancel) }<a href={run_href(run)}>{ run.short_id() }</a>
             </th>
             { for cells }
         </tr>
@@ -200,18 +203,99 @@ fn cancel_button(run: &Run, cancel: &Callback<String>) -> Html {
     }
 }
 
-pub fn task_crumbs(snapshot: &TaskSnapshot, cancel: &Callback<String>) -> Html {
-    let run = &snapshot.run;
+/// The path to a run, at the left of the header: its pipeline, the run and what it tested.
+fn run_crumbs(run: &Run, cancel: &Callback<String>) -> Html {
     html! {
         <>
             <a href={format!("/pipeline/{}", run.pipeline)}>{ &run.pipeline }</a>
-            <span class="run">{ cancel_button(run, cancel) }{ run.short_id() }</span>
+            <span class="run">
+                { cancel_button(run, cancel) }<a href={run_href(run)}>{ run.short_id() }</a>
+            </span>
             { for run.commit.iter().map(|c| html! { <span class="commit">{ c.label() }</span> }) }
+        </>
+    }
+}
+
+pub fn task_crumbs(snapshot: &TaskSnapshot, cancel: &Callback<String>) -> Html {
+    html! {
+        <>
+            { run_crumbs(&snapshot.run, cancel) }
             <span>{ &snapshot.stage }</span>
             <span>{ &snapshot.task.name }</span>
             <span class={classes!("state", snapshot.task.state.as_str())}>{ snapshot.task.state.as_str() }</span>
         </>
     }
+}
+
+/// Where a run's results are: on its pipeline's page, in place of the grid.
+fn run_href(run: &Run) -> String {
+    format!("/pipeline/{}?run={}", run.pipeline, run.id)
+}
+
+pub fn run_page_crumbs(run: &Run, cancel: &Callback<String>) -> Html {
+    html! {
+        <>
+            { run_crumbs(run, cancel) }
+            <span class={classes!("state", run.state.as_str())}>{ run.state.as_str() }</span>
+        </>
+    }
+}
+
+/// What the tasks of a run came to: how many of them passed, failed and so on, and how many tests
+/// they ran, then every task, failures first and the slowest next. A task that failed without
+/// failing a test errored: it crashed, timed out, or never said what its tests did.
+pub fn results(run: &Run) -> Html {
+    let outcome = |task: &TaskRun| match (task.state, task.tests) {
+        (TaskState::Fail, Some(tests)) if tests.failed > 0 => "fail",
+        (TaskState::Fail, _) => "error",
+        (state, _) => state.as_str(),
+    };
+    const OUTCOMES: [&str; 6] = ["fail", "error", "running", "pending", "skipped", "pass"];
+    let rank = |task: &TaskRun| OUTCOMES.iter().position(|o| *o == outcome(task));
+    let took = |task: &TaskRun| task.state.is_over().then(|| task.runtime(0)).flatten();
+    let mut tasks: Vec<(&str, &TaskRun)> = (run.stages.iter())
+        .flat_map(|stage| stage.tasks.iter().map(|task| (stage.name.as_str(), task)))
+        .collect();
+    tasks.sort_by_key(|(_, task)| (rank(task), std::cmp::Reverse(took(task))));
+    let totals = OUTCOMES.iter().filter_map(|o| {
+        let n = tasks.iter().filter(|(_, task)| outcome(task) == *o).count();
+        (n > 0).then(|| html! { <span class={classes!("state", *o)}>{ format!("{n} {o}") }</span> })
+    });
+    let tests = tasks.iter().filter_map(|(_, task)| task.tests);
+    let (total, failed) = tests.fold((0, 0), |(t, f), tests| (t + tests.total, f + tests.failed));
+    let rows = tasks.iter().map(|(stage, task)| {
+        html! {
+            <tr>
+                <td><span class={classes!("state", outcome(task))}>{ outcome(task) }</span></td>
+                <td>{ *stage }</td>
+                <td><a href={format!("/task/{}", task.id)}>{ &task.name }</a></td>
+                <td class="number">{ for took(task).map(duration) }</td>
+                <td class="number">{ for task.tests.map(|t| count(t.total)) }</td>
+                <td class="number">{ for task.tests.map(|t| count(t.failed)) }</td>
+            </tr>
+        }
+    });
+    html! {
+        <>
+            <p class="totals">
+                { for totals }
+                <span>{ format!("{} tests, {} failed", count(total), count(failed)) }</span>
+            </p>
+            <table class="results">
+                <tr><th></th><th>{ "Stage" }</th><th>{ "Task" }</th><th>{ "Took" }</th><th>{ "Tests" }</th><th>{ "Failed" }</th></tr>
+                { for rows }
+            </table>
+        </>
+    }
+}
+
+/// "1,031,284": a count, for people to read.
+fn count(n: u64) -> String {
+    let digits = n.to_string();
+    let groups: Vec<&str> = (digits.as_bytes().rchunks(3).rev())
+        .filter_map(|group| std::str::from_utf8(group).ok())
+        .collect();
+    groups.join(",")
 }
 
 /// Where and how long the task ran (so far, by `now`), for the right end of the header. Nothing
@@ -360,6 +444,18 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
         revoke,
         remove,
     } = actions;
+    // Each with its label, and when it expires if it does.
+    let credentials = |listed: &mut dyn Iterator<Item = (i64, &String, Option<String>)>| {
+        let listed: Vec<Html> = listed
+            .map(|(credential, label, title)| html! {
+                <span class="cert" {title}>
+                    { label }
+                    <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
+                </span>
+            })
+            .collect();
+        html! { <td class="certs">if listed.is_empty() { { "-" } }{ for listed }</td> }
+    };
     let count = |n: u32| {
         if n == 0 {
             "-".to_string()
@@ -415,30 +511,8 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                                 <td colspan="4" class="hint">{ "Anyone who has not logged in" }</td>
                             } else {
                                 <td>{ if u.passwords > 0 { "set" } else { "-" } }</td>
-                                <td class="certs">
-                                    if u.certs.is_empty() { { "-" } }
-                                    { for u.certs.iter().map(|c| {
-                                        let credential = c.id;
-                                        html! {
-                                            <span class="cert" title={format!("expires {}", c.expires)}>
-                                                { &c.label }
-                                                <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
-                                            </span>
-                                        }
-                                    }) }
-                                </td>
-                                <td class="certs">
-                                    if u.keys.is_empty() { { "-" } }
-                                    { for u.keys.iter().map(|k| {
-                                        let credential = k.id;
-                                        html! {
-                                            <span class="cert">
-                                                { &k.label }
-                                                <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
-                                            </span>
-                                        }
-                                    }) }
-                                </td>
+                                { credentials(&mut u.certs.iter().map(|c| (c.id, &c.label, Some(format!("expires {}", c.expires))))) }
+                                { credentials(&mut u.keys.iter().map(|k| (k.id, &k.label, None))) }
                                 <td>{ count(u.tokens) }</td>
                             }
                             <td class="actions">{ for actions }</td>

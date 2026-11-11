@@ -69,7 +69,7 @@ fn pipeline() -> Pipeline {
 #[test]
 fn grid_matches_tasks_by_name() {
     // Run #1 predates the e2e task, so its e2e cell is empty.
-    let runs = vec![Run {
+    let runs = [Run {
         id: id(1),
         pipeline: "app".into(),
         state: RunState::Running,
@@ -84,6 +84,7 @@ fn grid_matches_tasks_by_name() {
                     started: None,
                     ended: None,
                     carried_from: None,
+                    tests: None,
                 }],
             },
             StageRun {
@@ -96,18 +97,20 @@ fn grid_matches_tasks_by_name() {
                     started: None,
                     ended: None,
                     carried_from: None,
+                    tests: None,
                 }],
             },
         ],
         commit: None,
     }];
     assert_eq!(
-        to_html(&grid(
-            &pipeline(),
-            &runs,
-            &GridLayout::default(),
-            &Callback::noop()
-        )),
+        to_html(&grid(&pipeline(), &GridLayout::default(), {
+            let layout = GridLayout::default();
+            let rows = runs
+                .iter()
+                .map(|run| run_row(&pipeline(), run, &layout, &Callback::noop()));
+            html! { { for rows } }
+        })),
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
@@ -115,7 +118,7 @@ fn grid_matches_tasks_by_name() {
             r#"<tr><th></th><th class="task first"><span>compile</span></th><th class="task first"><span>unit</span></th>"#,
             r#"<th class="task"><span>e2e</span></th></tr></thead>"#,
             r#"<tbody><tr><th class="run running"><button title="Cancel this run: every task, now" aria-label="Cancel run" class="cancel">"#,
-            r#"<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"></path></svg></button>000000</th>"#,
+            r#"<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"></path></svg></button><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
             r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass"></a></td>"#,
             r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running"></a></td>"#,
             r#"<td class="cell"></td>"#,
@@ -132,7 +135,7 @@ fn tilted_names_and_dense_stages() {
         dense: vec![false, true],
     };
     assert_eq!(
-        to_html(&grid(&pipeline(), &[], &layout, &Callback::noop())),
+        to_html(&grid(&pipeline(), &layout, html! {})),
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid tilted"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
@@ -159,6 +162,7 @@ fn tilted_names_and_dense_stages() {
                 started: None,
                 ended: None,
                 carried_from: None,
+                tests: None,
             }],
         }],
         commit: None,
@@ -166,7 +170,7 @@ fn tilted_names_and_dense_stages() {
     assert_eq!(
         to_html(&run_row(&pipeline(), &run, &layout, &Callback::noop())),
         concat!(
-            r#"<tr><th class="run pass">000000</th><td class="cell first"></td>"#,
+            r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell first"></td>"#,
             r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass"></a></td>"#,
             r#"<td class="cell dense"></td></tr>"#,
         )
@@ -224,7 +228,7 @@ fn runs_show_their_commit() {
             &GridLayout::default(),
             &Callback::noop()
         )),
-        r#"<tr><th title="main @ 3fe66e3" class="run pass">000000</th></tr>"#
+        r#"<tr><th title="main @ 3fe66e3" class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th></tr>"#
     );
     let snapshot = TaskSnapshot {
         now: 0,
@@ -241,6 +245,7 @@ fn runs_show_their_commit() {
             started: None,
             ended: None,
             carried_from: None,
+            tests: None,
         },
         lines: vec![],
         artifacts: vec![],
@@ -248,7 +253,7 @@ fn runs_show_their_commit() {
     assert_eq!(
         to_html(&task_crumbs(&snapshot, &Callback::noop())),
         concat!(
-            r#"<a href="/pipeline/app">app</a><span class="run">000000</span>"#,
+            r#"<a href="/pipeline/app">app</a><span class="run"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></span>"#,
             r#"<span class="commit">main @ 3fe66e3</span><span>Build</span><span>compile</span>"#,
             r#"<span class="state pass">pass</span>"#,
         )
@@ -265,6 +270,7 @@ fn task_page_names_the_worker() {
         started: None,
         ended: None,
         carried_from: None,
+        tests: None,
     };
     assert_eq!(to_html(&task_facts(&task, 0)), "");
     task.state = TaskState::Running;
@@ -289,6 +295,7 @@ fn finished_tasks_keep_their_runtime() {
         started: Some(1_000_000),
         ended: Some(1_083_000),
         carried_from: None,
+        tests: None,
     };
     // However late the page looks.
     assert_eq!(
@@ -324,7 +331,7 @@ fn finished_tasks_keep_their_runtime() {
             &Callback::noop()
         )),
         concat!(
-            r#"<tr><th class="run fail">000000</th><td class="cell fail first">"#,
+            r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell fail first">"#,
             r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s"></a></td></tr>"#,
         )
     );
@@ -340,6 +347,7 @@ fn stages_after_a_failure_only_rerun_the_run() {
         started: None,
         ended: None,
         carried_from: None,
+        tests: None,
     };
     let run = Run {
         id: id(1),
@@ -391,6 +399,7 @@ fn carried_over_tasks_say_where_from() {
         started: None,
         ended: None,
         carried_from: Some(id(4)),
+        tests: None,
     };
     let run = Run {
         id: id(1),
@@ -418,7 +427,7 @@ fn carried_over_tasks_say_where_from() {
             &Callback::noop()
         )),
         concat!(
-            r#"<tr><th class="run pass">000000</th><td class="cell pass carried first">"#,
+            r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell pass carried first">"#,
             r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over"></a></td></tr>"#,
         )
     );
@@ -453,6 +462,7 @@ fn retention_says_what_it_deleted() {
         started: Some(1_000),
         ended: Some(2_000),
         carried_from: None,
+        tests: None,
     };
     let mut snapshot = TaskSnapshot {
         now: 0,
@@ -547,6 +557,7 @@ fn artifacts_link_to_downloads() {
         started: None,
         ended: None,
         carried_from: None,
+        tests: None,
     };
     let artifacts = vec![
         Artifact {
@@ -767,5 +778,103 @@ fn tabs_mark_the_current_pipeline() {
     assert_eq!(
         to_html(&tabs(&["app".into(), "docs".into()], "docs")),
         r#"<nav class="tabs"><a href="/pipeline/app" class="tab">app</a><a href="/pipeline/docs" class="tab current">docs</a></nav>"#
+    );
+}
+
+/// A results link to a run the snapshot no longer holds names the run, not the pipeline.
+#[test]
+fn not_recent_names_the_run() {
+    assert_eq!(
+        to_html(&not_recent("6dfde7")),
+        r#"<pre class="notice">run 6dfde7 is not one of the 50 newest</pre>"#
+    );
+}
+
+#[test]
+fn results_put_failures_first_then_the_slowest() {
+    let task = |n: u128, name: &str, state, seconds: u64, tests: Option<(u64, u64)>| TaskRun {
+        id: id(n),
+        name: name.into(),
+        state,
+        worker: None,
+        started: (state != TaskState::Skipped).then_some(1_000_000),
+        ended: (state != TaskState::Skipped).then_some(1_000_000 + seconds * 1000),
+        carried_from: None,
+        tests: tests.map(|(total, failed)| Tests { total, failed }),
+    };
+    let run = Run {
+        id: id(1),
+        pipeline: "sqlite".into(),
+        state: RunState::Fail,
+        stages: vec![
+            StageRun {
+                name: "Build".into(),
+                tasks: vec![task(2, "testfixture", TaskState::Pass, 90, None)],
+            },
+            StageRun {
+                name: "Test".into(),
+                tasks: vec![
+                    task(3, "quick", TaskState::Pass, 2, Some((1_031_284, 0))),
+                    task(4, "crash", TaskState::Fail, 5, None),
+                    task(5, "fts", TaskState::Fail, 1, Some((1234, 2))),
+                    task(6, "busy", TaskState::Fail, 7, Some((10, 0))),
+                ],
+            },
+            StageRun {
+                name: "Report".into(),
+                tasks: vec![task(7, "summary", TaskState::Skipped, 0, None)],
+            },
+        ],
+        commit: None,
+    };
+    let row = |o: &str, stage: &str, n: u128, name: &str, took: &str, tests: &str, failed: &str| {
+        format!(
+            r#"<tr><td><span class="state {o}">{o}</span></td><td>{stage}</td><td><a href="/task/{}">{name}</a></td><td class="number">{took}</td><td class="number">{tests}</td><td class="number">{failed}</td></tr>"#,
+            id(n)
+        )
+    };
+    // Failed without a failed test (none reported, or none failed) is an error, not a failure.
+    let expected = [
+        concat!(
+            r#"<p class="totals"><span class="state fail">1 fail</span><span class="state error">2 error</span>"#,
+            r#"<span class="state skipped">1 skipped</span><span class="state pass">2 pass</span>"#,
+            r#"<span>1,032,528 tests, 2 failed</span></p><table class="results">"#,
+            r#"<tr><th></th><th>Stage</th><th>Task</th><th>Took</th><th>Tests</th><th>Failed</th></tr>"#,
+        )
+        .to_string(),
+        row("fail", "Test", 5, "fts", "1.0s", "1,234", "2"),
+        row("error", "Test", 6, "busy", "7.0s", "10", "0"),
+        row("error", "Test", 4, "crash", "5.0s", "", ""),
+        row("skipped", "Report", 7, "summary", "", "", ""),
+        row("pass", "Build", 2, "testfixture", "1m 30s", "", ""),
+        row("pass", "Test", 3, "quick", "2.0s", "1,031,284", "0"),
+        "</table>".to_string(),
+    ];
+    assert_eq!(to_html(&results(&run)), expected.concat());
+}
+
+#[test]
+fn counts_group_their_thousands() {
+    assert_eq!(count(0), "0");
+    assert_eq!(count(999), "999");
+    assert_eq!(count(1000), "1,000");
+    assert_eq!(count(1_031_284), "1,031,284");
+}
+
+#[test]
+fn run_page_says_how_the_run_went() {
+    let run = Run {
+        id: id(1),
+        pipeline: "sqlite".into(),
+        state: RunState::Pass,
+        stages: vec![],
+        commit: None,
+    };
+    assert_eq!(
+        to_html(&run_page_crumbs(&run, &Callback::noop())),
+        concat!(
+            r#"<a href="/pipeline/sqlite">sqlite</a><span class="run"><a href="/pipeline/sqlite?run=00000000-0000-0000-0000-000000000001">000000</a></span>"#,
+            r#"<span class="state pass">pass</span>"#,
+        )
     );
 }

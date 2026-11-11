@@ -1,9 +1,11 @@
-// The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs.
+// The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs. With
+// ?run=<id>, what the tasks of that run came to instead of the grid.
 
-use crate::{PageProps, account, cancel_run, follow, view};
+use crate::{PageProps, account, cancel_run, follow, send, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
+use std::sync::Arc;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, wasm_bindgen::JsCast};
 use yew::prelude::*;
@@ -13,7 +15,13 @@ pub struct PipelinePage {
     notice: Option<String>,
     // Measured after each render, from the columns and names as the browser lays them out.
     layout: view::GridLayout,
+    // A live event moves no column, so only a render after anything else measures again.
+    measure: bool,
     main: NodeRef,
+    // Made once: a new callback would differ from the old one, and render every row again.
+    cancel: Callback<String>,
+    // The run whose results show instead of the grid.
+    run: Option<String>,
     _resize: EventListener,
     _fonts: Option<EventListener>,
 }
@@ -48,7 +56,11 @@ impl Component for PipelinePage {
             snapshot: None,
             notice: None,
             layout: view::GridLayout::default(),
+            measure: true,
             main: NodeRef::default(),
+            cancel: link.callback(PipelineMsg::Cancel),
+            run: (window().location().search().ok())
+                .and_then(|query| Some(query.strip_prefix("?run=")?.to_string())),
             _resize: EventListener::new(&window(), "resize", move |_| resized.emit(())),
             _fonts: Some(EventListener::new(&fonts, "loadingdone", move |_| {
                 fonts_loaded.emit(())
@@ -66,10 +78,10 @@ impl Component for PipelinePage {
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot.apply(&event);
                 }
+                return true;
             }
             PipelineMsg::Notice(text) => self.notice = Some(text),
             PipelineMsg::Layout(layout) => self.layout = layout,
-            // Rendering again measures again.
             PipelineMsg::Resized => {}
             PipelineMsg::Cancel(run) => {
                 cancel_run(run, ctx.link().callback(PipelineMsg::Notice));
@@ -80,22 +92,16 @@ impl Component for PipelinePage {
                 let link = ctx.link().clone();
                 // The new run shows up through the live stream like any other change.
                 spawn_local(async move {
-                    match Request::post(&url).send().await {
-                        Ok(response) if response.ok() => {}
-                        Ok(response) => {
-                            let body = response.text().await.unwrap_or_default();
-                            link.send_message(PipelineMsg::Notice(format!(
-                                "could not start a run: {body}"
-                            )));
-                        }
-                        Err(e) => link.send_message(PipelineMsg::Notice(format!(
+                    if let Err(e) = send(Request::post(&url).build()).await {
+                        link.send_message(PipelineMsg::Notice(format!(
                             "could not start a run: {e}"
-                        ))),
+                        )));
                     }
                 });
                 return false;
             }
         }
+        self.measure = true;
         true
     }
 
@@ -106,6 +112,9 @@ impl Component for PipelinePage {
         let Ok(pipeline) = &snapshot.pipeline else {
             return;
         };
+        if !std::mem::take(&mut self.measure) || self.run.is_some() {
+            return;
+        }
         let elements = |selector: &str| {
             let mut found = vec![];
             if let Ok(list) = main.query_selector_all(selector) {
@@ -166,29 +175,74 @@ impl Component for PipelinePage {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},
         };
-        let body = match &self.snapshot {
-            Some(PipelineSnapshot {
-                pipeline: Ok(pipeline),
-                runs,
-                ..
-            }) => view::grid(
-                pipeline,
-                runs,
-                &self.layout,
-                &ctx.link().callback(PipelineMsg::Cancel),
-            ),
-            Some(PipelineSnapshot {
-                pipeline: Err(e), ..
-            }) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
-            None => html! {},
+        let mut crumbs = html! {};
+        let body = match (&self.snapshot, &self.run) {
+            (None, _) => html! {},
+            (Some(snapshot), Some(id)) => {
+                match snapshot.runs.iter().find(|run| run.id.to_string() == *id) {
+                    Some(run) => {
+                        crumbs = view::run_page_crumbs(run, &self.cancel);
+                        view::results(run)
+                    }
+                    None => view::not_recent(id),
+                }
+            }
+            (Some(snapshot), None) => match &snapshot.pipeline {
+                Ok(pipeline) => {
+                    let rows = snapshot.runs.iter().map(|run| {
+                        html! {
+                            <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
+                                layout={self.layout.clone()} cancel={self.cancel.clone()} />
+                        }
+                    });
+                    view::grid(pipeline, &self.layout, html! { { for rows } })
+                }
+                Err(e) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
+            },
         };
         html! {
             <>
-                { view::header(html! {}, html! { <>{ start }{ account() }</> }) }
+                { view::header(crumbs, html! { <>{ start }{ account() }</> }) }
                 { view::notice(&self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
                 { tabs }
             </>
         }
+    }
+}
+
+/// One run's row of the grid. A live event changes one run, so only its row renders again: with
+/// thousands of tasks, rendering every row for every event kept the browser busy.
+struct RunRow;
+
+#[derive(Properties)]
+struct RunRowProps {
+    pipeline: Arc<Pipeline>,
+    run: Arc<Run>,
+    layout: view::GridLayout,
+    cancel: Callback<String>,
+}
+
+impl PartialEq for RunRowProps {
+    fn eq(&self, other: &Self) -> bool {
+        // The snapshot replaces a run that changes, so the pointer says whether it did.
+        Arc::ptr_eq(&self.pipeline, &other.pipeline)
+            && Arc::ptr_eq(&self.run, &other.run)
+            && self.layout == other.layout
+            && self.cancel == other.cancel
+    }
+}
+
+impl Component for RunRow {
+    type Message = ();
+    type Properties = RunRowProps;
+
+    fn create(_ctx: &Context<Self>) -> Self {
+        Self
+    }
+
+    fn view(&self, ctx: &Context<Self>) -> Html {
+        let props = ctx.props();
+        view::run_row(&props.pipeline, &props.run, &props.layout, &props.cancel)
     }
 }

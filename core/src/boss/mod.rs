@@ -193,9 +193,7 @@ pub async fn entry(
         .route("/api/start-run/{name}", post(start_run))
         .route("/api/push-hook", post(push_hook))
         .route("/api/cancel-run/{run}", post(cancel_run))
-        .route("/api/rerun/{run}", post(rerun_run))
-        .route("/api/rerun/{run}/{stage}", post(rerun_stage))
-        .route("/api/rerun/{run}/{stage}/{task}", post(rerun_task))
+        .route("/api/rerun/{*rerun}", post(rerun))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/me", get(get_me))
         .route("/api/login", post(login))
@@ -272,7 +270,7 @@ pub async fn entry(
     Ok(())
 }
 
-type Failure = (StatusCode, String);
+pub(crate) type Failure = (StatusCode, String);
 
 /// Milliseconds since 1970. A clock set before 1970 reads as 1970.
 fn now() -> u64 {
@@ -280,7 +278,7 @@ fn now() -> u64 {
     since.map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn internal(e: impl ToString) -> Failure {
+pub(crate) fn internal(e: impl ToString) -> Failure {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
@@ -477,6 +475,12 @@ impl Boss {
 
     fn pipedef(&self, name: &str) -> Option<Pipedef> {
         lock(&self.pipedefs).get(name).cloned()
+    }
+
+    fn repo(&self, index: usize) -> Result<&Repo, Failure> {
+        self.repos
+            .get(index)
+            .ok_or_else(|| internal("no such repo"))
     }
 
     /// Fetches repo number `index` and adds the pipelines its default branch has. A fetch that

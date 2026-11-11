@@ -1,13 +1,6 @@
-# Language boundary: rust (the bettertest binary) spawns this script in a python
-# process. It glues that rust side to the python side. This is how the binary
-# asks python to:
-# - parse a pipedef and dump its structure as JSON
-# - start a task by actually calling the task function
-#
-# Nothing here is importable from disk. rust baked the library and this script
-# into the binary, then stuffed library source + pipedef source into stdin, as JSON.
-# pipedefs do `from bettertest import ...` — that name only works because we
-# exec the library into sys.modules["bettertest"] *before* exec'ing the pipedef.
+# Python's half of the language boundary. The binary spawns this with the library, then the
+# pipedef, on stdin (nothing is importable from disk), to parse the pipedef or call one of its
+# tasks. A pipedef's `from bettertest import ...` works because the library is planted first.
 import json
 import os
 import sys

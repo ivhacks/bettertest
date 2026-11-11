@@ -2,7 +2,10 @@
 // (or dispatch) decides what runs where, and starts and stops sandboxes explicitly, so they can be
 // shared by several tasks or started early to have them warm.
 
-use crate::{boss, client, lock, pipedef, vm, workdir};
+use crate::{
+    boss::{self, Failure, internal},
+    client, lock, pipedef, vm, workdir,
+};
 use axum::{
     Json, Router,
     body::Body,
@@ -136,12 +139,6 @@ impl Drop for TaskFiles {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
-}
-
-type Failure = (StatusCode, String);
-
-fn internal(e: impl ToString) -> Failure {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
 /// What the worker's handlers share: its VMs, and a permit for each task it may run at once.
@@ -623,6 +620,7 @@ async fn start_task(
     };
     let task_files = serde_json::json!({
         "outputs": files.outputs(),
+        "tests": files.dir.join("tests"),
         "inputs": files.inputs(),
         "boss": boss,
         "boss_token": req.boss_token,
@@ -680,6 +678,10 @@ async fn start_task(
             {
                 return;
             }
+        }
+        // What the task said of its tests with tests(), as one line of json.
+        if let Ok(tests) = fs::read_to_string(files.dir.join("tests")) {
+            let _ = tx.send(Event::default().event("tests").data(tests)).await;
         }
         let _ = tx
             .send(Event::default().event("exit").data(code.to_string()))

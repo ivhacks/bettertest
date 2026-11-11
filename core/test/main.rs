@@ -85,3 +85,47 @@ fn port_zero_is_refused() {
     assert!(Args::try_parse_from(["bettertest", "boss", "--boss-port", "0", "app.py"]).is_err());
     assert!(Args::try_parse_from(["bettertest", "worker", "--worker-port", "0"]).is_err());
 }
+
+unsafe extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn dup2(from: i32, to: i32) -> i32;
+}
+
+/// Run by `printing_to_a_full_disk_does_not_panic`, in a process of its own, since it points this
+/// process's stdout and stderr at /dev/full for a moment.
+#[test]
+#[ignore]
+fn print_to_dev_full() {
+    use std::os::fd::AsRawFd;
+    let full = std::fs::File::options()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let (stdout, stderr) = unsafe { (dup(1), dup(2)) };
+    unsafe {
+        dup2(full.as_raw_fd(), 1);
+        dup2(full.as_raw_fd(), 2);
+    }
+    println!("a line the disk has no room for");
+    eprintln!("nor this one");
+    unsafe {
+        dup2(stdout, 1);
+        dup2(stderr, 2);
+    }
+}
+
+#[test]
+fn printing_to_a_full_disk_does_not_panic() {
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "tests::print_to_dev_full",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    let output = String::from_utf8_lossy(&child.stdout);
+    assert!(child.status.success(), "{output}");
+    assert!(output.contains("1 passed"), "{output}");
+}

@@ -51,12 +51,12 @@ fn text<T>(row: &Row, idx: usize, parse: impl Fn(&str) -> Option<T>) -> rusqlite
 }
 
 // sqlite integers are i64. Milliseconds since 1970 fit until the year 292 million.
-fn millis(at: u64) -> i64 {
-    i64::try_from(at).unwrap_or(i64::MAX)
+fn to_sql(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-fn unmillis(at: i64) -> u64 {
-    u64::try_from(at).unwrap_or(0)
+fn from_sql(n: i64) -> u64 {
+    u64::try_from(n).unwrap_or(0)
 }
 
 // Names in the settings table.
@@ -107,6 +107,7 @@ impl Db {
                                     started: None,
                                     ended: None,
                                     carried_from: None,
+                                    tests: None,
                                 },
                             }
                         })
@@ -134,17 +135,20 @@ impl Db {
             for task in &stage.tasks {
                 tx.execute(
                     "INSERT INTO task_runs
-                     (id, stage_run_id, name, state, worker, started_at, ended_at, carried_from)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     (id, stage_run_id, name, state, worker, started_at, ended_at, carried_from,
+                      tests, tests_failed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     (
                         task.id.to_string(),
                         &stage_id,
                         &task.name,
                         task.state.as_str(),
                         &task.worker,
-                        task.started.map(millis),
-                        task.ended.map(millis),
+                        task.started.map(to_sql),
+                        task.ended.map(to_sql),
                         task.carried_from.map(|id| id.to_string()),
+                        task.tests.map(|t| to_sql(t.total)),
+                        task.tests.map(|t| to_sql(t.failed)),
                     ),
                 )?;
             }
@@ -154,30 +158,34 @@ impl Db {
     }
 
     /// Sets a task's state at time `at`, which is when it ended if the state is a final one.
-    pub fn set_task_state(&self, task: Uuid, state: TaskState, at: u64) -> rusqlite::Result<()> {
-        let ended = state.is_over().then(|| millis(at));
+    pub fn set_task_state(&self, task: Uuid, state: TaskState, at: u64) -> rusqlite::Result<usize> {
+        let ended = state.is_over().then(|| to_sql(at));
         self.conn.execute(
             "UPDATE task_runs SET state = ?1, ended_at = coalesce(?2, ended_at) WHERE id = ?3",
             (state.as_str(), ended, task.to_string()),
-        )?;
-        Ok(())
+        )
     }
 
     /// Marks a task as running on `worker` since `at`.
-    pub fn start_task(&self, task: Uuid, worker: &str, at: u64) -> rusqlite::Result<()> {
+    pub fn start_task(&self, task: Uuid, worker: &str, at: u64) -> rusqlite::Result<usize> {
         self.conn.execute(
             "UPDATE task_runs SET state = 'running', worker = ?1, started_at = ?2 WHERE id = ?3",
-            (worker, millis(at), task.to_string()),
-        )?;
-        Ok(())
+            (worker, to_sql(at), task.to_string()),
+        )
     }
 
-    pub fn set_run_state(&self, run: Uuid, state: RunState) -> rusqlite::Result<()> {
+    pub fn set_tests(&self, task: Uuid, tests: Tests) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE task_runs SET tests = ?1, tests_failed = ?2 WHERE id = ?3",
+            (to_sql(tests.total), to_sql(tests.failed), task.to_string()),
+        )
+    }
+
+    pub fn set_run_state(&self, run: Uuid, state: RunState) -> rusqlite::Result<usize> {
         self.conn.execute(
             "UPDATE pl_runs SET state = ?1 WHERE id = ?2",
             (state.as_str(), run.to_string()),
-        )?;
-        Ok(())
+        )
     }
 
     /// In one transaction: committing each line on its own takes most of the time.
@@ -255,14 +263,13 @@ impl Db {
             .collect()
     }
 
-    pub fn add_artifact(&self, task: Uuid, artifact: &Artifact) -> rusqlite::Result<()> {
+    pub fn add_artifact(&self, task: Uuid, artifact: &Artifact) -> rusqlite::Result<usize> {
         // sqlite integers are i64. No file is 8 EiB.
         let size = i64::try_from(artifact.size).unwrap_or(i64::MAX);
         self.conn.execute(
             "INSERT INTO task_artifacts (task_run_id, name, size) VALUES (?1, ?2, ?3)",
             (task.to_string(), &artifact.name, size),
-        )?;
-        Ok(())
+        )
     }
 
     /// The artifacts a task published, in the order the boss received them.
@@ -307,8 +314,8 @@ impl Db {
             let tasks = self
                 .conn
                 .prepare_cached(
-                    "SELECT id, name, state, worker, started_at, ended_at, carried_from FROM task_runs
-                     WHERE stage_run_id = ?1 ORDER BY rowid",
+                    "SELECT id, name, state, worker, started_at, ended_at, carried_from, tests,
+                     tests_failed FROM task_runs WHERE stage_run_id = ?1 ORDER BY rowid",
                 )?
                 .query_map([stage_id], |row| {
                     Ok(TaskRun {
@@ -316,12 +323,16 @@ impl Db {
                         name: row.get(1)?,
                         state: text(row, 2, TaskState::parse)?,
                         worker: row.get(3)?,
-                        started: row.get::<_, Option<i64>>(4)?.map(unmillis),
-                        ended: row.get::<_, Option<i64>>(5)?.map(unmillis),
-                        carried_from: row
-                            .get::<_, Option<String>>(6)?
-                            .as_deref()
-                            .and_then(uuid),
+                        started: row.get::<_, Option<i64>>(4)?.map(from_sql),
+                        ended: row.get::<_, Option<i64>>(5)?.map(from_sql),
+                        carried_from: row.get::<_, Option<String>>(6)?.as_deref().and_then(uuid),
+                        tests: match (row.get(7)?, row.get(8)?) {
+                            (Some(total), Some(failed)) => Some(Tests {
+                                total: from_sql(total),
+                                failed: from_sql(failed),
+                            }),
+                            _ => None,
+                        },
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -419,13 +430,13 @@ impl Db {
             .prepare_cached(
                 "SELECT id FROM task_runs WHERE log_deleted_at IS NULL AND ended_at < ?1 LIMIT ?2",
             )?
-            .query_map((millis(cutoff), limit), |row| row.get(0))?
+            .query_map((to_sql(cutoff), limit), |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for id in &ids {
             tx.execute("DELETE FROM log_lines WHERE task_run_id = ?1", [id])?;
             tx.execute(
                 "UPDATE task_runs SET log_deleted_at = ?1 WHERE id = ?2",
-                (millis(now), id),
+                (to_sql(now), id),
             )?;
         }
         tx.commit()?;
@@ -440,7 +451,7 @@ impl Db {
                  JOIN task_runs ON task_runs.id = task_artifacts.task_run_id
                  WHERE task_runs.ended_at < ?1 LIMIT ?2",
             )?
-            .query_map((millis(cutoff), limit), |row| text(row, 0, uuid))?
+            .query_map((to_sql(cutoff), limit), |row| text(row, 0, uuid))?
             .collect()
     }
 
@@ -454,7 +465,7 @@ impl Db {
             )?;
             tx.execute(
                 "UPDATE task_runs SET artifacts_deleted_at = ?1 WHERE id = ?2",
-                (millis(now), task.to_string()),
+                (to_sql(now), task.to_string()),
             )?;
         }
         tx.commit()
@@ -470,7 +481,7 @@ impl Db {
             .query_row([task.to_string()], |row| {
                 let log: Option<i64> = row.get(0)?;
                 let artifacts: Option<i64> = row.get(1)?;
-                Ok((log.map(unmillis), artifacts.map(unmillis)))
+                Ok((log.map(from_sql), artifacts.map(from_sql)))
             })
             .optional()?;
         Ok(deleted.unwrap_or_default())
@@ -535,23 +546,21 @@ impl Db {
         label: &str,
         fingerprint: &str,
         expires: &str,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<usize> {
         let data =
             serde_json::json!({ "label": label, "fingerprint": fingerprint, "expires": expires });
         self.conn.execute(
             "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'certificate', ?2)",
             (user, data.to_string()),
-        )?;
-        Ok(())
+        )
     }
 
     /// Revokes a client certificate or a passkey: from now on it logs nobody in.
-    pub fn revoke_credential(&self, credential: i64) -> rusqlite::Result<()> {
+    pub fn revoke_credential(&self, credential: i64) -> rusqlite::Result<usize> {
         self.conn.execute(
             "DELETE FROM credentials WHERE id = ?1 AND kind IN ('certificate', 'passkey')",
             [credential],
-        )?;
-        Ok(())
+        )
     }
 
     /// A user's passkeys, oldest first.
@@ -578,14 +587,13 @@ impl Db {
         label: &str,
         credential: &str,
         passkey: &serde_json::Value,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<usize> {
         let data =
             serde_json::json!({ "label": label, "credential": credential, "passkey": passkey });
         self.conn.execute(
             "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'passkey', ?2)",
             (user, data.to_string()),
-        )?;
-        Ok(())
+        )
     }
 
     /// The passkey with this credential id: its row, whose it is, and webauthn-rs's record of it.
@@ -617,12 +625,11 @@ impl Db {
         &self,
         credential: i64,
         passkey: &serde_json::Value,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "UPDATE credentials SET data = json_set(data, '$.passkey', json(?2)) WHERE id = ?1",
             (credential, passkey.to_string()),
-        )?;
-        Ok(())
+        )
     }
 
     /// The name of a user, for a passkey's label and the authenticator's prompt.
@@ -658,19 +665,17 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn set_role(&self, user: i64, role: Role) -> rusqlite::Result<()> {
+    pub fn set_role(&self, user: i64, role: Role) -> rusqlite::Result<usize> {
         self.conn.execute(
             "UPDATE users SET role = ?1 WHERE id = ?2",
             (role.as_str(), user),
-        )?;
-        Ok(())
+        )
     }
 
     /// Removes a user, with their credentials and sessions. The logged-out user stays.
-    pub fn remove_user(&self, user: i64) -> rusqlite::Result<()> {
+    pub fn remove_user(&self, user: i64) -> rusqlite::Result<usize> {
         self.conn
-            .execute("DELETE FROM users WHERE id = ?1 AND id != 0", [user])?;
-        Ok(())
+            .execute("DELETE FROM users WHERE id = ?1 AND id != 0", [user])
     }
 
     /// Replaces a user's password (its Argon2id hash).
@@ -699,12 +704,11 @@ impl Db {
             .optional()
     }
 
-    pub fn add_api_token(&self, token_hash: &str, user: i64) -> rusqlite::Result<()> {
+    pub fn add_api_token(&self, token_hash: &str, user: i64) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO api_tokens (token_hash, user_id) VALUES (?1, ?2)",
             (token_hash, user),
-        )?;
-        Ok(())
+        )
     }
 
     /// The id, name and role of the user an API token is for.
@@ -720,18 +724,21 @@ impl Db {
             .optional()
     }
 
-    pub fn revoke_api_tokens(&self, user: i64) -> rusqlite::Result<()> {
+    pub fn revoke_api_tokens(&self, user: i64) -> rusqlite::Result<usize> {
         self.conn
-            .execute("DELETE FROM api_tokens WHERE user_id = ?1", [user])?;
-        Ok(())
+            .execute("DELETE FROM api_tokens WHERE user_id = ?1", [user])
     }
 
-    pub fn add_session(&self, token_hash: &str, user: i64, expires: u64) -> rusqlite::Result<()> {
+    pub fn add_session(
+        &self,
+        token_hash: &str,
+        user: i64,
+        expires: u64,
+    ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
-            (token_hash, user, millis(expires)),
-        )?;
-        Ok(())
+            (token_hash, user, to_sql(expires)),
+        )
     }
 
     /// The user of an unexpired session, as (name, role, expires).
@@ -746,32 +753,30 @@ impl Db {
                  JOIN users ON users.id = sessions.user_id
                  WHERE sessions.token_hash = ?1 AND sessions.expires_at > ?2",
             )?
-            .query_row((token_hash, millis(now)), |row| {
+            .query_row((token_hash, to_sql(now)), |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
                     text(row, 2, Role::parse)?,
-                    unmillis(row.get(3)?),
+                    from_sql(row.get(3)?),
                 ))
             })
             .optional()
     }
 
-    pub fn extend_session(&self, token_hash: &str, expires: u64) -> rusqlite::Result<()> {
+    pub fn extend_session(&self, token_hash: &str, expires: u64) -> rusqlite::Result<usize> {
         self.conn.execute(
             "UPDATE sessions SET expires_at = ?1 WHERE token_hash = ?2",
-            (millis(expires), token_hash),
-        )?;
-        Ok(())
+            (to_sql(expires), token_hash),
+        )
     }
 
     /// Ends one session, and every one that has expired by `now`.
-    pub fn end_session(&self, token_hash: &str, now: u64) -> rusqlite::Result<()> {
+    pub fn end_session(&self, token_hash: &str, now: u64) -> rusqlite::Result<usize> {
         self.conn.execute(
             "DELETE FROM sessions WHERE token_hash = ?1 OR expires_at <= ?2",
-            (token_hash, millis(now)),
-        )?;
-        Ok(())
+            (token_hash, to_sql(now)),
+        )
     }
 
     /// The workers the boss keeps a connection to.
@@ -783,10 +788,9 @@ impl Db {
     }
 
     /// Adds a worker the boss keeps a connection to. Adding one twice is fine.
-    pub fn add_worker(&self, url: &str) -> rusqlite::Result<()> {
+    pub fn add_worker(&self, url: &str) -> rusqlite::Result<usize> {
         self.conn
-            .execute("INSERT OR IGNORE INTO workers (url) VALUES (?1)", [url])?;
-        Ok(())
+            .execute("INSERT OR IGNORE INTO workers (url) VALUES (?1)", [url])
     }
 
     pub fn forget_worker(&self, url: &str) -> rusqlite::Result<()> {
@@ -798,20 +802,19 @@ impl Db {
     }
 
     /// Records that `who` (`boss`, or a worker's url) was alive at `at`.
-    pub fn heartbeat(&self, who: &str, at: u64) -> rusqlite::Result<()> {
+    pub fn heartbeat(&self, who: &str, at: u64) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO heartbeats (who, at) VALUES (?1, ?2)
              ON CONFLICT (who) DO UPDATE SET at = excluded.at",
-            (who, millis(at)),
-        )?;
-        Ok(())
+            (who, to_sql(at)),
+        )
     }
 
     /// When `who` was last known to be alive.
     pub fn last_heartbeat(&self, who: &str) -> rusqlite::Result<Option<u64>> {
         self.conn
             .prepare_cached("SELECT at FROM heartbeats WHERE who = ?1")?
-            .query_row([who], |row| Ok(unmillis(row.get(0)?)))
+            .query_row([who], |row| Ok(from_sql(row.get(0)?)))
             .optional()
     }
 
@@ -820,7 +823,7 @@ impl Db {
     /// forever. The boss's last heartbeat says when that was, so their tasks end then, and say so;
     /// `now` stands in for a boss that never wrote one. Returns how many runs there were.
     pub fn fail_abandoned_runs(&mut self, now: u64) -> rusqlite::Result<usize> {
-        let stopped = millis(self.last_heartbeat("boss")?.unwrap_or(now));
+        let stopped = to_sql(self.last_heartbeat("boss")?.unwrap_or(now));
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO log_lines (task_run_id, stream, line)

@@ -1,6 +1,6 @@
 // The task page: one task of one run, its live log, artifacts and rerun buttons.
 
-use crate::{PageProps, account, cancel_run, follow, monotonic, view};
+use crate::{PageProps, account, cancel_run, fetch, follow, monotonic, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
 use gloo::utils::window;
@@ -70,16 +70,7 @@ impl Component for TaskPage {
                 let link = ctx.link().clone();
                 // Off to this task in the new run, to watch it run again.
                 spawn_local(async move {
-                    let rerun = match Request::post(&url).send().await {
-                        Ok(response) if response.ok() => response.json::<Run>().await,
-                        Ok(response) => {
-                            let body = response.text().await.unwrap_or_default();
-                            link.send_message(TaskMsg::Notice(format!("could not rerun: {body}")));
-                            return;
-                        }
-                        Err(e) => Err(e),
-                    };
-                    match rerun {
+                    match fetch::<Run>(Request::post(&url).build()).await {
                         Ok(rerun) => {
                             let same = rerun
                                 .stages

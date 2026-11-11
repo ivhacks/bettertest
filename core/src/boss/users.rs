@@ -85,33 +85,23 @@ pub(super) fn who(
         .iter()
         .find(|u| u.builtin)
         .map_or(Role::None, |u| u.role);
-    let cookies = headers
-        .get(header::COOKIE)
-        .and_then(|c| c.to_str().ok())
-        .unwrap_or_default();
+    let cookies = text_header(headers, header::COOKIE);
     let now = now();
-    let authorization = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|a| a.to_str().ok())
-        .unwrap_or_default();
+    let authorization = text_header(headers, header::AUTHORIZATION);
+    // Logging in never takes away what logged out may do.
+    let me = |name, role: Role| Me {
+        name,
+        role: role.max(logged_out),
+        logged_in: true,
+    };
     if let Some(token) = auth::bearer(authorization) {
         let hash = auth::token_hash(token);
         // A running task reads what its run needs; nothing more.
         if lock(&boss.task_tokens).contains_key(&hash) {
-            let me = Me {
-                name: "a running task".into(),
-                role: Role::Read.max(logged_out),
-                logged_in: true,
-            };
-            return Ok((me, None));
+            return Ok((me("a running task".into(), Role::Read), None));
         }
         if let Some((id, name, role)) = db.api_token(&hash).map_err(internal)? {
-            let me = Me {
-                name,
-                role: role.max(logged_out),
-                logged_in: true,
-            };
-            return Ok((me, Some(id)));
+            return Ok((me(name, role), Some(id)));
         }
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -126,31 +116,29 @@ pub(super) fn who(
                 db.extend_session(&hash, now + auth::SESSION_MS)
                     .map_err(internal)?;
             }
-            let me = Me {
-                name,
-                role: role.max(logged_out),
-                logged_in: true,
-            };
-            return Ok((me, Some(id)));
+            return Ok((me(name, role), Some(id)));
         }
     }
     // A client certificate the browser presented over HTTPS logs its user in on every request.
     if let Some(fingerprint) = peer.and_then(|p| p.certificate.as_deref())
         && let Some((id, name, role)) = db.certificate_user(fingerprint).map_err(internal)?
     {
-        let me = Me {
-            name,
-            role: role.max(logged_out),
-            logged_in: true,
-        };
-        return Ok((me, Some(id)));
+        return Ok((me(name, role), Some(id)));
     }
-    let me = Me {
+    let logged_out = Me {
         name: "logged out".into(),
         role: logged_out,
         logged_in: false,
     };
-    Ok((me, None))
+    Ok((logged_out, None))
+}
+
+/// Header `name` as text, or "" without one.
+fn text_header(headers: &HeaderMap, name: header::HeaderName) -> &str {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
 }
 
 /// Lets a request through if who sent it may do what it asks (see auth::needed). Otherwise 401 or
@@ -233,32 +221,28 @@ pub(super) fn start_session(boss: &Boss, user: i64) -> Result<Response, Failure>
     boss.db()
         .add_session(&hash, user, now() + auth::SESSION_MS)
         .map_err(internal)?;
-    let max_age = auth::SESSION_MS / 1000;
+    Ok(session_cookie(&token, auth::SESSION_MS / 1000))
+}
+
+/// Sets the session cookie to `token`, for `max_age` seconds.
+fn session_cookie(token: &str, max_age: u64) -> Response {
     let cookie = format!(
         "{}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}",
         auth::COOKIE
     );
-    Ok(([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response())
+    ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
 }
 
 pub(super) async fn logout(
     State(boss): State<Shared>,
     headers: HeaderMap,
 ) -> Result<Response, Failure> {
-    let cookies = headers
-        .get(header::COOKIE)
-        .and_then(|c| c.to_str().ok())
-        .unwrap_or_default();
-    if let Some(token) = auth::session_token(cookies) {
+    if let Some(token) = auth::session_token(text_header(&headers, header::COOKIE)) {
         boss.db()
             .end_session(&auth::token_hash(token), now())
             .map_err(internal)?;
     }
-    let cookie = format!(
-        "{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-        auth::COOKIE
-    );
-    Ok(([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response())
+    Ok(session_cookie("", 0))
 }
 
 pub(super) async fn get_users(State(boss): State<Shared>) -> Result<Json<Vec<User>>, Failure> {
@@ -283,15 +267,7 @@ pub(super) async fn add_user(
             format!("{name:?} cannot be a user's name"),
         ));
     }
-    if new.password.chars().count() < 8 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "a password has at least 8 characters".into(),
-        ));
-    }
-    let password = new.password;
-    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
-    let hash = hash.await.map_err(internal)?.map_err(internal)?;
+    let hash = hash_password(new.password).await?;
     let mut db = boss.db();
     let id = db.add_user(name, new.role).map_err(|e| match e {
         rusqlite::Error::SqliteFailure(f, _)
@@ -306,6 +282,24 @@ pub(super) async fn add_user(
     })?;
     db.set_password(id, &hash).map_err(internal)?;
     Ok(StatusCode::CREATED)
+}
+
+/// A new password's hash, once it is long enough. Argon2 takes a moment of CPU and memory on
+/// purpose: off the async threads.
+async fn hash_password(password: String) -> Result<String, Failure> {
+    if password.chars().count() < 8 {
+        let short = "a password has at least 8 characters";
+        return Err((StatusCode::BAD_REQUEST, short.into()));
+    }
+    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
+    hash.await.map_err(internal)?.map_err(internal)
+}
+
+/// `name` and a number past every one in `labels`, so no two of a user's certificates or
+/// passkeys share a name, revoked or not.
+fn next_label<'a>(name: &str, labels: impl Iterator<Item = &'a String>) -> String {
+    let numbers = labels.filter_map(|label| label.rsplit(' ').next()?.parse::<u32>().ok());
+    format!("{name} {}", numbers.max().unwrap_or(0) + 1)
 }
 
 /// Refuses a change to users that would leave nobody able to administer the boss.
@@ -358,15 +352,7 @@ pub(super) async fn set_password(
     if set.id == 0 {
         return Err((StatusCode::BAD_REQUEST, "logged out has no password".into()));
     }
-    if set.password.chars().count() < 8 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "a password has at least 8 characters".into(),
-        ));
-    }
-    let password = set.password;
-    let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
-    let hash = hash.await.map_err(internal)?.map_err(internal)?;
+    let hash = hash_password(set.password).await?;
     boss.db().set_password(set.id, &hash).map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -451,14 +437,7 @@ pub(super) async fn new_certificate(
             ),
         ));
     }
-    // Numbered on from the newest, so no two of a user's certificates share a name, revoked or not.
-    let newest = owner
-        .certs
-        .iter()
-        .filter_map(|c| c.label.rsplit(' ').next()?.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    let label = format!("{} {}", owner.name, newest + 1);
+    let label = next_label(&owner.name, owner.certs.iter().map(|c| &c.label));
     let name = owner.name.clone();
     let made = tokio::task::spawn_blocking({
         let label = label.clone();
@@ -551,12 +530,7 @@ pub(super) async fn new_passkey_options(
     let name = boss.db().user_name(user).map_err(internal)?;
     let name = name.ok_or_else(|| not_found(format!("user {user}")))?;
     let existing = user_passkeys(&boss, user)?;
-    if existing.len() >= MOST_PASSKEYS {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first"),
-        ));
-    }
+    room_for_passkey(&name, existing.len())?;
     // An authenticator that already holds one of the user's passkeys says so instead of making
     // another.
     let exclude = existing.iter().map(|k| k.cred_id().clone()).collect();
@@ -573,6 +547,15 @@ pub(super) async fn new_passkey_options(
         "ceremony": ceremony,
         "publicKey": options,
     })))
+}
+
+/// Refuses another passkey to a user who has `count`, at most.
+fn room_for_passkey(name: &str, count: usize) -> Result<(), Failure> {
+    if count < MOST_PASSKEYS {
+        return Ok(());
+    }
+    let why = format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first");
+    Err((StatusCode::CONFLICT, why))
 }
 
 /// What the browser sends back to finish a ceremony: its id, and the credential in its JSON form
@@ -609,22 +592,11 @@ pub(super) async fn new_passkey(
         return Err(not_found(format!("user {user}")));
     };
     let keys = db.passkeys(user).map_err(internal)?;
-    if keys.len() >= MOST_PASSKEYS {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first"),
-        ));
-    }
+    room_for_passkey(&name, keys.len())?;
     if db.passkey(&credential).map_err(internal)?.is_some() {
         return Err((StatusCode::CONFLICT, "that passkey is added already".into()));
     }
-    // Numbered on from the newest, so no two of a user's passkeys share a name.
-    let newest = keys
-        .iter()
-        .filter_map(|k| k.label.rsplit(' ').next()?.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    let label = format!("{name} {}", newest + 1);
+    let label = next_label(&name, keys.iter().map(|k| &k.label));
     db.add_passkey(user, &label, &credential, &record)
         .map_err(internal)?;
     Ok(Json(PasskeyAdded { label }))
@@ -664,16 +636,12 @@ pub(super) async fn passkey_login(
         .map_err(|e| refused(format!("the passkey says nothing of whose it is: {e}")))?;
     let credential = passkey::credential_key(id);
     let found = boss.db().passkey(&credential).map_err(internal)?;
+    let found = found.filter(|(_, user, _)| passkey::user(handle) == *user);
     let Some((row, user, record)) = found else {
         return Err(refused(
             "that passkey is not, or no longer, anyone's".into(),
         ));
     };
-    if passkey::user(handle) != user {
-        return Err(refused(
-            "that passkey is not, or no longer, anyone's".into(),
-        ));
-    }
     let mut key: webauthn_rs::prelude::Passkey = serde_json::from_str(&record).map_err(internal)?;
     let result = webauthn
         .finish_discoverable_authentication_v2(&finish.credential, state, &key)

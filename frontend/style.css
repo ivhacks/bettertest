@@ -137,7 +137,8 @@ button {
             calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 
-button::before {
+button::before,
+.window::before {
     --inner: calc(var(--cut) - 0.586px);
     content: "";
     position: absolute;
@@ -399,7 +400,8 @@ header .runtime {
     color: #ffffff;
 }
 
-.state.fail {
+.state.fail,
+.state.error {
     background: var(--fail);
     color: #ffffff;
 }
@@ -479,11 +481,15 @@ input:focus {
     border-color: var(--highlight);
 }
 
-.workers {
+.workers,
+.users,
+.results {
     border-collapse: collapse;
 }
 
-.workers th {
+.workers th,
+.users th,
+.results th {
     padding: 4px 16px 4px 0;
     color: var(--muted);
     font: 500 16px/1.2 var(--font);
@@ -493,10 +499,27 @@ input:focus {
     text-transform: uppercase;
 }
 
-.workers td {
+.workers td,
+.users td,
+.results td {
     padding: 6px 16px 6px 0;
     border-top: 1px solid var(--line);
     vertical-align: top;
+}
+
+.users td {
+    vertical-align: middle;
+}
+
+.totals {
+    display: flex;
+    gap: 16px;
+    margin: 0 0 16px;
+}
+
+.results .number {
+    font-family: var(--mono);
+    text-align: right;
 }
 
 .workers .url {
@@ -541,14 +564,7 @@ input:focus {
 }
 
 .window::before {
-    --inner: calc(var(--cut) - 0.586px);
-    content: "";
-    position: absolute;
-    inset: 1px;
-    z-index: -1;
     background: var(--surface);
-    clip-path: polygon(var(--inner) 0, 100% 0, 100% calc(100% - var(--inner)),
-            calc(100% - var(--inner)) 100%, 0 100%, 0 var(--inner));
 }
 
 .window h2 {
@@ -611,26 +627,6 @@ input:focus {
 }
 
 /* Users and logging in */
-
-.users {
-    border-collapse: collapse;
-}
-
-.users th {
-    padding: 4px 16px 4px 0;
-    color: var(--muted);
-    font: 500 16px/1.2 var(--font);
-    font-stretch: 70%;
-    letter-spacing: 0.06em;
-    text-align: left;
-    text-transform: uppercase;
-}
-
-.users td {
-    padding: 6px 16px 6px 0;
-    border-top: 1px solid var(--line);
-    vertical-align: middle;
-}
 
 .users .name {
     font-family: var(--mono);

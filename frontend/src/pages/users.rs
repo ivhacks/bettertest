@@ -1,6 +1,6 @@
 // The users page: who may do what, and how each logs in.
 
-use crate::{account, passkey, post_json, view};
+use crate::{account, fetch, passkey, post_json, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
@@ -49,7 +49,7 @@ impl UsersPage {
         let link = ctx.link().clone();
         spawn_local(async move {
             match post_json(url, &body).await {
-                Ok(()) => link.send_message(UsersMsg::Load),
+                Ok(_) => link.send_message(UsersMsg::Load),
                 Err(e) => {
                     link.send_message(UsersMsg::Notice(e));
                     // The page may show a choice the boss refused: show what really is.
@@ -92,15 +92,7 @@ impl Component for UsersPage {
             UsersMsg::Load => {
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let users = match Request::get("/api/users").send().await {
-                        Ok(response) if response.ok() => response
-                            .json::<Vec<User>>()
-                            .await
-                            .map_err(|e| e.to_string()),
-                        Ok(response) => Err(response.text().await.unwrap_or_default()),
-                        Err(e) => Err(e.to_string()),
-                    };
-                    match users {
+                    match fetch(Request::get("/api/users").build()).await {
                         Ok(users) => link.send_message(UsersMsg::Loaded(users)),
                         Err(e) => link.send_message(UsersMsg::Notice(e)),
                     }
@@ -130,20 +122,9 @@ impl Component for UsersPage {
                 self.notice = None;
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let made = match Request::post("/api/new-certificate")
-                        .json(&serde_json::json!({ "id": id }))
-                    {
-                        Ok(request) => match request.send().await {
-                            Ok(response) if response.ok() => response
-                                .json::<serde_json::Value>()
-                                .await
-                                .map_err(|e| e.to_string()),
-                            Ok(response) => Err(response.text().await.unwrap_or_default()),
-                            Err(e) => Err(e.to_string()),
-                        },
-                        Err(e) => Err(e.to_string()),
-                    };
-                    match made {
+                    let request = Request::post("/api/new-certificate")
+                        .json(&serde_json::json!({ "id": id }));
+                    match fetch::<serde_json::Value>(request).await {
                         Ok(made) => {
                             let field =
                                 |name: &str| made[name].as_str().unwrap_or_default().to_string();
@@ -195,22 +176,11 @@ impl Component for UsersPage {
                     .unwrap_or_default();
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let made = match Request::post("/api/new-token")
-                        .json(&serde_json::json!({ "id": id }))
-                    {
-                        Ok(request) => match request.send().await {
-                            Ok(response) if response.ok() => response
-                                .json::<serde_json::Value>()
-                                .await
-                                .map(|v| v["token"].as_str().unwrap_or_default().to_string())
-                                .map_err(|e| e.to_string()),
-                            Ok(response) => Err(response.text().await.unwrap_or_default()),
-                            Err(e) => Err(e.to_string()),
-                        },
-                        Err(e) => Err(e.to_string()),
-                    };
-                    match made {
-                        Ok(token) => {
+                    let request =
+                        Request::post("/api/new-token").json(&serde_json::json!({ "id": id }));
+                    match fetch::<serde_json::Value>(request).await {
+                        Ok(made) => {
+                            let token = made["token"].as_str().unwrap_or_default().to_string();
                             link.send_message(UsersMsg::TokenMade(name, token));
                             link.send_message(UsersMsg::Load);
                         }
@@ -285,6 +255,7 @@ impl Component for UsersPage {
                 </div>
             }
         });
+        let done = html! { <div class="buttons"><button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button></div> };
         let token_window = self.new_token.as_ref().map(|(name, token)| {
             html! {
                 <div class="backdrop">
@@ -292,9 +263,7 @@ impl Component for UsersPage {
                         <h2>{ format!("A token for {name}") }</h2>
                         <p>{ "Shown this once: copy it now. Scripts and curl send it as" }</p>
                         <pre class="token">{ format!("Authorization: Bearer {token}") }</pre>
-                        <div class="buttons">
-                            <button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button>
-                        </div>
+                        { done.clone() }
                     </div>
                 </div>
             }
@@ -311,9 +280,7 @@ impl Component for UsersPage {
                             { ", then import it into the browser (Settings, Certificates, Import) with this password. Both are shown this once." }
                         </p>
                         <pre class="token">{ password }</pre>
-                        <div class="buttons">
-                            <button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button>
-                        </div>
+                        { done.clone() }
                     </div>
                 </div>
             }

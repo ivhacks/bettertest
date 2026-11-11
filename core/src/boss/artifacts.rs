@@ -161,17 +161,19 @@ impl Boss {
 // without internet, vm disk images, build outputs. An artifact never changes once uploaded, so
 // workers can cache them by URL.
 
-pub(super) fn bad_artifact_name() -> Failure {
-    (
-        StatusCode::BAD_REQUEST,
-        "artifact names are letters, digits, '.', '-' and '_', not starting with '.'".into(),
-    )
+/// 400 for a name that could reach outside the artifact directories.
+pub(super) fn check_artifact_name(name: &str) -> Result<(), Failure> {
+    match valid_artifact_name(name) {
+        true => Ok(()),
+        false => Err((
+            StatusCode::BAD_REQUEST,
+            "artifact names are letters, digits, '.', '-' and '_', not starting with '.'".into(),
+        )),
+    }
 }
 
 pub(super) fn artifact_path(name: &str) -> Result<PathBuf, Failure> {
-    if !valid_artifact_name(name) {
-        return Err(bad_artifact_name());
-    }
+    check_artifact_name(name)?;
     Ok(workdir::dir("artifacts").map_err(internal)?.join(name))
 }
 
@@ -191,9 +193,7 @@ pub(super) async fn get_task_artifact(
     AxumPath((id, name)): AxumPath<(String, String)>,
 ) -> Result<Response, Failure> {
     let id = parse_id(&id)?;
-    if !valid_artifact_name(&name) {
-        return Err(bad_artifact_name());
-    }
+    check_artifact_name(&name)?;
     let path = task_artifacts_dir(id).map_err(internal)?.join(&name);
     // Names are plain ascii without quotes, so they fit in the header as they are.
     let disposition = format!("attachment; filename=\"{name}\"");
@@ -207,9 +207,7 @@ pub(super) async fn get_run_artifact(
     AxumPath((id, stage, task, name)): AxumPath<(String, String, String, String)>,
 ) -> Result<Response, Failure> {
     let id = parse_id(&id)?;
-    if !valid_artifact_name(&name) {
-        return Err(bad_artifact_name());
-    }
+    check_artifact_name(&name)?;
     let run = boss.db().run(id).map_err(internal)?;
     let run = run.ok_or_else(|| not_found(format!("run {id}")))?;
     let path = boss
@@ -231,9 +229,7 @@ pub(super) async fn get_pipeline_artifact(
         String,
     )>,
 ) -> Result<Response, Failure> {
-    if !valid_artifact_name(&name) {
-        return Err(bad_artifact_name());
-    }
+    check_artifact_name(&name)?;
     let not_there = |reason| (StatusCode::NOT_FOUND, reason);
     let run = boss
         .resolve_run(&pipeline, &run, &stage, &task, &name)

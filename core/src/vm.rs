@@ -473,15 +473,14 @@ fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
     let raw = RemoveOnDrop(sibling(image, "raw")?);
     let rewritten = RemoveOnDrop(sibling(image, "new.qcow2")?);
     let grub_file = RemoveOnDrop(sibling(image, "grub.cfg")?);
-    qemu_img(&[
-        "convert",
-        "-f",
-        "qcow2",
-        "-O",
-        "raw",
-        &image.to_string_lossy(),
-        &raw.0.to_string_lossy(),
-    ])?;
+    let convert = |from: &str, to: &str, input: &Path, output: &Path| {
+        let (input, output) = (input.to_string_lossy(), output.to_string_lossy());
+        tool(
+            "qemu-img",
+            &["convert", "-f", from, "-O", to, &input, &output],
+        )
+    };
+    convert("qcow2", "raw", image, &raw.0)?;
     let offset = largest_partition_offset(&read_prefix(&raw.0, 1024 * 1024)?)?;
     let spec = format!("{}?offset={offset}", raw.0.display());
     // Debian's grub.cfg and Fedora's grub2 one. The edit is on a raw copy; the cached qcow is
@@ -496,16 +495,11 @@ fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
     let updated = extend_linux_cmdline(&grub, EMULATED_KERNEL_ARGS)?;
     fs::write(&grub_file.0, &updated).map_err(|e| e.to_string())?;
     replace_grub(&spec, &cfg_path, &grub_file.0)?;
-    filesystem_clean(&spec)?;
-    qemu_img(&[
-        "convert",
-        "-f",
-        "raw",
-        "-O",
-        "qcow2",
-        &raw.0.to_string_lossy(),
-        &rewritten.0.to_string_lossy(),
-    ])?;
+    // It has to pass a read-only check: a directory entry aimed at a deleted inode still reads
+    // back the old bytes, so reading grub.cfg is not enough.
+    tool("e2fsck", &["-fn", &spec])
+        .map_err(|e| format!("rewritten vm image is not a consistent filesystem: {e}"))?;
+    convert("raw", "qcow2", &raw.0, &rewritten.0)?;
     fs::set_permissions(&rewritten.0, fs::Permissions::from_mode(0o666))
         .map_err(|e| e.to_string())?;
     fs::rename(&rewritten.0, image).map_err(|e| e.to_string())?;
@@ -566,9 +560,9 @@ fn largest_partition_offset(disk: &[u8]) -> Result<u64, String> {
     if disk.len() < 1024 || &disk[512..520] != b"EFI PART" {
         return Err("vm image has no GPT, so its boot timeout cannot be set".to_string());
     }
-    let entry_lba = le_u64(disk, 512 + 72)?;
-    let nent = le_u32(disk, 512 + 80)?;
-    let entsz = le_u32(disk, 512 + 84)?;
+    let entry_lba = u64::from_le_bytes(le(disk, 512 + 72)?);
+    let nent = u32::from_le_bytes(le(disk, 512 + 80)?);
+    let entsz = u32::from_le_bytes(le(disk, 512 + 84)?);
     if nent == 0 || nent > 128 || !(128..=512).contains(&entsz) {
         return Err("vm image has a GPT this worker will not parse".to_string());
     }
@@ -591,8 +585,8 @@ fn largest_partition_offset(disk: &[u8]) -> Result<u64, String> {
         if entry[..16].iter().all(|b| *b == 0) {
             continue;
         }
-        let first = le_u64(entry, 32)?;
-        let last = le_u64(entry, 40)?;
+        let first = u64::from_le_bytes(le(entry, 32)?);
+        let last = u64::from_le_bytes(le(entry, 40)?);
         if last < first {
             continue;
         }
@@ -609,32 +603,25 @@ fn largest_partition_offset(disk: &[u8]) -> Result<u64, String> {
         .ok_or_else(|| "vm image partition offset overflows".to_string())
 }
 
-fn le_u32(bytes: &[u8], at: usize) -> Result<u32, String> {
-    let s = bytes.get(at..at + 4).ok_or("truncated partition table")?;
-    let mut a = [0; 4];
-    a.copy_from_slice(s);
-    Ok(u32::from_le_bytes(a))
+/// The `N` bytes at `at`, for from_le_bytes.
+fn le<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], String> {
+    let slice = bytes.get(at..at + N).and_then(|s| s.try_into().ok());
+    slice.ok_or_else(|| "truncated partition table".to_string())
 }
 
-fn le_u64(bytes: &[u8], at: usize) -> Result<u64, String> {
-    let s = bytes.get(at..at + 8).ok_or("truncated partition table")?;
-    let mut a = [0; 8];
-    a.copy_from_slice(s);
-    Ok(u64::from_le_bytes(a))
-}
-
-fn qemu_img(args: &[&str]) -> Result<(), String> {
-    let output = std::process::Command::new("qemu-img")
+/// Runs `program` to its end. Ok is its stdout; Err says what went wrong.
+fn tool(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new(program)
         .args(args)
         .output()
-        .map_err(|e| format!("could not run qemu-img: {e}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "qemu-img failed: {}",
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    match output.status.success() {
+        true => Ok(stdout),
+        false => Err(format!(
+            "{program} failed: {}{stdout}",
             String::from_utf8_lossy(&output.stderr)
-        ))
+        )),
     }
 }
 
@@ -716,23 +703,6 @@ fn replace_grub(spec: &str, cfg_path: &str, host_file: &Path) -> Result<(), Stri
         return Err("grub.cfg is missing the emulated boot timeout".to_string());
     }
     Ok(())
-}
-
-/// The rewritten filesystem has to pass a read-only check. A directory entry aimed at a deleted
-/// inode still reads back the old bytes, so reading grub.cfg is not enough.
-fn filesystem_clean(spec: &str) -> Result<(), String> {
-    let output = std::process::Command::new("e2fsck")
-        .args(["-fn", spec])
-        .output()
-        .map_err(|e| format!("could not run e2fsck (e2fsprogs): {e}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(format!(
-        "rewritten vm image is not a consistent filesystem: {stderr}{stdout}"
-    ))
 }
 
 /// Adds `extra` to every grub `linux` / `linuxefi` command. Existing copies of these timeouts are

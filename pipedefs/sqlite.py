@@ -5,7 +5,9 @@ Build makes a docker image of SQLite's release source and the testfixture testru
 build makes (configure, make testfixture). Docker's layer cache makes that instant after the first
 run. Test runs every script in one container of that image, as many at once as the worker takes
 (worker --tasks N), each in a directory of its own with SQLITE_TMPDIR there, as testrunner.tcl does.
-A script passes when testfixture exits 0, as under testrunner.tcl. The scripts run as a user other
+A script passes when testfixture exits 0, as under testrunner.tcl, and says with tests() how many
+tests its summary line counts and how many of them failed, which the run's results add up. A
+script that fails without a failed test crashed, or timed out. The scripts run as a user other
 than root, since some of them check file permissions, which root ignores. Their directories are
 on a volume, the worker's own disk: on the container's overlay filesystem some take a fifth longer.
 
@@ -18,9 +20,10 @@ testrunner.tcl started them (its testrunner.db), which puts the scripts it marks
 boss starts a stage's tasks in the order the pipedef defines them, so both run the same schedule.
 """
 
+import re
 import subprocess
 
-from bettertest import Labels, Stage, run, task
+from bettertest import Labels, Stage, run, task, tests
 
 
 class Label(Labels):
@@ -1587,10 +1590,20 @@ class Test(Stage):
 
 def script(path: str):
     def test() -> None:
-        run(
+        # The exit code comes last, after testfixture's summary: run() fails a task as soon as its
+        # command does, and the summary would be lost with it.
+        output = run(
             "dir=$(mktemp -d -p /work) && cd $dir && SQLITE_TMPDIR=$dir /build/testfixture"
-            f" /sqlite/{path}; code=$?; cd / && rm -rf $dir; exit $code"
+            f" /sqlite/{path}; code=$?; cd / && rm -rf $dir; echo testfixture exited $code"
         )
+        # As testrunner.tcl reads it: "0 errors out of 1234 tests on host ..."
+        summary = re.findall(r"^(\d+) errors? out of (\d+) tests", output, re.MULTILINE)
+        if summary:
+            failed, total = summary[-1]
+            tests(total=int(total), failed=int(failed))
+        code = int(output.rsplit(" ", 1)[-1])
+        if code != 0:
+            raise SystemExit(code)
 
     return test
 

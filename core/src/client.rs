@@ -6,7 +6,7 @@ use crate::{
     worker::{StartContainer, StartVm, Started},
 };
 use bettertest_shared::{
-    Artifact, LogLine, LogStream, Run, Sandbox, Stage, Task, duration, valid_artifact_name,
+    Artifact, LogLine, LogStream, Run, Sandbox, Stage, Task, Tests, duration, valid_artifact_name,
 };
 use reqwest::{Client, Response, multipart::Form};
 use std::{fs, path::Path, path::PathBuf, time::Duration};
@@ -37,6 +37,9 @@ pub trait TaskIo {
             self.log(line.stream, line.line);
         }
     }
+
+    /// What the task said of its tests with tests().
+    fn tests(&mut self, _tests: Tests) {}
 
     /// Where the artifacts the task publishes are saved.
     fn outputs(&self) -> Result<PathBuf, String>;
@@ -351,6 +354,14 @@ async fn start_task(
                         format!("kept artifact {} ({size} bytes)", artifact.name),
                     );
                     io.saved(artifact);
+                }
+                "tests" => {
+                    io.log_lines(std::mem::take(&mut lines));
+                    let tests: Tests = serde_json::from_str(&data)
+                        .map_err(|e| StartError::Failed(format!("bad tests {data:?}: {e}")))?;
+                    let said = format!("{} tests, {} failed", tests.total, tests.failed);
+                    io.log(LogStream::Bettertest, said);
+                    io.tests(tests);
                 }
                 "exit" => {
                     break 'stream data
