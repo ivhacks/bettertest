@@ -57,12 +57,12 @@ fn views_render_with_plotly_containers() {
     assert!(s.contains(r#"<div class="view-container">"#), "{s}");
     assert!(s.contains("<h3>outcomes</h3>"), "{s}");
     assert!(
-        s.contains(r#"<div id="view-outcomes" class="plotly-view" data-url="/api/pipeline/testpipe/view/outcomes"></div>"#),
+        s.contains(r#"<div id="view-outcomes" data-url="/api/pipeline/testpipe/view/outcomes" class="plotly-view"></div>"#),
         "{s}"
     );
     assert!(s.contains("<h3>durations</h3>"), "{s}");
     assert!(
-        s.contains(r#"<div id="view-durations" class="plotly-view" data-url="/api/pipeline/testpipe/view/durations"></div>"#),
+        s.contains(r#"<div id="view-durations" data-url="/api/pipeline/testpipe/view/durations" class="plotly-view"></div>"#),
         "{s}"
     );
 }
@@ -99,7 +99,7 @@ fn html_artifacts_are_embedded_in_iframes() {
         "{s}"
     );
     assert!(
-        s.contains(r#"<iframe src="/api/task/00000000-0000-0000-0000-000000000001/artifact/report.html" class="report-iframe" sandbox="allow-scripts allow-same-origin"></iframe>"#),
+        s.contains(r#"<iframe src="/api/task/00000000-0000-0000-0000-000000000001/artifact/report.html" sandbox="allow-scripts allow-same-origin" class="report-iframe"></iframe>"#),
         "{s}"
     );
     assert!(

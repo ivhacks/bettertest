@@ -598,8 +598,8 @@ def _fetch(url: str, parts: list[str], announce: str | None) -> Path:
     return path
 
 
-def view(fn: Callable[[list[TaskRun]], Any]):
-    """Mark a function as a view that returns a Plotly figure. The function receives the run's task
-    results and returns a Plotly figure object, which the UI renders interactively."""
+def view(fn: Callable[[list[Any]], Any]):
+    """Mark a function as a view that returns a Plotly figure. The function receives a list of
+    run data (as dicts) and returns a Plotly figure object, which the UI renders interactively."""
     fn.bettertest_view = True  # ty: ignore[unresolved-attribute]
     return fn
