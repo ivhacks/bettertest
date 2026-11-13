@@ -3,7 +3,10 @@ mod passkey;
 mod view;
 
 use bettertest_shared::*;
-use futures::StreamExt;
+use futures::{
+    StreamExt,
+    future::{AbortHandle, abortable, join},
+};
 use gloo::timers::future::TimeoutFuture;
 use gloo::{
     events::{EventListener, EventListenerOptions, EventListenerPhase},
@@ -17,13 +20,13 @@ use std::{
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, MouseEvent, wasm_bindgen::JsCast};
+use web_sys::{Element, Event, HtmlAnchorElement, MouseEvent, wasm_bindgen::JsCast};
 use yew::prelude::*;
 
 // The shell (this wasm, its JS, the CSS) stays loaded. Links between pages push history and swap
 // the page component; they do not load the document again. The boss still serves index.html for
-// every page, so a refresh or a pasted URL starts at the right place, and `/` redirects to the
-// first pipeline.
+// every page, so a refresh or a pasted URL starts at the right place, and serves `/` as the first
+// pipeline's page.
 // Who this browser is. The header reads it on every page.
 thread_local! {
     static ME: RefCell<Option<Me>> = const { RefCell::new(None) };
@@ -34,6 +37,15 @@ thread_local! {
 fn main() {
     fade_released_buttons();
     spawn_local(async {
+        // The boss serves `/` as the first pipeline's page, and names it.
+        let canonical = gloo::utils::document().query_selector("link[rel=canonical]");
+        if let Some(page) = canonical
+            .ok()
+            .flatten()
+            .and_then(|l| l.get_attribute("href"))
+        {
+            write_history(&page, true);
+        }
         let me = load_me().await;
         let path = pathname();
         // A boss that lets nobody in without logging in sends everyone else to log in first,
@@ -41,8 +53,11 @@ fn main() {
         if me.as_ref().is_some_and(|me| me.role == Role::None) && path != "/login" {
             write_history(&format!("/login?next={path}"), true);
         }
-        if let Some(root) = mount() {
-            yew::Renderer::<App>::with_root(root).render();
+        // The words already in the body are the first paint, before this wasm ran; the app takes
+        // their place.
+        if let Some(body) = gloo::utils::document().body() {
+            body.set_text_content(None);
+            yew::Renderer::<App>::with_root(body.into()).render();
         }
     });
 }
@@ -67,10 +82,29 @@ pub fn navigate(url: &str) {
 
 /// A page the shell draws itself. Anything else (an artifact, the API) is a real navigation.
 pub fn is_app_path(path: &str) -> bool {
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    matches!(path, "/" | "/workers" | "/settings" | "/users" | "/login")
-        || path.starts_with("/pipeline/")
-        || path.starts_with("/task/")
+    page(path).is_some()
+}
+
+/// The page at `url`, keyed by it: a new key destroys the previous page, and with it the stream
+/// it was following.
+fn page(url: &str) -> Option<Html> {
+    let key = url.to_string();
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+    Some(match segments.as_slice() {
+        [""] => html! {},
+        ["pipeline", name] if !name.is_empty() => {
+            html! { <pages::pipeline::PipelinePage key={key} id={name.to_string()} /> }
+        }
+        ["task", id] if !id.is_empty() => {
+            html! { <pages::task::TaskPage key={key} id={id.to_string()} /> }
+        }
+        ["workers"] => html! { <pages::workers::WorkersPage key={key} /> },
+        ["settings"] => html! { <pages::settings::SettingsPage key={key} /> },
+        ["users"] => html! { <pages::users::UsersPage key={key} /> },
+        ["login"] => html! { <pages::login::LoginPage key={key} /> },
+        _ => return None,
+    })
 }
 
 fn pathname() -> String {
@@ -80,70 +114,19 @@ fn pathname() -> String {
         .unwrap_or_else(|_| "/".to_string())
 }
 
-fn location_search() -> String {
-    window().location().search().unwrap_or_default()
+/// The path and query in the address bar.
+fn here() -> String {
+    pathname() + &window().location().search().unwrap_or_default()
 }
 
 fn write_history(url: &str, replace: bool) {
     let Ok(history) = window().history() else {
         return;
     };
-    let wrote = if replace {
-        history.replace_state_with_url(&JsValue::NULL, "", Some(url))
-    } else {
-        history.push_state_with_url(&JsValue::NULL, "", Some(url))
+    let _ = match replace {
+        true => history.replace_state_with_url(&JsValue::NULL, "", Some(url)),
+        false => history.push_state_with_url(&JsValue::NULL, "", Some(url)),
     };
-    let _ = wrote;
-}
-
-/// Where the shell renders. The words already in the body are the first paint, before this wasm
-/// ran; they go away as the app takes their place.
-fn mount() -> Option<Element> {
-    let body = gloo::utils::document().body()?;
-    while let Some(child) = body.first_child() {
-        if body.remove_child(&child).is_err() {
-            break;
-        }
-    }
-    body.dyn_into().ok()
-}
-
-enum Hist {
-    Push,
-    Replace,
-}
-
-enum Route {
-    Home,
-    Pipeline(String),
-    Task(String),
-    Workers,
-    Settings,
-    Users,
-    Login,
-    Missing,
-}
-
-fn route_of(path: &str) -> Route {
-    let mut parts = path.trim_matches('/').split('/');
-    let (first, second, third) = (parts.next().unwrap_or(""), parts.next(), parts.next());
-    match (first, second, third) {
-        ("", None, _) => Route::Home,
-        ("pipeline", Some(name), None) if !name.is_empty() => Route::Pipeline(name.to_string()),
-        ("task", Some(id), None) if !id.is_empty() => Route::Task(id.to_string()),
-        ("workers", None, _) => Route::Workers,
-        ("settings", None, _) => Route::Settings,
-        ("users", None, _) => Route::Users,
-        ("login", None, _) => Route::Login,
-        _ => Route::Missing,
-    }
-}
-
-fn split_url(url: &str) -> (String, String) {
-    match url.split_once('?') {
-        Some((path, query)) => (path.to_string(), format!("?{query}")),
-        None => (url.to_string(), String::new()),
-    }
 }
 
 fn locked_out() -> bool {
@@ -166,41 +149,22 @@ fn app_link(event: &Event) -> Option<String> {
     {
         return None;
     }
-    let target = event.target()?;
-    let element = target
-        .dyn_ref::<Element>()
-        .cloned()
-        .or_else(|| target.dyn_ref::<web_sys::Node>()?.parent_element())?;
-    let anchor = element.closest("a").ok().flatten()?;
-    if anchor.has_attribute("download") {
-        return None;
-    }
-    if anchor
-        .get_attribute("target")
-        .is_some_and(|target| !target.is_empty() && target != "_self")
+    let element = event.target()?.dyn_into::<Element>().ok()?;
+    let anchor: HtmlAnchorElement = element.closest("a[href]").ok()??.dyn_into().ok()?;
+    if anchor.has_attribute("download")
+        || !matches!(anchor.target().as_str(), "" | "_self")
+        || anchor.origin() != window().location().origin().ok()?
+        || !is_app_path(&anchor.pathname())
     {
         return None;
     }
-    let href = anchor.get_attribute("href")?;
-    if href.is_empty() || href.starts_with('#') {
-        return None;
-    }
-    let base = window().location().href().ok()?;
-    let url = web_sys::Url::new_with_base(&href, &base).ok()?;
-    if url.origin() != window().location().origin().ok()? {
-        return None;
-    }
-    let path = url.pathname();
-    if !is_app_path(&path) {
-        return None;
-    }
     mouse.prevent_default();
-    Some(format!("{path}{}", url.search()))
+    Some(anchor.pathname() + &anchor.search())
 }
 
 struct App {
-    path: String,
-    search: String,
+    // The page's path and query.
+    url: String,
     notice: Option<String>,
     // Bumped whenever a navigation starts, so a slow answer about `/` cannot land late.
     home_gen: u32,
@@ -235,135 +199,86 @@ impl Component for App {
                     navigate(&url);
                 }
             });
-        let path = pathname();
-        let app = Self {
-            path,
-            search: location_search(),
+        if pathname() == "/" {
+            ctx.link().send_message(AppMsg::Go("/".to_string()));
+        }
+        Self {
+            url: here(),
             notice: None,
             home_gen: 0,
             _pop: pop,
             _click: click,
-        };
-        if app.path == "/" {
-            ctx.link().send_message(AppMsg::Go("/".to_string()));
         }
-        app
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            AppMsg::Go(url) => {
-                self.home_gen = self.home_gen.wrapping_add(1);
-                let (path, search) = split_url(&url);
-                if path != "/login" && locked_out() {
-                    self.notice = None;
-                    self.show("/login".to_string(), format!("?next={path}"), Hist::Push);
-                    return true;
-                }
-                if path == "/" {
-                    self.request_home(ctx);
-                    return false;
-                }
-                self.notice = None;
-                self.show(path, search, Hist::Push);
-                true
-            }
-            AppMsg::Home(ticket, result) => {
-                if ticket != self.home_gen {
-                    return false;
-                }
-                match result {
-                    Ok(name) => {
-                        self.notice = None;
-                        let mode = if self.path == "/" {
-                            Hist::Replace
-                        } else {
-                            Hist::Push
-                        };
-                        self.show(format!("/pipeline/{name}"), String::new(), mode);
-                    }
-                    Err(text) => self.notice = Some(text),
-                }
-                true
-            }
+            AppMsg::Go(url) => self.go(ctx, url, false),
             AppMsg::Pop => {
-                self.home_gen = self.home_gen.wrapping_add(1);
-                self.path = pathname();
-                self.search = location_search();
+                self.url = here();
+                self.go(ctx, self.url.clone(), true);
+                true
+            }
+            AppMsg::Home(ticket, _) if ticket != self.home_gen => false,
+            AppMsg::Home(_, Ok(name)) => {
                 self.notice = None;
-                if self.path != "/login" && locked_out() {
-                    self.show(
-                        "/login".to_string(),
-                        format!("?next={}", self.path),
-                        Hist::Replace,
-                    );
-                    return true;
-                }
-                if self.path == "/" {
-                    self.request_home(ctx);
-                }
+                let replace = self.url.split('?').next() == Some("/");
+                self.show(format!("/pipeline/{name}"), replace);
+                true
+            }
+            AppMsg::Home(_, Err(text)) => {
+                self.notice = Some(text);
                 true
             }
         }
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
+        let page = page(&self.url);
         html! {
             <>
                 { view::notice(&self.notice) }
-                { self.page() }
+                { page.unwrap_or_else(|| html! { <pre class="notice">{ "not found" }</pre> }) }
             </>
         }
     }
 }
 
 impl App {
-    fn show(&mut self, path: String, search: String, mode: Hist) {
-        if path == self.path && search == self.search {
-            return;
+    /// Shows `url`, or the login page to a browser that has to log in first. `/` waits for the
+    /// boss to name the first pipeline, the same place it serves at `/`. Whether to render.
+    fn go(&mut self, ctx: &Context<Self>, url: String, replace: bool) -> bool {
+        self.home_gen = self.home_gen.wrapping_add(1);
+        self.notice = None;
+        let path = url.split('?').next().unwrap_or_default().to_string();
+        if path != "/login" && locked_out() {
+            self.show(format!("/login?next={path}"), replace);
+            return true;
         }
-        write_history(&format!("{path}{search}"), matches!(mode, Hist::Replace));
-        self.path = path;
-        self.search = search;
+        if path == "/" {
+            self.request_home(ctx);
+            return false;
+        }
+        self.show(url, replace);
+        true
     }
 
-    /// `/` is the first pipeline, the same place the boss sends a browser that loads it.
-    fn request_home(&mut self, ctx: &Context<Self>) {
-        self.home_gen = self.home_gen.wrapping_add(1);
+    fn show(&mut self, url: String, replace: bool) {
+        if url != self.url {
+            write_history(&url, replace);
+            self.url = url;
+        }
+    }
+
+    fn request_home(&self, ctx: &Context<Self>) {
         let ticket = self.home_gen;
         let link = ctx.link().clone();
         spawn_local(async move {
-            let found = match Request::get("/api/pipelines").send().await {
-                Ok(response) => match response.json::<Vec<String>>().await {
-                    Ok(names) => names
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| "no pipelines".to_string()),
-                    Err(e) => Err(e.to_string()),
-                },
-                Err(e) => Err(e.to_string()),
-            };
-            link.send_message(AppMsg::Home(ticket, found));
+            let names = fetch::<Vec<String>>(Request::get("/api/pipelines").build()).await;
+            let first =
+                names.and_then(|names| names.into_iter().next().ok_or("no pipelines".into()));
+            link.send_message(AppMsg::Home(ticket, first));
         });
-    }
-
-    fn page(&self) -> Html {
-        // A new identity destroys the previous page, and with it the stream it was following.
-        let key = format!("{}{}", self.path, self.search);
-        match route_of(&self.path) {
-            Route::Pipeline(name) => {
-                html! { <pages::pipeline::PipelinePage key={key} id={name} /> }
-            }
-            Route::Task(id) => html! { <pages::task::TaskPage key={key} id={id} /> },
-            Route::Workers => html! { <pages::workers::WorkersPage key={key} /> },
-            Route::Settings => html! { <pages::settings::SettingsPage key={key} /> },
-            Route::Users => html! { <pages::users::UsersPage key={key} /> },
-            Route::Login => html! { <pages::login::LoginPage key={key} /> },
-            Route::Home => html! {},
-            Route::Missing => {
-                html! { <pre class="notice">{ "not found" }</pre> }
-            }
-        }
     }
 }
 
@@ -452,16 +367,12 @@ const SILENCE_MS: f64 = 60_000.0;
 /// Stops the live stream when dropped. A page holds one, so leaving the page, including by an
 /// in-app navigation, hangs up instead of following a page nobody is looking at.
 #[must_use = "dropping this stops the live stream"]
-pub struct Followed {
-    stop: Rc<Cell<bool>>,
-    source: Rc<RefCell<Option<EventSource>>>,
-}
+pub struct Followed(AbortHandle);
 
 impl Drop for Followed {
     fn drop(&mut self) {
-        self.stop.set(true);
-        // Dropping the EventSource closes it, which ends the read below.
-        self.source.borrow_mut().take();
+        // Drops what follows the stream, and with it the EventSource, which closes it.
+        self.0.abort();
     }
 }
 
@@ -474,21 +385,13 @@ fn follow<S: DeserializeOwned + 'static>(
     on_notice: Callback<String>,
 ) -> Followed {
     let url = url.to_string();
-    let stop = Rc::new(Cell::new(false));
-    let source: Rc<RefCell<Option<EventSource>>> = Rc::default();
     let heard = Rc::new(Cell::new(monotonic()));
-    {
-        let (heard, on_notice, stop) = (heard.clone(), on_notice.clone(), stop.clone());
-        spawn_local(async move {
+    let watch = {
+        let (heard, on_notice) = (heard.clone(), on_notice.clone());
+        async move {
             let mut said = false;
             loop {
-                if stop.get() {
-                    return;
-                }
                 TimeoutFuture::new(5_000).await;
-                if stop.get() {
-                    return;
-                }
                 let silent = monotonic() - heard.get() > SILENCE_MS;
                 if silent && !said {
                     on_notice.emit(
@@ -497,61 +400,47 @@ fn follow<S: DeserializeOwned + 'static>(
                 }
                 said = silent;
             }
-        });
-    }
-    {
-        let (stop, source, heard) = (stop.clone(), source.clone(), heard);
-        spawn_local(async move {
-            loop {
-                if stop.get() {
-                    return;
-                }
-                let subscribed = EventSource::new(&url).and_then(|mut source| {
-                    let messages = source.subscribe("message")?;
-                    let pings = source.subscribe("ping")?;
-                    Ok((source, futures::stream::select(messages, pings)))
-                });
-                match subscribed {
-                    Ok((event_source, mut messages)) => {
-                        *source.borrow_mut() = Some(event_source);
-                        // The browser reconnects by itself after a dropped connection, and the boss
-                        // starts the new one with a fresh snapshot. An error here means the browser
-                        // gave up: the boss answered with an error, say while it restarted.
-                        while let Some(Ok((event, message))) = messages.next().await {
-                            if stop.get() {
-                                return;
-                            }
-                            heard.set(monotonic());
-                            if event == "ping" {
-                                continue;
-                            }
-                            let data = message.data().as_string().unwrap_or_default();
-                            match serde_json::from_str(&data) {
-                                Ok(live) => on_live.emit(live),
-                                Err(e) => on_notice
-                                    .emit(format!("could not read a message from the boss: {e}")),
-                            }
+        }
+    };
+    let read = async move {
+        loop {
+            let subscribed = EventSource::new(&url).and_then(|mut source| {
+                let messages = source.subscribe("message")?;
+                let pings = source.subscribe("ping")?;
+                Ok((source, futures::stream::select(messages, pings)))
+            });
+            match subscribed {
+                // Dropping the EventSource closes it, so it lives while its messages are read.
+                Ok((_source, mut messages)) => {
+                    // The browser reconnects by itself after a dropped connection, and the boss
+                    // starts the new one with a fresh snapshot. An error here means the browser
+                    // gave up: the boss answered with an error, say while it restarted.
+                    while let Some(Ok((event, message))) = messages.next().await {
+                        heard.set(monotonic());
+                        if event == "ping" {
+                            continue;
                         }
-                        source.borrow_mut().take();
-                    }
-                    Err(e) => {
-                        if stop.get() {
-                            return;
+                        let data = message.data().as_string().unwrap_or_default();
+                        match serde_json::from_str(&data) {
+                            Ok(live) => on_live.emit(live),
+                            Err(e) => on_notice
+                                .emit(format!("could not read a message from the boss: {e}")),
                         }
-                        on_notice.emit(format!("could not follow {url}: {e}"));
                     }
                 }
-                if stop.get() {
-                    return;
-                }
-                // The browser gave up reconnecting, say on an error from a restarting boss. Start
-                // over; the pause keeps a boss that answers with errors from being asked as fast
-                // as the browser can ask.
-                TimeoutFuture::new(2_000).await;
+                Err(e) => on_notice.emit(format!("could not follow {url}: {e}")),
             }
-        });
-    }
-    Followed { stop, source }
+            // The browser gave up reconnecting, say on an error from a restarting boss. Start over;
+            // the pause keeps a boss that answers with errors from being asked as fast as the
+            // browser can ask.
+            TimeoutFuture::new(2_000).await;
+        }
+    };
+    let (following, stop) = abortable(join(watch, read));
+    spawn_local(async move {
+        let _ = following.await;
+    });
+    Followed(stop)
 }
 
 /// Milliseconds on the browser's monotonic clock.

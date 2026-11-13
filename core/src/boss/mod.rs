@@ -16,13 +16,12 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{
-        IntoResponse, Redirect, Response,
+        IntoResponse, Response,
         sse::{self, KeepAlive, Sse},
     },
     routing::{get, post},
 };
 use bettertest_shared::*;
-use flate2::{Compression, write::GzEncoder};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -30,9 +29,9 @@ use std::{
     convert::Infallible,
     error::Error,
     fs,
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     path::PathBuf,
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -57,8 +56,9 @@ use runs::*;
 use users::*;
 use workers::*;
 
+// frontend/dist, with the brotli and gzip copies build.rs made of it.
 #[derive(Embed)]
-#[folder = "../frontend/dist/"]
+#[folder = "$OUT_DIR/web/"]
 struct EmbeddedWebAssets;
 
 pub const LISTEN_PORT: u16 = 7357;
@@ -233,7 +233,7 @@ pub async fn entry(
         )
         .route("/artifact/{name}", get(get_artifact).put(put_artifact))
         // Pages of the web ui. The frontend reads the path and decides what to show.
-        .route("/", get(first_pipeline))
+        .route("/", get(home))
         .route("/pipeline/{*rest}", get(index))
         .route("/task/{*rest}", get(index))
         .route("/workers", get(index))
@@ -258,7 +258,7 @@ pub async fn entry(
         }
         None => {
             println!("boss web ui at http://[::1]:{port}");
-            axum::serve(listener, service).await?;
+            axum::serve(tls::PlainListener(listener), service).await?;
         }
     }
     Ok(())
@@ -425,177 +425,83 @@ fn valid_pipeline_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-/// There is no landing page. The first pipeline is the landing page.
-async fn first_pipeline(State(boss): State<Shared>) -> Response {
-    match boss.pipelines().first() {
-        Some(name) => Redirect::temporary(&format!("/pipeline/{name}")).into_response(),
-        None => (StatusCode::NOT_FOUND, "no pipelines").into_response(),
-    }
+/// There is no landing page: `/` is the first pipeline's page. It is served here rather than
+/// redirected to, which would cost a round trip, and names that pipeline as canonical for the app.
+async fn home(State(boss): State<Shared>) -> Response {
+    let (Some(first), Some(index)) = (
+        boss.pipelines().into_iter().next(),
+        EmbeddedWebAssets::get("index.html"),
+    ) else {
+        return (StatusCode::NOT_FOUND, "no pipelines").into_response();
+    };
+    // Not compressed, unlike index.html: it fits in the first burst all the same.
+    let headers = [
+        (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+        (header::CACHE_CONTROL, "no-cache"),
+    ];
+    (headers, with_canonical(&index.data, &first)).into_response()
+}
+
+fn with_canonical(index: &[u8], pipeline: &str) -> String {
+    let link = format!(r#"<link rel="canonical" href="/pipeline/{pipeline}"></head>"#);
+    String::from_utf8_lossy(index).replacen("</head>", &link, 1)
 }
 
 async fn index(headers: HeaderMap) -> Response {
-    embedded_file_response(&headers, "index.html")
+    embedded::<EmbeddedWebAssets>(&headers, "index.html")
 }
 
 async fn get_embedded_asset(headers: HeaderMap, AxumPath(path): AxumPath<String>) -> Response {
-    embedded_file_response(&headers, &path)
+    embedded::<EmbeddedWebAssets>(&headers, &path)
 }
 
-fn embedded_file_response(headers: &HeaderMap, path: &str) -> Response {
-    let served = match EmbeddedWebAssets::get(path) {
-        Some(content) => serve_bytes(headers, path, content.metadata.mimetype(), &content.data),
-        None => Served {
-            status: StatusCode::NOT_FOUND,
-            content_type: String::new(),
-            cache: String::new(),
-            encoding: None,
-            vary: false,
-            body: b"not found".to_vec(),
-        },
+/// A file of the web ui, as the gzip copy build.rs made of it if the browser takes gzip.
+fn embedded<Files: rust_embed::RustEmbed>(headers: &HeaderMap, path: &str) -> Response {
+    let Some(file) = Files::get(path) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
     };
-    served.into_response()
-}
-
-struct Served {
-    status: StatusCode,
-    content_type: String,
-    cache: String,
-    encoding: Option<String>,
-    vary: bool,
-    body: Vec<u8>,
-}
-
-impl Served {
-    fn into_response(self) -> Response {
-        if self.status != StatusCode::OK {
-            return (self.status, self.body).into_response();
-        }
-        let mut response = Response::builder()
-            .header(header::CONTENT_TYPE, self.content_type)
-            .header(header::CACHE_CONTROL, self.cache)
-            .header(header::CONTENT_LENGTH, self.body.len().to_string());
-        if self.vary {
-            response = response.header(header::VARY, "accept-encoding");
-        }
-        if let Some(encoding) = self.encoding {
-            response = response.header(header::CONTENT_ENCODING, encoding);
-        }
-        response
-            .body(Body::from(self.body))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-    }
-}
-
-/// index.html names the hashed shell, so a browser has to recheck it. Everything else has a
-/// content hash or, under assets/, a version in its name, and can be kept forever.
-fn cache_control(path: &str) -> &'static str {
-    if path == "index.html" {
-        "no-cache"
-    } else {
-        "public, max-age=31536000, immutable"
-    }
-}
-
-fn compressible(path: &str, mime: &str) -> bool {
-    let ext = path.rsplit('.').next().unwrap_or("");
-    // woff2 and png are already compressed; gzipping them only makes them larger. An SVG is left
-    // alone too: Chrome fetches a gzipped SVG image again on the next load, and again when the
-    // header is drawn on another page, while a stylesheet with the same cache headers stays put.
-    // The marks are a few hundred bytes, so the gzip was never the win.
-    if ext == "svg" || mime == "image/svg+xml" {
-        return false;
-    }
-    matches!(ext, "html" | "css" | "js" | "wasm" | "json" | "txt" | "map")
-        || mime.starts_with("text/")
-        || matches!(
-            mime,
-            "application/javascript" | "application/wasm" | "application/json"
+    let gzip = Files::get(&format!("{path}.gz"));
+    let vary = gzip
+        .is_some()
+        .then_some([(header::VARY, "accept-encoding")]);
+    let accepted = headers.get(header::ACCEPT_ENCODING);
+    let accepted = accepted.and_then(|v| v.to_str().ok()).unwrap_or_default();
+    // index.html names the hashed shell, so a browser has to recheck it. Everything else has a
+    // content hash or, under assets/, a version in its name, and can be kept forever.
+    let cache = match path {
+        "index.html" => "no-cache",
+        _ => "public, max-age=31536000, immutable",
+    };
+    let headers = [
+        (header::CONTENT_TYPE, file.metadata.mimetype()),
+        (header::CACHE_CONTROL, cache),
+    ];
+    match gzip.filter(|_| accepts_gzip(accepted)) {
+        Some(gzip) => (
+            headers,
+            vary,
+            [(header::CONTENT_ENCODING, "gzip")],
+            gzip.data,
         )
+            .into_response(),
+        None => (headers, vary, file.data).into_response(),
+    }
 }
 
-/// `gzip;q=0` refuses gzip. The name is matched case-insensitively, as the spec says.
+/// `gzip;q=0` refuses gzip. Names are matched case-insensitively, as the spec says.
 fn accepts_gzip(header: &str) -> bool {
     header.split(',').any(|part| {
-        let mut params = part.split(';');
-        let coding = params.next().unwrap_or("").trim();
-        if !coding.eq_ignore_ascii_case("gzip") {
-            return false;
-        }
-        params.all(|param| {
-            let Some((_, q)) = param
-                .trim()
-                .split_once('=')
-                .filter(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
-            else {
-                return true;
-            };
-            q.trim().parse::<f64>().ok().is_none_or(|q| q > 0.0)
+        let mut params = part.split(';').map(str::trim);
+        let gzip = params
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("gzip"));
+        gzip && params.all(|param| match param.split_once('=') {
+            Some((name, q)) if name.trim().eq_ignore_ascii_case("q") => {
+                q.trim().parse::<f64>().ok().is_none_or(|q| q > 0.0)
+            }
+            _ => true,
         })
     })
-}
-
-// One gzip per embedded file. The set is fixed at build time, so this cannot grow without bound.
-static GZIP: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn gzip_key(path: &str, data: &[u8]) -> String {
-    // The whole body, not a sample. A collision would serve the wrong bytes under this path, and
-    // the tests put more than one body under one path.
-    let mut sum = 0xcbf29ce484222325u64;
-    for byte in data {
-        sum ^= u64::from(*byte);
-        sum = sum.wrapping_mul(0x100000001b3);
-    }
-    format!("{path}:{sum:x}")
-}
-
-fn cached_gzip(path: &str, data: &[u8]) -> Option<Vec<u8>> {
-    let key = gzip_key(path, data);
-    if let Ok(cache) = GZIP.lock()
-        && let Some(hit) = cache.get(&key)
-    {
-        return Some(hit.clone());
-    }
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
-    encoder.write_all(data).ok()?;
-    let compressed = encoder.finish().ok()?;
-    if compressed.len() >= data.len() {
-        return None;
-    }
-    if let Ok(mut cache) = GZIP.lock() {
-        cache.insert(key, compressed.clone());
-    }
-    Some(compressed)
-}
-
-fn serve_bytes(headers: &HeaderMap, path: &str, mime: &str, data: &[u8]) -> Served {
-    let cache = cache_control(path).to_string();
-    let accept = headers
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    let compress = compressible(path, mime);
-    if compress
-        && accepts_gzip(accept)
-        && let Some(body) = cached_gzip(path, data)
-    {
-        return Served {
-            status: StatusCode::OK,
-            content_type: mime.to_string(),
-            cache,
-            encoding: Some("gzip".to_string()),
-            vary: true,
-            body,
-        };
-    }
-    Served {
-        status: StatusCode::OK,
-        content_type: mime.to_string(),
-        cache,
-        encoding: None,
-        vary: compress,
-        body: data.to_vec(),
-    }
 }
 
 impl Boss {

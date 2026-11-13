@@ -88,6 +88,7 @@ Assume bettertest runs nonstop for five years at a company with thousands of com
 Cargo.toml              workspace: shared, frontend, core; release profile (lto, z, abort, strip)
 shared/src/lib.rs       bettertest-shared: wire types, Event, Live<S>, snapshots and their apply()
 core/                   bettertest (the binary)
+  build.rs              embeds frontend/dist with a gzip copy of each file that shrinks
   schema.sql            the db's schema, the only one there has ever been
   scripts/glue.py       python side of the language boundary
   src/main.rs           clap subcommands, lock() helper
@@ -254,7 +255,7 @@ Every request acts as a user: the one whose session cookie it carries, or else *
 Off by default: the boss speaks plain HTTP, and nobody deploying it meets a certificate. `boss --cert boss.crt --key boss.key` turns it on. bettertest is not a certificate authority and makes no certificates: whoever turns HTTPS on brings a PEM certificate (intermediates after it) and its key, usually from the site's own CA, which the site's browsers and workers already trust. The key stays in the file it was given; bettertest never copies it.
 
 - At start the boss checks the pair: it refuses to start, saying which, for a key that is not the certificate's, an expired certificate, or a file that is not PEM. It logs the names the certificate covers and when it expires.
-- The boss port (`--boss-port`, 7357 unless told otherwise) then speaks HTTPS only (OpenSSL, the one already compiled in, through `tokio-openssl`, as in axum's `low-level-openssl` example); a plain `http://` request gets no answer. Each handshake runs on its own task with a 10 s limit, so a stalled client blocks nobody.
+- The boss port (`--boss-port`, 7357 unless told otherwise) then speaks HTTPS only (OpenSSL, the one already compiled in, through `tokio-openssl`, as in axum's `low-level-openssl` example); a plain `http://` request gets no answer. Each handshake runs on its own task with a 10 s limit, so a stalled client blocks nobody. ALPN offers `h2`, so browsers get HTTP/2 (one connection for the page, its files and its streams), and sessions resume (tickets and OpenSSL's session cache; a resumed session keeps its client certificate). Every accepted socket, plain or TLS, boss or worker, is `TCP_NODELAY`: otherwise a reply written in pieces waits ~40 ms for the client's delayed ack, which on TLS hit the first reply of every connection.
 - The settings page says whether HTTPS is on, for which names, until when, and warns from 30 days before expiry. A new certificate takes a restart.
 - Workers: the certificate names a host, but a worker only knows the address the boss called it from, and that name may have no DNS record. So `start-task` carries `boss_name`, and the worker and the task's Python connect to that address while checking the certificate against the name, with the machine's trust store as everywhere else. A worker whose machine does not trust the certificate fails the task with the TLS error.
 
@@ -275,7 +276,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 
 ### Frontend
 
-Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/`), Elm architecture, no function components or hooks. The shell (the wasm, its JS and the CSS) loads once. Links use the History API, so moving between pages does not fetch the shell again, only that page's data; back and forward restore the URL and the page. A refresh still works, because the boss serves `index.html` for every page. `/` redirects to the first pipeline. Hashed shell files are cached forever; `index.html` is not, because it is what names them. The first document is the chrome burst; Syeve rides after it. See First load.
+Yew struct components, one per page (`PipelinePage`, `TaskPage`, …, in `pages/`), Elm architecture, no function components or hooks. The shell (the wasm, its JS and the CSS) loads once. Links use the History API, so moving between pages does not fetch the shell again, only that page's data; back and forward restore the URL and the page. A refresh still works, because the boss serves `index.html` for every page. `/` is the first pipeline's page, served directly (a redirect would cost a round trip) with a `<link rel="canonical">` naming it, which the app moves the address bar to. Hashed shell files are cached forever; `index.html` is not, because it is what names them. The first document is the chrome burst; Syeve rides after it. See First load.
 
 - Pipeline page: run grid (newest run on top, one column per task, grouped by stage; the header follows the current pipedef, so tasks a run predates show empty cells), "new run" button, spreadsheet-style pipeline tabs along the bottom. The grid is a CSS grid: each stage is √(its tasks) wide, so a stage of two is wider than a stage of one but each of its tasks narrower. Tasks sit 2px apart, stages 10px. Task names lie flat when they all fit. Otherwise they all tilt by one angle, the flattest that keeps neighbours a full line apart across (`label_layout`), measured after every render, on resize and once the fonts load. A stage whose columns are narrower than a line runs its tasks together into one bar, hides their names, and names the task in each cell's tooltip instead. Running cells pulse. A finished cell's tooltip says how long it took. The run id at the start of a row links to that run's results (`/pipeline/{pipeline}?run={run}`), shown instead of the grid: how many tasks passed, failed (a test failed), errored (failed without a failed test: crashed, timed out, or never called `tests()`), are running, pending or skipped, how many tests they ran and failed, then every task with its outcome, stage, how long it took and its tests, failures first and the slowest first within each outcome.
 - Task page: path (`pipeline / run / stage / task`) plus a state badge, the worker it ran on, how long it took and rerun buttons (once the run is over) at the right (counting up while it runs, from the boss's clock in the snapshot), then the live log. The log container is `flex-direction: column-reverse` so the browser keeps the newest line in view while the reader is at the bottom.
@@ -292,7 +293,7 @@ The first ~14KB on the wire paints the chrome. The same first visit loads Syeve,
 
 The standard is Nathaniel, [Why your website should be under 14kB in size](https://endtimes.dev/why-your-website-should-be-under-14kb-in-size/). A new TCP connection sends about 10 packets first, 10 × 1460 = 14600 bytes of payload after headers, then waits for an ACK. Fitting the compressed first response, headers included, in that burst saves a round trip. 14KB compressed is roughly 50KB uncompressed. When the page cannot fit, the first 14KB still has to render something useful. Some servers start with a larger window, and HTTP/3 still recommends a similar first burst. Treat 14KB as that rule of thumb.
 
-What the burst is for is the HTML document, whichever page the URL names. `index.html` carries a few lines of critical CSS and the word "bettertest", so the frame is on screen before the stylesheet, the wasm, and Syeve. The boss gzips it when that is smaller, and sends `Cache-Control: no-cache`, because the document is what names the hashed shell. Keep that document inside the burst. Leave the wasm, the fonts, and Syeve out of it.
+What the burst is for is the HTML document, whichever page the URL names. `index.html` carries a few lines of critical CSS and the word "bettertest", so the frame is on screen before the stylesheet, the wasm, and Syeve. The boss sends a gzip copy made at build time (`core/build.rs`) when that is smaller, and sends `Cache-Control: no-cache`, because the document is what names the hashed shell. Keep that document inside the burst. Leave the wasm, the fonts, and Syeve out of it.
 
 Syeve loads on that first visit no matter which page it is. It starts in the background once the frame is visible, so the chrome is already up, and it stays part of that visit. A 14KB total is impossible on a first load, and shrinking the visit by skipping Syeve is the wrong fix. Syeve is not in the app yet; #6 and #7 are the work.
 
@@ -306,7 +307,7 @@ API names are verb-noun where a bare noun is ambiguous: `POST /api/run` could me
 
 ```
 Boss :7357 (`--boss-port`)
-  /, /pipeline/{pipeline}, /task/{task}   pages (/ redirects to the first pipeline)
+  /, /pipeline/{pipeline}, /task/{task}   pages (/ is the first pipeline's page)
   /pipeline/{pipeline}?run={run}          a run's results instead of the grid
   /workers, /settings, /users, /login     pages
   GET  /api/pipelines                     pipeline names
@@ -434,7 +435,7 @@ cargo test                                   # core (needs docker) + frontend (e
 ./prettify.sh                                # clippy --fix, fmt, one blank line between fns, ruff, ty
 ```
 
-- Core embeds `frontend/dist` at compile time: rebuild the frontend (or run `build.sh`) before `cargo run`, or the binary serves a stale UI.
+- Core embeds `frontend/dist` at compile time, with gzip copies `core/build.rs` makes: rebuild the frontend (or run `build.sh`) before `cargo run`, or the binary serves a stale UI. Brotli was measured and left out: 13% fewer bytes on a first HTTPS visit, no faster to a usable page on Fast 3G (with or without 4x CPU), never offered by browsers over plain HTTP, and its copies would add ~166 KB to the binary.
 - `uv sync` at the repo root installs `pylib` editable so IDEs type-check pipedefs.
 - The dev db is `/var/tmp/bettertest/bettertest.db`. After a change to `schema.sql`, move it aside (never delete someone's db without asking) and let the boss make a new one.
 - Build machine needs: rust with the `<arch>-unknown-linux-musl` (`x86_64` or `aarch64`) and `wasm32-unknown-unknown` targets, trunk, `musl-gcc` (Fedora: `musl-gcc`), the Perl modules OpenSSL's build uses (Fedora: `perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy perl-lib perl-Time-Piece`), `dpkg-deb` for `deb.sh` (Fedora: `dpkg`), and `rpmbuild` plus the systemd rpm macros for `rpm.sh` (Fedora: `rpm-build systemd-rpm-macros`).
