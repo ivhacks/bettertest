@@ -50,7 +50,7 @@ use uuid::Uuid;
 mod artifacts;
 mod runs;
 mod users;
-mod views;
+pub(crate) mod views;
 mod workers;
 
 use artifacts::*;
