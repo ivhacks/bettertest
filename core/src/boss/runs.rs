@@ -573,6 +573,24 @@ impl Running {
         client::start_sandbox(&self.boss.http, worker, sandbox, &mut log, cancelled).await
     }
 
+    /// Stops `target` on `worker`. Returns whether it stopped: one that will not is leaking worker
+    /// resources, so task `last`, whose log says why, fails, and its stage with it.
+    async fn stop_sandbox(
+        &self,
+        worker: &str,
+        target: &client::Target,
+        last: Option<Uuid>,
+    ) -> bool {
+        let Err(e) = client::stop_sandbox(&self.boss.http, worker, target).await else {
+            return true;
+        };
+        if let Some(last) = last {
+            self.boss.log(last, LogStream::Bettertest, e);
+            self.boss.set_task_state(&self.run, last, TaskState::Fail);
+        }
+        false
+    }
+
     /// Runs task `id`'s body on `worker` in `target`, and records how it went.
     async fn run_task(
         &self,
@@ -741,20 +759,10 @@ pub(super) async fn run_in_sandbox(
         };
         lock(&r.spanning).insert(name.to_string(), up);
     }
-    let done = if last {
-        lock(&r.spanning).remove(name)
-    } else {
-        None
-    };
-    if let Some(up) = done {
-        // A sandbox that will not stop is leaking worker resources. The stage did not pass cleanly.
-        if let Err(e) = client::stop_sandbox(&r.boss.http, &up.worker, &up.target).await {
-            r.boss.log(up.last, LogStream::Bettertest, e);
-            r.boss.set_task_state(&r.run, up.last, TaskState::Fail);
-            return false;
-        }
+    match last.then(|| lock(&r.spanning).remove(name)).flatten() {
+        Some(up) => r.stop_sandbox(&up.worker, &up.target, Some(up.last)).await && passed,
+        None => passed,
     }
-    passed
 }
 
 /// The tasks share one sandbox. They run one at a time, in order, each building on the one before,
@@ -874,15 +882,7 @@ pub(super) async fn run_together(
             Err(_) => passed = false,
         }
     }
-    // A sandbox that will not stop is leaking worker resources. The stage did not pass cleanly.
-    if let Err(e) = client::stop_sandbox(&r.boss.http, worker, target).await {
-        if let Some(last) = last {
-            r.boss.log(last, LogStream::Bettertest, e);
-            r.boss.set_task_state(&r.run, last, TaskState::Fail);
-        }
-        return false;
-    }
-    passed
+    r.stop_sandbox(worker, target, last).await && passed
 }
 
 /// A task of a run, as the client sees it: its log, its artifacts, and the artifacts of the rest
