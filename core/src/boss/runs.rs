@@ -54,25 +54,6 @@ pub(super) async fn get_pipeline(
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))
 }
 
-pub(super) async fn get_pipeline_view(
-    State(boss): State<Shared>,
-    AxumPath((name, view)): AxumPath<(String, String)>,
-) -> Result<Response, Failure> {
-    let db = lock(&boss.db);
-    let runs = db.runs(&name, 50).map_err(internal)?;
-    drop(db);
-    let (source, pipeline) = load_pipeline(&boss, &name, None).await?;
-    let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    if !pipeline.views.contains(&view) {
-        return Err(not_found(format!("view {view}")));
-    }
-    let results_json = serde_json::to_string(&runs).map_err(internal)?;
-    let json = pipedef::call_view(&source, &view, &results_json)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
-}
-
 pub(super) async fn pipeline_events(
     State(boss): State<Shared>,
     AxumPath(name): AxumPath<String>,
