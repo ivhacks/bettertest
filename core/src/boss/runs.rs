@@ -59,7 +59,7 @@ pub(super) async fn get_pipeline_view(
     AxumPath((name, view)): AxumPath<(String, String)>,
 ) -> Result<Response, Failure> {
     let db = lock(&boss.db);
-    let runs = db.runs(&name, 50)?;
+    let runs = db.runs(&name, 50).map_err(internal)?;
     drop(db);
     let (source, pipeline) = load_pipeline(&boss, &name, None).await?;
     let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;

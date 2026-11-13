@@ -186,6 +186,7 @@ fn spanning_pipeline() -> Pipeline {
             ("FEDORA".into(), vm("fedora")),
         ]
         .into(),
+        views: vec![],
     }
 }
 

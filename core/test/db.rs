@@ -34,6 +34,7 @@ fn runs_a_dead_boss_left_end_at_its_last_heartbeat() {
             tasks: vec![task("running"), task("pending")],
         }],
         sandboxes: Default::default(),
+        views: vec![]
     };
     let run = db
         .insert_run("app", &pipeline, None, &BTreeMap::new())
@@ -69,6 +70,7 @@ fn two_tasks(db: &mut Db) -> (Uuid, Uuid) {
             tasks: vec![task("old"), task("newer")],
         }],
         sandboxes: Default::default(),
+        views: vec![]
     };
     let run = db
         .insert_run("app", &pipeline, None, &BTreeMap::new())
@@ -152,6 +154,7 @@ fn running_tasks_are_never_expired() {
             tasks: vec![task("forever")],
         }],
         sandboxes: Default::default(),
+        views: vec![]
     };
     let run = db
         .insert_run("app", &pipeline, None, &BTreeMap::new())
@@ -192,6 +195,7 @@ fn test_counts_stay_with_their_task_and_carry_over() {
             tasks: vec![task("quick"), task("fts")],
         }],
         sandboxes: Default::default(),
+        views: vec![]
     };
     let run = db
         .insert_run("app", &pipeline, None, &BTreeMap::new())
