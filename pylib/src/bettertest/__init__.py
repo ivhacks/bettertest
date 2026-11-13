@@ -135,13 +135,7 @@ def task(
     """
     if image is not None and vm is not None:
         raise ValueError("a task gets an image or a vm, not both")
-    if sandbox is not None and (worker, image, vm, arch, tuple(labels)) != (
-        None,
-        None,
-        None,
-        None,
-        (),
-    ):
+    if sandbox is not None and (labels or (worker, image, vm, arch) != (None,) * 4):
         raise ValueError(
             "a task in a Sandbox runs where the Sandbox is: leave out worker, labels, image, vm"
             " and arch"
