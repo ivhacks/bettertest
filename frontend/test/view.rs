@@ -130,17 +130,24 @@ fn grid_matches_tasks_by_name() {
 #[test]
 fn tilted_names_and_dense_stages() {
     let layout = GridLayout {
-        angle: 37.5,
-        height: 84.0,
+        stages: Tilt {
+            angle: 90.0,
+            height: 50.0,
+        },
+        tasks: Tilt {
+            angle: 37.5,
+            height: 84.0,
+        },
         dense: vec![false, true],
     };
     assert_eq!(
         to_html(&grid(&pipeline(), &layout, html! {})),
         concat!(
-            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid tilted"><thead>"#,
-            r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
-            r#"<th style="grid-column: span 2" class="stage"><span>Test</span></th></tr>"#,
-            r#"<tr><th style="height: 84px"></th>"#,
+            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
+            r#"<tr class="tilted"><th style="height: 50px"></th>"#,
+            r#"<th style="grid-column: span 1" class="stage"><span style="transform: rotate(-90.00deg)">Build</span></th>"#,
+            r#"<th style="grid-column: span 2" class="stage"><span style="transform: rotate(-90.00deg)">Test</span></th></tr>"#,
+            r#"<tr class="tilted"><th style="height: 84px"></th>"#,
             r#"<th style="height: 84px" class="task first"><span style="transform: rotate(-37.50deg)">compile</span></th>"#,
             r#"<th style="height: 84px" class="task first dense"><span style="transform: rotate(-37.50deg)">unit</span></th>"#,
             r#"<th style="height: 84px" class="task dense"><span style="transform: rotate(-37.50deg)">e2e</span></th>"#,
@@ -188,21 +195,32 @@ fn stages_with_more_tasks_are_wider_but_each_task_narrower() {
 
 #[test]
 fn names_lie_as_flat_as_they_can() {
+    let all = |labels: &[f64]| labels.iter().copied().map(Some).collect::<Vec<_>>();
     // Every name fits its column: flat.
     assert_eq!(
-        label_layout(&[100.0, 100.0], &[60.0, 90.0], 24.0),
-        (0.0, 0.0)
+        label_layout(&[100.0, 100.0], &all(&[60.0, 90.0]), 24.0),
+        Tilt::default()
     );
     // One does not: all tilt, by the angle that puts neighbours a line apart across.
-    let (angle, height) = label_layout(&[100.0, 100.0], &[60.0, 150.0], 24.0);
-    assert!((angle - 13.9).abs() < 0.1, "{angle}");
-    assert_eq!(height, 64.0);
+    let tilt = label_layout(&[100.0, 100.0, 300.0], &all(&[60.0, 150.0, 10.0]), 24.0);
+    assert!((tilt.angle - 13.9).abs() < 0.1, "{}", tilt.angle);
+    assert_eq!(tilt.height, 64.0);
     // The narrowest column sets the angle for all of them.
-    let (narrow, _) = label_layout(&[100.0, 50.0], &[60.0, 150.0], 24.0);
-    assert!((narrow - 28.7).abs() < 0.1, "{narrow}");
+    let narrow = label_layout(&[100.0, 50.0, 300.0], &all(&[60.0, 150.0, 10.0]), 24.0);
+    assert!((narrow.angle - 28.7).abs() < 0.1, "{}", narrow.angle);
     // Columns narrower than the spacing stand the names upright.
-    let (upright, _) = label_layout(&[20.0], &[150.0], 24.0);
-    assert_eq!(upright, 90.0);
+    let upright = label_layout(&[20.0], &all(&[150.0]), 24.0);
+    assert_eq!(upright.angle, 90.0);
+    // A name near the right edge tilts them all further, to stay inside the grid.
+    let edge = label_layout(&[100.0, 100.0], &all(&[60.0, 150.0]), 24.0);
+    assert!((edge.angle - 72.1).abs() < 0.1, "{}", edge.angle);
+    // A dense stage's hidden names neither tilt the others nor need room, but leave theirs.
+    let hidden = label_layout(
+        &[100.0, 10.0, 300.0],
+        &[Some(150.0), None, Some(10.0)],
+        24.0,
+    );
+    assert!((hidden.angle - 13.9).abs() < 0.1, "{}", hidden.angle);
 }
 
 #[test]

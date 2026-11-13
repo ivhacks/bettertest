@@ -74,6 +74,7 @@ header {
     display: flex;
     align-items: center;
     gap: 10px;
+    overflow-wrap: anywhere;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     font-size: 19px;
@@ -224,6 +225,7 @@ main {
     border-left: 3px solid var(--accent);
     background: var(--surface);
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .tabs {
@@ -282,6 +284,11 @@ main {
     padding-left: 0;
 }
 
+/* Hidden, the names still have their size, for measuring, but take no room past their column. */
+.grid .task.dense {
+    overflow: hidden;
+}
+
 .grid .task.dense span {
     visibility: hidden;
 }
@@ -291,30 +298,34 @@ main {
     padding-left: 10px;
 }
 
+/* A line under each stage, its tasks' width, past the gap before it. */
+.grid .stage {
+    background: linear-gradient(var(--line) 0 0) bottom / 100% 1px no-repeat content-box;
+}
+
 .grid .stage span {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    border-bottom: 1px solid var(--line);
+    padding-bottom: 1px;
     color: var(--text);
     font-weight: 700;
+}
+
+.grid .stage,
+.grid .task {
+    position: relative;
+    white-space: nowrap;
     text-align: center;
 }
 
 .grid .task {
-    position: relative;
     align-self: end;
-    white-space: nowrap;
-    text-align: center;
 }
 
-.grid .task span {
+.grid th span {
     display: inline-block;
 }
 
 /* Tilted names rise to the right from the middle of their column, all at one angle. */
-.grid.tilted .task span {
+.grid .tilted span {
     position: absolute;
     left: calc(50% + 1px);
     bottom: 2px;
@@ -439,6 +450,7 @@ header .runtime {
     gap: 4px 20px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--line);
+    overflow-wrap: anywhere;
 }
 
 .artifacts .size {
@@ -476,6 +488,7 @@ main.follow > * {
 
 .add {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
 }
 
@@ -483,6 +496,7 @@ input {
     height: 38px;
     box-sizing: border-box;
     width: 260px;
+    max-width: 100%;
     padding: 0 10px;
     border: 1px solid var(--line);
     background: var(--background);
@@ -495,9 +509,12 @@ input:focus {
     border-color: var(--highlight);
 }
 
+/* Too wide for a phone, they scroll sideways on their own. */
 .workers,
 .users,
 .results {
+    display: block;
+    overflow-x: auto;
     border-collapse: collapse;
 }
 
@@ -570,8 +587,11 @@ input:focus {
     --cut: 16px;
     position: relative;
     isolation: isolate;
-    width: 560px;
+    box-sizing: border-box;
+    width: 616px;
+    max-width: calc(100% - 32px);
     padding: 28px;
+    overflow-wrap: anywhere;
     background: var(--line);
 }
 
@@ -774,5 +794,34 @@ main > .add {
 
     .grid {
         row-gap: 10px;
+    }
+}
+
+/* A finger needs 44px to hit what it aims at. The grid's rows stay small: 44px tall, a screen would
+   hold a dozen runs. */
+@media (pointer: coarse) {
+    header a,
+    .tab,
+    .artifacts a,
+    .results a,
+    .workers .tasks a,
+    button:not(.grid button),
+    input,
+    select {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    header a,
+    .tab,
+    .artifacts a,
+    .results a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .results td {
+        vertical-align: middle;
     }
 }
