@@ -711,6 +711,15 @@ fn users_show_how_each_can_log_in() {
             r#"</tbody></table>"#,
         )
     );
+}
+
+const PERSON: &str = concat!(
+    r#"<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">"#,
+    r#"<circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5"></path></svg>"#,
+);
+
+#[test]
+fn account_folds_into_a_person_icon_on_a_phone() {
     let me = Me {
         name: "iv".into(),
         role: Role::Write,
@@ -718,7 +727,13 @@ fn users_show_how_each_can_log_in() {
     };
     assert_eq!(
         to_html(&account(&me, Callback::noop(), Callback::noop())),
-        r#"<span class="me">iv</span><button class="small">Add Passkey</button><button class="small">Log Out</button>"#
+        [
+            r#"<button popovertarget="account" aria-label="Account, iv" class="account">"#,
+            PERSON,
+            r#"</button><span id="account" popover="auto" class="menu"><span class="me">iv</span>"#,
+            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></span>"#,
+        ]
+        .concat()
     );
     let me = Me {
         name: "logged out".into(),
@@ -727,7 +742,29 @@ fn users_show_how_each_can_log_in() {
     };
     assert_eq!(
         to_html(&account(&me, Callback::noop(), Callback::noop())),
-        r#"<a href="/login" class="page">Log In</a>"#
+        [
+            r#"<a href="/login" aria-label="Log In" class="page account">"#,
+            PERSON,
+            "<span>Log In</span></a>"
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn header_keeps_actions_together_and_links_apart() {
+    assert_eq!(
+        to_html(&header(
+            html! { <span>{ "Workers" }</span> },
+            html! { <button class="primary">{ "Add" }</button> }
+        )),
+        concat!(
+            r#"<header><a href="/" class="home"><img src="/assets/mark.v1.svg" alt=""></img>bettertest</a>"#,
+            r#"<span>Workers</span><span class="spacer"></span>"#,
+            r#"<span class="actions"><button class="primary">Add</button></span>"#,
+            r#"<nav class="links"><a href="/workers" class="page">Workers</a>"#,
+            r#"<a href="/settings" class="page">Settings</a><a href="/users" class="page">Users</a></nav></header>"#,
+        )
     );
 }
 

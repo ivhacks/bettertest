@@ -11,10 +11,12 @@ pub fn header(crumbs: Html, right: Html) -> Html {
             <a class="home" href="/"><img src="/assets/mark.v1.svg" alt="" />{ "bettertest" }</a>
             { crumbs }
             <span class="spacer"></span>
-            { right }
-            <a class="page" href="/workers">{ "Workers" }</a>
-            <a class="page" href="/settings">{ "Settings" }</a>
-            <a class="page" href="/users">{ "Users" }</a>
+            <span class="actions">{ right }</span>
+            <nav class="links">
+                <a class="page" href="/workers">{ "Workers" }</a>
+                <a class="page" href="/settings">{ "Settings" }</a>
+                <a class="page" href="/users">{ "Users" }</a>
+            </nav>
         </header>
     }
 }
@@ -406,18 +408,35 @@ pub fn settings(
     }
 }
 
-/// Who is logged in, with a way out; or a way in, for the logged-out user.
+/// Who is logged in, with a way out; or a way in, for the logged-out user. On a phone each is one
+/// person icon, and the logged-in controls sit in the popover it opens; on a wide screen the icon is
+/// hidden and the popover's contents stand in the header.
 pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEvent>) -> Html {
     if me.logged_in {
         html! {
             <>
-                <span class="me">{ &me.name }</span>
-                <button class="small" onclick={passkey}>{ "Add Passkey" }</button>
-                <button class="small" onclick={logout}>{ "Log Out" }</button>
+                <button class="account" popovertarget="account" aria-label={format!("Account, {}", me.name)}>
+                    { person() }
+                </button>
+                <span id="account" class="menu" popover="auto">
+                    <span class="me">{ &me.name }</span>
+                    <button class="small" onclick={passkey}>{ "Add Passkey" }</button>
+                    <button class="small" onclick={logout}>{ "Log Out" }</button>
+                </span>
             </>
         }
     } else {
-        html! { <a class="page" href="/login">{ "Log In" }</a> }
+        html! {
+            <a class="page account" href="/login" aria-label="Log In">{ person() }<span>{ "Log In" }</span></a>
+        }
+    }
+}
+
+fn person() -> Html {
+    html! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5" />
+        </svg>
     }
 }
 
