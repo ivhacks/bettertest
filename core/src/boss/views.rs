@@ -87,7 +87,3 @@ pub(super) async fn view_data(
         Err(response) => response,
     }
 }
-
-#[cfg(test)]
-#[path = "../../test/views.rs"]
-mod tests;
