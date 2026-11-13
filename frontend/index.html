@@ -4,6 +4,9 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>bettertest</title>
+  <!-- Enough to paint the name before the stylesheet arrives. The real sheet overrides it, and
+       stays a separate cached file so a later visit does not re-download it inside this page. -->
+  <style>html,body{margin:0;background:#000;color:#fff}body{font:18px/1.4 system-ui,sans-serif}@media (prefers-color-scheme:light){html,body{background:#fff;color:#000}}</style>
   <!-- Copied as they are, without a content hash, yet served as immutable: a changed asset needs
        a new name (bump its .vN). The fonts' OFL licenses travel with them. -->
   <link data-trunk rel="copy-dir" href="assets" />
@@ -12,6 +15,5 @@
   <link rel="preload" href="/assets/archivo.v1.woff2" as="font" type="font/woff2" crossorigin />
   <link data-trunk rel="css" href="style.css" />
 </head>
-<body>
-</body>
+<body>bettertest</body>
 </html>
