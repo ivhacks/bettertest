@@ -364,7 +364,15 @@ def run(command: str) -> str:
         code, output = _in_container(sandbox["commands"], command)
     else:
         port = str(sandbox["port"])
-        ssh = [sandbox["ssh"], *_SSH_OPTIONS, "-i", sandbox["key"], "-p", port, "bt@127.0.0.1"]
+        ssh = [
+            sandbox["ssh"],
+            *_SSH_OPTIONS,
+            "-i",
+            sandbox["key"],
+            "-p",
+            port,
+            "bt@127.0.0.1",
+        ]
         with subprocess.Popen([*ssh, command], stdout=subprocess.PIPE) as process:
             output = _pump(process.stdout.fileno(), 1) if process.stdout else b""
             code = process.wait()
@@ -440,7 +448,16 @@ def copy(local: str | Path, remote: str) -> None:
 
 def _scp(sandbox: dict, source: str | Path, destination: str | Path) -> None:
     port = str(sandbox["port"])
-    scp = [sandbox["scp"], "-S", sandbox["ssh"], *_SSH_OPTIONS, "-i", sandbox["key"], "-P", port]
+    scp = [
+        sandbox["scp"],
+        "-S",
+        sandbox["ssh"],
+        *_SSH_OPTIONS,
+        "-i",
+        sandbox["key"],
+        "-P",
+        port,
+    ]
     _call([*scp, source, destination])
 
 

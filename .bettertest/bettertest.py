@@ -54,9 +54,7 @@ IMAGE = "debian:trixie"
 # Built by the Prepare stage from .bettertest/build.Dockerfile.
 BUILD_IMAGE = "bettertest-build"
 
-DEBIAN_IMAGE = (
-    "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
-)
+DEBIAN_IMAGE = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 DEBIAN = Sandbox(labels=[Label.x86], vm=DEBIAN_IMAGE)
 FEDORA = Sandbox(
     labels=[Label.x86],
@@ -94,7 +92,15 @@ class Prepare(Stage):
         # On the worker itself: docker's layer cache makes this instant unless the Dockerfile
         # changed.
         subprocess.run(
-            ["docker", "build", "-t", BUILD_IMAGE, "-f", ".bettertest/build.Dockerfile", "."],
+            [
+                "docker",
+                "build",
+                "-t",
+                BUILD_IMAGE,
+                "-f",
+                ".bettertest/build.Dockerfile",
+                ".",
+            ],
             check=True,
         )
 
@@ -193,7 +199,9 @@ class Install(Stage):
     def intern():
         # The intern test (AGENTS.md): a machine as its distro ships it, an account without sudo
         # that may use kvm, and nothing but the binary and a pipedef whose task runs in a vm.
-        copy(get_artifact_this_run(Build.packages, name="bettertest"), "/tmp/bettertest")
+        copy(
+            get_artifact_this_run(Build.packages, name="bettertest"), "/tmp/bettertest"
+        )
         copy("pipedefs/vm.py", "/tmp/vm.py")
         run(INTERN_MACHINE)
         run(INTERN_STARTS)
@@ -410,7 +418,9 @@ print(f"index.html and {wasm} ({size} bytes) served")
 def check_tests_run(pipeline: str = "helloworld") -> None:
     # The package starts a worker on this machine. helloworld only names the x86 label, so the
     # boss it just installed has no worker until this enrolls that one, the same as the workers page.
-    in_vm_python(f"pipeline = {pipeline!r}\n" + """
+    in_vm_python(
+        f"pipeline = {pipeline!r}\n"
+        + """
 import json, time, urllib.request
 boss = "http://localhost:7357"
 # A boss started a moment ago may not be listening yet.
@@ -438,7 +448,8 @@ for stage in run["stages"]:
         print(f"--- {stage['name']}.{task['name']}: {task['state']}")
         print(urllib.request.urlopen(f"{boss}/api/task/{task['id']}/log").read().decode(), end="")
 assert run["state"] == "pass", run["state"]
-""")
+"""
+    )
 
 
 class Check(Stage):
