@@ -97,10 +97,22 @@ header .home img {
     height: 30px;
 }
 
-header > :not(.home, .spacer, button, .state, .worker, .runtime, .page, .add, .me)::before {
+header > :not(.home, .spacer, .state, .actions, .links)::before {
     content: "/";
     margin-right: 10px;
     color: var(--muted);
+}
+
+/* Wide, these wrappers are no boxes: what they hold sits in the header's own row. */
+header .actions,
+header .links,
+header .menu {
+    display: contents;
+}
+
+header button.account,
+header .account svg {
+    display: none;
 }
 
 header .spacer {
@@ -133,6 +145,11 @@ button {
     font-stretch: 70%;
     cursor: pointer;
     white-space: nowrap;
+}
+
+button,
+.window,
+header .menu:popover-open {
     clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
             calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
@@ -155,7 +172,8 @@ button.primary {
 }
 
 button.primary::before,
-button.small::before {
+button.small::before,
+button.cancel::before {
     content: none;
 }
 
@@ -323,10 +341,6 @@ button.cancel {
     margin-right: 6px;
     padding: 0;
     vertical-align: middle;
-}
-
-button.cancel::before {
-    content: none;
 }
 
 button.cancel svg {
@@ -559,8 +573,6 @@ input:focus {
     width: 560px;
     padding: 28px;
     background: var(--line);
-    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
-            calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 
 .window::before {
@@ -681,4 +693,86 @@ main > .add {
 
 .users .cert button {
     margin-left: 6px;
+}
+
+/* Phones. "Log In" would wrap onto two lines, so it and the account controls become one person
+   icon; New Run and that icon keep a row together, and the nav takes the line below. */
+@media (max-width: 640px) {
+    header {
+        flex-wrap: wrap;
+    }
+
+    header .actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-left: auto;
+    }
+
+    header .links {
+        display: flex;
+        flex-basis: 100%;
+        gap: 10px;
+    }
+
+    header button.account,
+    header a.account {
+        --fill: transparent;
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        color: var(--text);
+    }
+
+    header .account svg {
+        display: block;
+    }
+
+    header a.account span,
+    header .menu {
+        display: none;
+    }
+
+    header .menu:popover-open {
+        --cut: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 16px;
+        border: none;
+        background: var(--surface);
+    }
+
+    /* The red square stays 18px, drawn by ::before. The clear 44px button around it is what a
+       finger hits, in no more room than the square takes. Rows sit further apart so that pad
+       stays off the next run's id. */
+    button.cancel {
+        width: 44px;
+        height: 44px;
+        margin: -13px -7px -13px -13px;
+        background: none;
+        clip-path: none;
+        animation: none;
+    }
+
+    button.cancel::before {
+        content: "";
+        inset: 13px;
+        background: var(--fill);
+    }
+
+    button.cancel:hover::before,
+    button.cancel:focus-visible::before {
+        background: color-mix(in srgb, var(--fill), #ffffff 22%);
+    }
+
+    button.cancel:active::before {
+        background: #ffffff;
+    }
+
+    .grid {
+        row-gap: 10px;
+    }
 }
