@@ -6,44 +6,24 @@ use gloo_net::http::Request;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(inline_js = r#"
-function check() {
+export async function passkey(options, create) {
     if (!window.PublicKeyCredential) {
         throw "this page cannot use passkeys: browsers allow them over HTTPS, or at localhost";
     }
-}
-
-function why(e) {
-    return e && e.message ? e.message : String(e);
-}
-
-export async function create_passkey(options) {
-    check();
     try {
-        const publicKey = PublicKeyCredential.parseCreationOptionsFromJSON(JSON.parse(options));
-        const credential = await navigator.credentials.create({ publicKey });
+        const json = JSON.parse(options);
+        const credential = create
+            ? await navigator.credentials.create({ publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(json) })
+            : await navigator.credentials.get({ publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(json) });
         return JSON.stringify(credential.toJSON());
     } catch (e) {
-        throw why(e);
+        throw e && e.message ? e.message : String(e);
     }
 }
-
-export async function get_passkey(options) {
-    check();
-    try {
-        const publicKey = PublicKeyCredential.parseRequestOptionsFromJSON(JSON.parse(options));
-        const credential = await navigator.credentials.get({ publicKey });
-        return JSON.stringify(credential.toJSON());
-    } catch (e) {
-        throw why(e);
-    }
-}
-
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]
-    async fn create_passkey(options: String) -> Result<JsValue, JsValue>;
-    #[wasm_bindgen(catch)]
-    async fn get_passkey(options: String) -> Result<JsValue, JsValue>;
+    async fn passkey(options: String, create: bool) -> Result<JsValue, JsValue>;
 }
 
 /// Asks the boss for options (POST `options_url` with `body`), has the browser's authenticator answer
@@ -57,10 +37,7 @@ pub async fn ceremony(
 ) -> Result<String, String> {
     let options: serde_json::Value = crate::fetch(Request::post(options_url).json(&body)).await?;
     let public_key = options["publicKey"].to_string();
-    let answer = match create {
-        true => create_passkey(public_key).await,
-        false => get_passkey(public_key).await,
-    };
+    let answer = passkey(public_key, create).await;
     let answer = answer.map_err(|e| e.as_string().unwrap_or_else(|| "passkey failed".into()))?;
     let credential: serde_json::Value =
         serde_json::from_str(&answer.as_string().unwrap_or_default()).map_err(|e| e.to_string())?;

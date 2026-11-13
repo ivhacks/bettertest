@@ -155,7 +155,8 @@ button.primary {
 }
 
 button.primary::before,
-button.small::before {
+button.small::before,
+button.cancel::before {
     content: none;
 }
 
@@ -323,10 +324,6 @@ button.cancel {
     margin-right: 6px;
     padding: 0;
     vertical-align: middle;
-}
-
-button.cancel::before {
-    content: none;
 }
 
 button.cancel svg {
