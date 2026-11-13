@@ -41,6 +41,7 @@ fn pipeline() -> Pipeline {
             deploy,
         ],
         sandboxes: Default::default(),
+        views: vec![]
     }
 }
 
@@ -574,6 +575,7 @@ async fn parallel_stage(rerun: Option<(&Run, &str)>) -> (bool, Vec<String>) {
     let pipeline = Pipeline {
         stages: vec![stage.clone()],
         sandboxes: Default::default(),
+        views: vec![]
     };
     let carried = match rerun {
         Some((earlier, name)) => carry_over(earlier, &pipeline, Some("Test"), Some(name)).unwrap(),
@@ -656,6 +658,7 @@ async fn test_counts_a_task_reports_are_kept_and_sent_live() {
     let pipeline = Pipeline {
         stages: vec![stage.clone()],
         sandboxes: Default::default(),
+        views: vec![]
     };
     let run = boss
         .db()
