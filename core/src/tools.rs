@@ -43,11 +43,10 @@ fn unpack() -> io::Result<PathBuf> {
         // Written beside it and renamed, so a half-written directory is never taken for a whole
         // one. Of two workers starting at once, the second finds the first one's there.
         let partial = tools.join(format!(".{}", uuid::Uuid::new_v4().simple()));
-        let written = write_all(&partial).and_then(|()| fs::rename(&partial, &dir));
-        if written.is_err() {
+        if let Err(e) = write_all(&partial).and_then(|()| fs::rename(&partial, &dir)) {
             let _ = fs::remove_dir_all(&partial);
             if !dir.exists() {
-                written?;
+                return Err(e);
             }
         }
     }
