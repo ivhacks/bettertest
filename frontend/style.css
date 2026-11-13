@@ -798,3 +798,37 @@ main > .add {
     background: #000;
     border-radius: 4px;
 }
+
+.embedded-report {
+    margin: 20px 0 40px;
+}
+
+.embedded-report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.embedded-report-header h3 {
+    margin: 0;
+    font: 600 18px/1.2 var(--sans);
+}
+
+.embedded-report-header .download-link {
+    font: 400 14px/1.2 var(--sans);
+    color: var(--orange);
+    text-decoration: none;
+}
+
+.embedded-report-header .download-link:hover {
+    text-decoration: underline;
+}
+
+.report-iframe {
+    width: 100%;
+    min-height: 600px;
+    border: 1px solid #333;
+    border-radius: 4px;
+    background: #fff;
+}

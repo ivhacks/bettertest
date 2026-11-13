@@ -44,6 +44,26 @@ class Check(Stage):
         subprocess.run(["python3", "--version"], check=True)
         tests(total=10, failed=0)
 
+    @task(image="mcr.microsoft.com/playwright:v1.49.1-noble")
+    def browser():
+        from bettertest import artifact, run
+
+        run("pip install --quiet pytest-playwright")
+        run(
+            """cat > test_sample.py << 'EOF'
+import pytest
+from playwright.sync_api import Page, expect
+
+def test_example(page: Page):
+    page.goto("https://example.com")
+    expect(page).to_have_title("Example Domain")
+    page.screenshot(path="screenshot.png")
+EOF"""
+        )
+        run("pytest --html=report.html --self-contained-html test_sample.py")
+        artifact("/work/report.html", name="playwright-report.html")
+        tests(total=1, failed=0)
+
 
 @view
 def outcomes(results):
