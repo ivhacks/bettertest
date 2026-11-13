@@ -191,6 +191,7 @@ pub async fn entry(
         .route("/api/pipelines", get(get_pipelines))
         .route("/api/pipeline/{name}", get(get_pipeline))
         .route("/api/pipeline/{name}/events", get(pipeline_events))
+        .route("/api/pipeline/{name}/view/{view}", get(get_pipeline_view))
         .route("/api/start-run/{name}", post(start_run))
         .route("/api/push-hook", post(push_hook))
         .route("/api/cancel-run/{run}", post(cancel_run))

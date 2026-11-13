@@ -775,4 +775,26 @@ main > .add {
     .grid {
         row-gap: 10px;
     }
+.views {
+    margin: 40px 0;
+}
+
+.views h2 {
+    margin: 0 0 20px;
+    font: 600 24px/1.2 var(--sans);
+}
+
+.view-container {
+    margin-bottom: 40px;
+}
+
+.view-container h3 {
+    margin: 0 0 10px;
+    font: 600 18px/1.2 var(--sans);
+}
+
+.plotly-view {
+    min-height: 400px;
+    background: #000;
+    border-radius: 4px;
 }

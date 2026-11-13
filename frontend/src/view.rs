@@ -702,6 +702,24 @@ pub fn log(lines: &[LogLine]) -> Html {
     }
 }
 
+pub fn views(pipeline_name: &str, view_names: &[String]) -> Html {
+    html! {
+        <section class="views">
+            <h2>{ "Views" }</h2>
+            { for view_names.iter().map(|name| {
+                let id = format!("view-{}", name);
+                let url = format!("/api/pipeline/{}/view/{}", pipeline_name, name);
+                html! {
+                    <div class="view-container">
+                        <h3>{ name }</h3>
+                        <div id={id} class="plotly-view" data-url={url}></div>
+                    </div>
+                }
+            }) }
+        </section>
+    }
+}
+
 #[cfg(test)]
 #[path = "../test/view.rs"]
 mod tests;

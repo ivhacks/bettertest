@@ -28,5 +28,16 @@ if command == "parse":
 elif command == "start":
     stage, task = payload["task"]
     getattr(getattr(pipedef, stage), task)()
+elif command == "view":
+    view_name = payload["view"]
+    results = payload["results"]
+    view_fn = getattr(pipedef, view_name)
+    figure = view_fn(results)
+    if hasattr(figure, "to_json"):
+        print(figure.to_json())
+    elif hasattr(figure, "to_plotly_json"):
+        print(json.dumps(figure.to_plotly_json()))
+    else:
+        raise SystemExit(f"view {view_name} did not return a Plotly figure")
 else:
     raise SystemExit(f"unknown command: {command}")

@@ -197,7 +197,17 @@ impl Component for PipelinePage {
                                 layout={self.layout.clone()} cancel={self.cancel.clone()} />
                         }
                     });
-                    view::grid(pipeline, &self.layout, html! { { for rows } })
+                    let views = if !pipeline.views.is_empty() {
+                        view::views(&snapshot.name, &pipeline.views)
+                    } else {
+                        html! {}
+                    };
+                    html! {
+                        <>
+                            { view::grid(pipeline, &self.layout, html! { { for rows } }) }
+                            { views }
+                        </>
+                    }
                 }
                 Err(e) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
             },
