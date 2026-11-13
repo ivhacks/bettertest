@@ -332,6 +332,21 @@ pub struct Https {
     pub days_left: i32,
 }
 
+/// A new API token, shown this once: the db keeps only its hash.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewToken {
+    pub token: String,
+}
+
+/// A new client certificate, shown this once: its label, its PKCS#12 file (base64) and the file's
+/// password.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewCertificate {
+    pub label: String,
+    pub p12: String,
+    pub password: String,
+}
+
 /// A worker the boss knows: one a pipedef named, or one added on the workers page. The boss keeps
 /// a connection to each (the worker's `/events` stream) for as long as it can, which is what makes
 /// it connected.
