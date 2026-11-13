@@ -442,16 +442,7 @@ async fn check_out(
 }
 
 pub async fn download(url: &str) -> Result<reqwest::Response, String> {
-    let http = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("could not download {url}: {}", client::why(&e)))?;
-    fetch(&http, url).await
-}
-
-async fn fetch(http: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
-    let response = http
-        .get(url)
-        .send()
+    let response = reqwest::get(url)
         .await
         .map_err(|e| format!("could not download {url}: {}", client::why(&e)))?;
     if !response.status().is_success() {

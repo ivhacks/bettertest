@@ -228,17 +228,10 @@ struct StatusCall {
 /// The password of `url`, or its username when the token is the whole credential
 /// (`https://<token>@host/owner/name.git`).
 fn credential(url: &Url) -> Option<String> {
-    match url.password() {
-        Some(password) if !password.is_empty() => Some(password.to_string()),
-        _ => {
-            let user = url.username();
-            if user.is_empty() {
-                None
-            } else {
-                Some(user.to_string())
-            }
-        }
-    }
+    let token = (url.password())
+        .filter(|password| !password.is_empty())
+        .unwrap_or(url.username());
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 fn is_github(url: &Url) -> bool {
