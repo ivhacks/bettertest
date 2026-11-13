@@ -108,6 +108,7 @@ def task_run(task_id, name):
         "started": 1_000,
         "ended": 2_500,
         "carried_from": None,
+        "tests": None,
     }
 
 
