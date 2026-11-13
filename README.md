@@ -15,7 +15,7 @@ instantly. No YAML.
 
 ## Five minutes
 
-Two machines: a **worker** that runs tasks (it needs python3 and docker; qemu for VMs) and a **boss**
+Two machines: a **worker** that runs tasks (it needs python3, and docker for containers; VMs need only KVM, the binary carries its own qemu) and a **boss**
 that serves the web UI and decides what runs where (it needs python3, and git for repos). Copy the
 binary for your machines (x86_64 or aarch64, from the [releases page](https://github.com/ivhacks/bettertest/releases), or built as below) onto both.
 

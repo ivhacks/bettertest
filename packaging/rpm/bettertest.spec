@@ -15,15 +15,12 @@ URL:            https://github.com/ivhacks/bettertest
 ExclusiveArch:  x86_64 aarch64
 Requires:       python3
 Recommends:     (moby-engine or docker-ce)
-Recommends:     qemu-system-x86-core
-Recommends:     qemu-img
-Recommends:     openssh-clients
 
 %description
 bettertest is one binary that is both the boss (web UI and API, port 7357 unless --boss-port) and
 the worker (runs tasks, port 7358 unless --worker-port). Pipelines are Python files in
 /etc/bettertest/pipedefs. Both run as systemd services from installation on. docker runs tasks
-with an image; qemu runs tasks with a vm.
+with an image. Tasks with a vm need nothing installed: the binary carries its own qemu.
 
 %install
 install -D -m 755 %{_sourcedir}/target/%{_arch}-unknown-linux-musl/release/bettertest %{buildroot}%{_bindir}/bettertest
