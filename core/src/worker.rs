@@ -4,7 +4,7 @@
 
 use crate::{
     boss::{self, Failure, internal},
-    client, lock, pipedef, vm, workdir,
+    client, lock, pipedef, tools, vm, workdir,
 };
 use axum::{
     Json, Router,
@@ -181,6 +181,10 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
         if let Err(e) = remove_leftovers(name) {
             eprintln!("could not remove leftover {name}: {e}");
         }
+    }
+    // Now rather than when the first vm starts. Without them, vms fail and say why.
+    if let Err(e) = tools::path("") {
+        eprintln!("{e}");
     }
 
     let shared = Shared {
@@ -722,7 +726,11 @@ fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Valu
                 .ssh(id)
                 .ok_or((StatusCode::NOT_FOUND, format!("no vm {id}")))?;
             let reboot = format!("http://127.0.0.1:{}/vm/{id}/reboot", vms.port());
-            serde_json::json!({"kind": "vm", "port": port, "key": key, "reboot": reboot})
+            let ssh = tools::path("ssh").map_err(internal)?;
+            let scp = tools::path("scp").map_err(internal)?;
+            serde_json::json!({
+                "kind": "vm", "port": port, "key": key, "reboot": reboot, "ssh": ssh, "scp": scp,
+            })
         }
         Some(_) => return Err((StatusCode::BAD_REQUEST, "bad target".into())),
     })

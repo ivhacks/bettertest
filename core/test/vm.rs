@@ -99,11 +99,11 @@ fn emulated_cmdline_is_written_into_the_image() {
     .unwrap();
     let spec = format!("{}?offset={}", disk.display(), 2048 * 512);
     for request in ["mkdir /boot", "mkdir /boot/grub"] {
-        let _ = Command::new("debugfs")
+        let _ = Command::new(tool("debugfs"))
             .args(["-w", "-R", request, &spec])
             .status();
     }
-    let planted = Command::new("debugfs")
+    let planted = Command::new(tool("debugfs"))
         .args([
             "-w",
             "-R",
@@ -119,7 +119,7 @@ fn emulated_cmdline_is_written_into_the_image() {
     );
     // The failure seen on a real image: link the file onto itself the way debugfs ln does, so
     // grub.cfg names a deleted inode. Rewriting has to give it a new one, not only the same bytes.
-    let linked = Command::new("debugfs")
+    let linked = Command::new(tool("debugfs"))
         .args([
             "-w",
             "-R",
@@ -133,7 +133,7 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&linked.stderr)
     );
-    let removed = Command::new("debugfs")
+    let removed = Command::new(tool("debugfs"))
         .args(["-w", "-R", "rm /boot/grub/grub.cfg.linked", &spec])
         .output()
         .unwrap();
@@ -142,13 +142,13 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&removed.stderr)
     );
-    let broken = Command::new("e2fsck")
+    let broken = Command::new(tool("e2fsck"))
         .args(["-fn", &spec])
         .output()
         .unwrap();
     assert!(!broken.status.success(), "the fixture should start corrupt");
     assert!(
-        Command::new("qemu-img")
+        Command::new(tool("qemu-img"))
             .args([
                 "convert",
                 "-f",
@@ -166,7 +166,7 @@ fn emulated_cmdline_is_written_into_the_image() {
     ensure_emulated_cmdline(&qcow).unwrap();
     let patched = dir.join("patched.raw");
     assert!(
-        Command::new("qemu-img")
+        Command::new(tool("qemu-img"))
             .args([
                 "convert",
                 "-f",
@@ -181,7 +181,7 @@ fn emulated_cmdline_is_written_into_the_image() {
             .success()
     );
     let spec = format!("{}?offset={}", patched.display(), 2048 * 512);
-    let read = Command::new("debugfs")
+    let read = Command::new(tool("debugfs"))
         .args(["-R", "cat /boot/grub/grub.cfg", &spec])
         .output()
         .unwrap();
@@ -195,7 +195,7 @@ fn emulated_cmdline_is_written_into_the_image() {
     // A new file must not be handed grub.cfg's inode. That is what made reboot stop at grub>.
     let extra = dir.join("extra.txt");
     fs::write(&extra, "not grub\n").unwrap();
-    let wrote = Command::new("debugfs")
+    let wrote = Command::new(tool("debugfs"))
         .args([
             "-w",
             "-R",
@@ -209,7 +209,7 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&wrote.stderr)
     );
-    let check = Command::new("e2fsck")
+    let check = Command::new(tool("e2fsck"))
         .args(["-fn", &spec])
         .output()
         .unwrap();
@@ -219,7 +219,7 @@ fn emulated_cmdline_is_written_into_the_image() {
         String::from_utf8_lossy(&check.stdout),
         String::from_utf8_lossy(&check.stderr)
     );
-    let read = Command::new("debugfs")
+    let read = Command::new(tool("debugfs"))
         .args(["-R", "cat /boot/grub/grub.cfg", &spec])
         .output()
         .unwrap();
@@ -230,6 +230,11 @@ fn emulated_cmdline_is_written_into_the_image() {
     ensure_emulated_cmdline(&qcow).unwrap();
     assert_eq!(fs::metadata(&qcow).unwrap().modified().unwrap(), before);
     let _ = fs::remove_dir_all(dir);
+}
+
+/// One of the tools this binary carries, as the worker runs it.
+fn tool(name: &str) -> std::path::PathBuf {
+    crate::tools::path(name).unwrap()
 }
 
 fn gpt(parts: &[(u64, u64)]) -> Vec<u8> {

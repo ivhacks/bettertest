@@ -73,7 +73,8 @@ class Sandbox:
 
 # Where run() and copy() send things. The glue script sets this before calling a task:
 #   {"kind": "container", "id": "<docker container name>", "commands": "<its commands fifo>"}
-#   {"kind": "vm", "port": <ssh port on 127.0.0.1>, "key": "<private key path>", "reboot": "<url>"}
+#   {"kind": "vm", "port": <ssh port on 127.0.0.1>, "key": "<private key path>", "reboot": "<url>",
+#    "ssh": "<the worker's ssh>", "scp": "<and scp>"}
 #   None when the task has no sandbox
 _target: dict | None = None
 
@@ -363,7 +364,7 @@ def run(command: str) -> str:
         code, output = _in_container(sandbox["commands"], command)
     else:
         port = str(sandbox["port"])
-        ssh = ["ssh", *_SSH_OPTIONS, "-i", sandbox["key"], "-p", port, "bt@127.0.0.1"]
+        ssh = [sandbox["ssh"], *_SSH_OPTIONS, "-i", sandbox["key"], "-p", port, "bt@127.0.0.1"]
         with subprocess.Popen([*ssh, command], stdout=subprocess.PIPE) as process:
             output = _pump(process.stdout.fileno(), 1) if process.stdout else b""
             code = process.wait()
@@ -439,7 +440,8 @@ def copy(local: str | Path, remote: str) -> None:
 
 def _scp(sandbox: dict, source: str | Path, destination: str | Path) -> None:
     port = str(sandbox["port"])
-    _call(["scp", *_SSH_OPTIONS, "-i", sandbox["key"], "-P", port, source, destination])
+    scp = [sandbox["scp"], "-S", sandbox["ssh"], *_SSH_OPTIONS, "-i", sandbox["key"], "-P", port]
+    _call([*scp, source, destination])
 
 
 def reboot() -> None:

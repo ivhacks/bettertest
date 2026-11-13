@@ -19,6 +19,8 @@ cd ..
 # ./build.sh aarch64 on an x86_64 machine (or x86_64 on aarch64) cross-builds with zig as the C
 # compiler (cargo zigbuild; zig on PATH), which brings every target's C toolchain without root.
 arch=${1:-$(uname -m)}
+# The static qemu, firmware, e2fsprogs and ssh the binary carries for vms (see tools.sh).
+./tools.sh "$arch"
 build=build
 if [ "$arch" != "$(uname -m)" ]; then
     build=zigbuild

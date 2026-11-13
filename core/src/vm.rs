@@ -4,7 +4,7 @@
 // unit that calls back every time the vm finishes booting, so nothing waits on a timer or retries
 // ssh until it works.
 
-use crate::{lock, workdir, worker};
+use crate::{lock, tools, workdir, worker};
 use bettertest_shared::Arch;
 use std::{
     collections::HashMap,
@@ -122,7 +122,7 @@ impl Vms {
     ) -> Result<Vm, String> {
         let key = dir.join("key");
         worker::output(
-            Command::new("ssh-keygen")
+            Command::new(tools::path("ssh-keygen")?)
                 .arg("-q")
                 .args(["-t", "ed25519", "-N", ""])
                 .arg("-f")
@@ -134,7 +134,7 @@ impl Vms {
         let disk = dir.join("disk.qcow2");
         // A copy-on-write overlay: the vm writes here, the shared base image never changes.
         worker::output(
-            Command::new("qemu-img")
+            Command::new(tools::path("qemu-img")?)
                 .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
                 .arg(base)
                 .arg(&disk),
@@ -215,7 +215,7 @@ impl Vms {
         // --no-block returns once systemd has queued the reboot. Without it, systemctl waits out
         // the shutdown and the ssh session dies with the guest. Dropping that wait kills ssh,
         // and a signal on that session can cancel the reboot before it happens.
-        let reboot = Command::new("ssh")
+        let reboot = Command::new(tools::path("ssh")?)
             .args(SSH_OPTIONS)
             .arg("-i")
             .arg(&key)
@@ -308,33 +308,21 @@ pub const NATIVE: Arch = Arch::Aarch64;
 #[cfg(not(target_arch = "aarch64"))]
 pub const NATIVE: Arch = Arch::X86_64;
 
-// UEFI firmware for arm vms, where Fedora (edk2-aarch64) and Debian (qemu-efi-aarch64) put it.
-const AARCH64_FIRMWARE: [&str; 2] = [
-    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
-    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
-];
-
-/// qemu for a vm of `arch`, with the machine it needs.
+/// qemu for a vm of `arch`, with the machine it needs. Its firmware is among the tools.
 fn qemu(arch: Arch) -> Result<Command, String> {
-    match arch {
-        Arch::X86_64 => Ok(Command::new("qemu-system-x86_64")),
+    let mut qemu = match arch {
+        Arch::X86_64 => Command::new(tools::path("qemu-system-x86_64")?),
         Arch::Aarch64 => {
-            let firmware = AARCH64_FIRMWARE
-                .iter()
-                .find(|path| Path::new(path).exists())
-                .ok_or_else(|| {
-                    format!(
-                        "arm vms need UEFI firmware at {} (edk2-aarch64 or qemu-efi-aarch64)",
-                        AARCH64_FIRMWARE.join(" or ")
-                    )
-                })?;
-            let mut qemu = Command::new("qemu-system-aarch64");
+            let mut qemu = Command::new(tools::path("qemu-system-aarch64")?);
             // virt is qemu's machine made for vms; arm boots a disk image through UEFI. With
             // highmem=off everything sits below 4 GiB, which an M1's kvm can map.
-            qemu.args(["-M", "virt,gic-version=max,highmem=off", "-bios", firmware]);
-            Ok(qemu)
+            qemu.args(["-M", "virt,gic-version=max,highmem=off", "-bios"])
+                .arg(tools::path("edk2-aarch64-code.fd")?);
+            qemu
         }
-    }
+    };
+    qemu.arg("-L").arg(tools::path("")?);
+    Ok(qemu)
 }
 
 fn user_data(public_key: &str, host: &str) -> String {
@@ -445,7 +433,10 @@ pub fn remove_leftovers() -> std::io::Result<()> {
             let pid = pid.trim();
             let cmdline = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
             if String::from_utf8_lossy(&cmdline).contains(&*dir.to_string_lossy()) {
-                std::process::Command::new("kill").arg(pid).status()?;
+                // The shell's kill: kill(1) is not on every machine.
+                std::process::Command::new("sh")
+                    .args(["-c", "kill \"$0\"", pid])
+                    .status()?;
             }
         }
         println!("removing leftover vm {}", dir.display());
@@ -606,7 +597,7 @@ fn le<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], String> {
 
 /// Runs `program` to its end. Ok is its stdout; Err says what went wrong.
 fn tool(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new(program)
+    let output = std::process::Command::new(tools::path(program)?)
         .args(args)
         .output()
         .map_err(|e| format!("could not run {program}: {e}"))?;
@@ -621,14 +612,14 @@ fn tool(program: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn debugfs(spec: &str, request: &str, write: bool) -> Result<String, String> {
-    let mut command = std::process::Command::new("debugfs");
+    let mut command = std::process::Command::new(tools::path("debugfs")?);
     if write {
         command.arg("-w");
     }
     let output = command
         .args(["-R", request, spec])
         .output()
-        .map_err(|e| format!("could not run debugfs (e2fsprogs): {e}"))?;
+        .map_err(|e| format!("could not run debugfs: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if !output.status.success() {
