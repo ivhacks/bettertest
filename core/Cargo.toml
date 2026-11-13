@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 argon2 = "0.6"
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "macros"] }
 bettertest-shared = { path = "../shared" }
 clap = { version = "4", features = ["derive"] }
 fastrand = "2"
