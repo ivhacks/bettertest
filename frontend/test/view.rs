@@ -123,6 +123,7 @@ fn pipeline() -> Pipeline {
             },
         ],
         sandboxes: Default::default(),
+        views: vec![],
     }
 }
 
@@ -280,6 +281,7 @@ fn runs_show_their_commit() {
     let pipeline = Pipeline {
         stages: vec![],
         sandboxes: Default::default(),
+        views: vec![],
     };
     assert_eq!(
         to_html(&run_row(
@@ -382,6 +384,7 @@ fn finished_tasks_keep_their_runtime() {
             tasks: vec![task("compile")],
         }],
         sandboxes: Default::default(),
+        views: vec![],
     };
     assert_eq!(
         to_html(&run_row(
@@ -478,6 +481,7 @@ fn carried_over_tasks_say_where_from() {
             tasks: vec![super::tests::task("unit")],
         }],
         sandboxes: Default::default(),
+        views: vec![],
     };
     assert_eq!(
         to_html(&run_row(
