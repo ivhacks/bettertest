@@ -1,11 +1,10 @@
 use crate::{client, pipedef};
-use bettertest_shared::{Artifact, LogStream, Run};
+use bettertest_shared::LogStream;
 use std::{
     error::Error,
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use tokio::sync::watch;
 
 /// Runs one task straight on its worker, no boss involved, and prints its log to the terminal.
 /// The worker cannot tell the difference: it is the same code path the boss uses.
@@ -68,26 +67,7 @@ impl client::TaskIo for Terminal {
         Ok(PathBuf::from("."))
     }
 
-    fn saved(&mut self, _: Artifact) {}
-
-    fn run(&self) -> Option<&Run> {
-        None
-    }
-
-    fn boss_name(&self) -> Option<&str> {
-        None
-    }
-
     fn boss_port(&self) -> u16 {
         crate::boss::LISTEN_PORT
-    }
-
-    // Ctrl-C stops dispatch.
-    fn cancelled(&self) -> Option<watch::Receiver<Option<String>>> {
-        None
-    }
-
-    fn boss_token(&self) -> Option<&str> {
-        None
     }
 }

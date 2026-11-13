@@ -45,25 +45,33 @@ pub trait TaskIo {
     fn outputs(&self) -> Result<PathBuf, String>;
 
     /// An artifact the task published is saved in `outputs()`.
-    fn saved(&mut self, artifact: Artifact);
+    fn saved(&mut self, _artifact: Artifact) {}
 
     /// The run the task belongs to. Its task can fetch artifacts from the boss. None outside any
     /// run.
-    fn run(&self) -> Option<&Run>;
+    fn run(&self) -> Option<&Run> {
+        None
+    }
 
     /// The name the boss's HTTPS certificate is for, when it speaks HTTPS. The task reaches the boss
     /// at the address the worker saw it call from, and checks the certificate against this name.
-    fn boss_name(&self) -> Option<&str>;
+    fn boss_name(&self) -> Option<&str> {
+        None
+    }
 
     /// The port the boss listens on. The worker combines it with the IP of the start-task
     /// connection; TCP's source port is ephemeral, so this has to come along in the form.
     fn boss_port(&self) -> u16;
 
     /// Says why, once the run is cancelled. None when nothing can cancel it.
-    fn cancelled(&self) -> Option<watch::Receiver<Option<String>>>;
+    fn cancelled(&self) -> Option<watch::Receiver<Option<String>>> {
+        None
+    }
 
     /// What the task shows the boss to fetch its checkout and artifacts, when there is a boss.
-    fn boss_token(&self) -> Option<&str>;
+    fn boss_token(&self) -> Option<&str> {
+        None
+    }
 
     /// The boss waits when the worker says it is full. Dispatch does not: a 409 is the answer.
     fn wait_when_busy(&self) -> bool {
