@@ -18,7 +18,7 @@ use openssl::{
     nid::Nid,
     pkcs12::Pkcs12,
     pkey::PKey,
-    ssl::{Ssl, SslAcceptor, SslFiletype, SslMethod, SslVerifyMode},
+    ssl::{self, AlpnError, Ssl, SslAcceptor, SslFiletype, SslMethod, SslVerifyMode},
     x509::{
         X509, X509NameBuilder,
         extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
@@ -70,6 +70,15 @@ pub fn load(cert: &Path, key: &Path) -> Result<Tls, String> {
     // Ask every browser for a client certificate, without insisting, and take any it offers: the
     // boss decides whose it is by its fingerprint (certificate login), so it needs no CA.
     acceptor.set_verify_callback(SslVerifyMode::PEER, |_, _| true);
+    // Once it asks for client certificates, OpenSSL resumes no session without this, and every
+    // connection pays for a full handshake.
+    acceptor
+        .set_session_id_context(b"bettertest")
+        .map_err(|e| format!("could not set up TLS: {e}"))?;
+    // HTTP/2 for browsers that speak it: one connection carries the page, its files and its streams.
+    acceptor.set_alpn_select_callback(|_, offered| {
+        ssl::select_next_proto(b"\x02h2\x08http/1.1", offered).ok_or(AlpnError::NOACK)
+    });
     let acceptor = acceptor.build();
     let Some(leaf) = acceptor.context().certificate() else {
         return Err(format!("{} is not a PEM certificate", cert.display()));
@@ -117,7 +126,7 @@ pub fn listen(listener: TcpListener, tls: &Tls) -> HttpsListener {
     let (tx, rx) = mpsc::channel(64);
     spawn(async move {
         loop {
-            let (stream, addr) = match listener.accept().await {
+            let (mut stream, addr) = match listener.accept().await {
                 Ok(accepted) => accepted,
                 // Out of file descriptors and the like: give it a moment rather than spin.
                 Err(_) => {
@@ -125,6 +134,7 @@ pub fn listen(listener: TcpListener, tls: &Tls) -> HttpsListener {
                     continue;
                 }
             };
+            crate::no_delay(&mut stream);
             let (acceptor, tx) = (acceptor.clone(), tx.clone());
             spawn(async move {
                 if let Ok(Some(stream)) = timeout(PATIENCE, handshake(stream, &acceptor)).await {
@@ -160,8 +170,27 @@ impl Connected<IncomingStream<'_, HttpsListener>> for Peer {
     }
 }
 
-impl Connected<IncomingStream<'_, TcpListener>> for Peer {
-    fn connect_info(_: IncomingStream<'_, TcpListener>) -> Self {
+/// Plain HTTP: TCP, each socket set to no delay. (axum's `tap_io` would do, but then no
+/// `Connected` for `Peer` can be written for it.)
+pub struct PlainListener(pub TcpListener);
+
+impl Listener for PlainListener {
+    type Io = TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (mut stream, addr) = Listener::accept(&mut self.0).await;
+        crate::no_delay(&mut stream);
+        (stream, addr)
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        Listener::local_addr(&self.0)
+    }
+}
+
+impl Connected<IncomingStream<'_, PlainListener>> for Peer {
+    fn connect_info(_: IncomingStream<'_, PlainListener>) -> Self {
         Peer { certificate: None }
     }
 }
