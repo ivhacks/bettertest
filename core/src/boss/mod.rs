@@ -244,6 +244,7 @@ pub async fn entry(
         .with_state(boss);
 
     let listener = TcpListener::bind(("::", port)).await?;
+    let service = router.into_make_service_with_connect_info::<tls::Peer>();
     match &serving.tls {
         Some(tls) => {
             println!("boss web ui at https://{}:{port}", tls.name);
@@ -252,19 +253,11 @@ pub async fn entry(
                 tls.names.join(", "),
                 tls.expires
             );
-            axum::serve(
-                tls::listen(listener, tls),
-                router.into_make_service_with_connect_info::<tls::Peer>(),
-            )
-            .await?;
+            axum::serve(tls::listen(listener, tls), service).await?;
         }
         None => {
             println!("boss web ui at http://[::1]:{port}");
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<tls::Peer>(),
-            )
-            .await?;
+            axum::serve(listener, service).await?;
         }
     }
     Ok(())

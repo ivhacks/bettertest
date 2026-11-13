@@ -139,59 +139,54 @@ impl Https {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let ran: Result<ExitCode, Box<dyn Error>> = match Args::parse().command {
-        Command::Boss {
-            mut sources,
-            sources_file,
-            boss_port,
-            https,
-        } => match (
-            sources_file.map(|file| read_sources(&file)).transpose(),
-            https.load(),
-        ) {
-            (Err(e), _) | (_, Err(e)) => Err(e),
-            (Ok(more), Ok(tls)) => {
-                sources.extend(more.unwrap_or_default());
-                boss::entry(sources, tls, boss_port)
-                    .await
-                    .map(|()| ExitCode::SUCCESS)
-            }
-        },
-        Command::Worker {
-            labels,
-            tasks,
-            worker_port,
-        } => worker::entry(labels, tasks, worker_port)
-            .await
-            .map(|()| ExitCode::SUCCESS),
-        Command::Dispatch {
-            pipedef,
-            stage,
-            task,
-            worker,
-        } => dispatch::entry(&pipedef, &stage, &task, worker).await,
-        Command::Parse { pipedef } => dispatch::parse(&pipedef).await,
-        Command::Unified {
-            sources,
-            boss_port,
-            worker_port,
-            https,
-        } => match https.load() {
-            Ok(tls) => tokio::try_join!(
-                worker::entry(vec![], 1, worker_port),
-                boss::entry(sources, tls, boss_port)
-            )
-            .map(|_| ExitCode::SUCCESS),
-            Err(e) => Err(e),
-        },
-    };
-    match ran {
+    match run(Args::parse().command).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
+    match command {
+        Command::Boss {
+            mut sources,
+            sources_file,
+            boss_port,
+            https,
+        } => {
+            if let Some(file) = sources_file {
+                sources.extend(read_sources(&file)?);
+            }
+            boss::entry(sources, https.load()?, boss_port).await?;
+        }
+        Command::Worker {
+            labels,
+            tasks,
+            worker_port,
+        } => worker::entry(labels, tasks, worker_port).await?,
+        Command::Dispatch {
+            pipedef,
+            stage,
+            task,
+            worker,
+        } => return dispatch::entry(&pipedef, &stage, &task, worker).await,
+        Command::Parse { pipedef } => return dispatch::parse(&pipedef).await,
+        Command::Unified {
+            sources,
+            boss_port,
+            worker_port,
+            https,
+        } => {
+            let tls = https.load()?;
+            tokio::try_join!(
+                worker::entry(vec![], 1, worker_port),
+                boss::entry(sources, tls, boss_port)
+            )?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The sources in `file`: one per line, ignoring blank lines and lines starting with #.

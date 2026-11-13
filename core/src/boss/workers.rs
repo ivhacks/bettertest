@@ -322,20 +322,14 @@ pub(super) fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {
-        let mut diagonal = row.first().copied().unwrap_or(0);
-        if let Some(first) = row.first_mut() {
-            *first = i + 1;
-        }
+        let mut next = vec![i + 1];
         for (j, cb) in b.iter().enumerate() {
-            let above = row.get(j + 1).copied().unwrap_or(0);
-            let left = row.get(j).copied().unwrap_or(0);
-            let cost = usize::from(ca != *cb);
-            let best = (diagonal + cost).min(above + 1).min(left + 1);
-            diagonal = above;
-            if let Some(cell) = row.get_mut(j + 1) {
-                *cell = best;
-            }
+            let change = row.get(j).copied().unwrap_or(0) + usize::from(ca != *cb);
+            let delete = row.get(j + 1).copied().unwrap_or(0) + 1;
+            let insert = next.last().copied().unwrap_or(0) + 1;
+            next.push(change.min(delete).min(insert));
         }
+        row = next;
     }
     row.last().copied().unwrap_or(0)
 }

@@ -15,10 +15,9 @@ pub struct UsersPage {
     notice: Option<String>,
     // The user the set-password window is open for.
     password_for: Option<i64>,
-    // A new API token, shown once, and whose it is.
-    new_token: Option<(String, String)>,
-    // A new client certificate, shown once: its name, its PKCS#12 file (base64) and its password.
-    new_certificate: Option<(String, String, String)>,
+    // A new API token, and whose it is.
+    new_token: Option<(String, NewToken)>,
+    new_certificate: Option<NewCertificate>,
     new_name: NodeRef,
     new_role: NodeRef,
     new_password: NodeRef,
@@ -32,9 +31,9 @@ pub enum UsersMsg {
     Role(i64, Role),
     AskPassword(i64),
     NewToken(i64),
-    TokenMade(String, String),
+    TokenMade(String, NewToken),
     NewCertificate(i64),
-    CertificateMade(String, String, String),
+    CertificateMade(NewCertificate),
     NewPasskey(i64),
     Revoke(i64),
     Cancel,
@@ -124,15 +123,9 @@ impl Component for UsersPage {
                 spawn_local(async move {
                     let request = Request::post("/api/new-certificate")
                         .json(&serde_json::json!({ "id": id }));
-                    match fetch::<serde_json::Value>(request).await {
+                    match fetch(request).await {
                         Ok(made) => {
-                            let field =
-                                |name: &str| made[name].as_str().unwrap_or_default().to_string();
-                            link.send_message(UsersMsg::CertificateMade(
-                                field("label"),
-                                field("p12"),
-                                field("password"),
-                            ));
+                            link.send_message(UsersMsg::CertificateMade(made));
                             link.send_message(UsersMsg::Load);
                         }
                         Err(e) => link.send_message(UsersMsg::Notice(e)),
@@ -140,9 +133,7 @@ impl Component for UsersPage {
                 });
                 return false;
             }
-            UsersMsg::CertificateMade(label, p12, password) => {
-                self.new_certificate = Some((label, p12, password));
-            }
+            UsersMsg::CertificateMade(made) => self.new_certificate = Some(made),
             UsersMsg::NewPasskey(id) => {
                 self.notice = None;
                 let link = ctx.link().clone();
@@ -178,10 +169,9 @@ impl Component for UsersPage {
                 spawn_local(async move {
                     let request =
                         Request::post("/api/new-token").json(&serde_json::json!({ "id": id }));
-                    match fetch::<serde_json::Value>(request).await {
+                    match fetch(request).await {
                         Ok(made) => {
-                            let token = made["token"].as_str().unwrap_or_default().to_string();
-                            link.send_message(UsersMsg::TokenMade(name, token));
+                            link.send_message(UsersMsg::TokenMade(name, made));
                             link.send_message(UsersMsg::Load);
                         }
                         Err(e) => link.send_message(UsersMsg::Notice(e)),
@@ -256,7 +246,7 @@ impl Component for UsersPage {
             }
         });
         let done = html! { <div class="buttons"><button class="primary" onclick={link.callback(|_| UsersMsg::Cancel)}>{ "Done" }</button></div> };
-        let token_window = self.new_token.as_ref().map(|(name, token)| {
+        let token_window = self.new_token.as_ref().map(|(name, NewToken { token })| {
             html! {
                 <div class="backdrop">
                     <div class="window" role="dialog">
@@ -268,7 +258,7 @@ impl Component for UsersPage {
                 </div>
             }
         });
-        let certificate_window = self.new_certificate.as_ref().map(|(label, p12, password)| {
+        let certificate_window = self.new_certificate.as_ref().map(|NewCertificate { label, p12, password }| {
             html! {
                 <div class="backdrop">
                     <div class="window" role="dialog">

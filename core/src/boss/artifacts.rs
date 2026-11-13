@@ -26,10 +26,15 @@ impl Boss {
     ) -> Result<PathBuf, String> {
         let producer = format!("{stage}.{task}");
         let cant = format!("Can't get artifact {name} of {producer}");
-        let in_run = if this_run {
-            String::new()
+        let (run_name, in_run, earlier) = if this_run {
+            let earlier = format!(
+                " Move {producer} to a stage that runs before this one for the artifact to be \
+                 available."
+            );
+            ("this run".to_string(), String::new(), earlier)
         } else {
-            format!(" in run {} of {}", run.short_id(), run.pipeline)
+            let run_name = format!("run {} of {}", run.short_id(), run.pipeline);
+            (run_name.clone(), format!(" in {run_name}"), String::new())
         };
         let Some(id) = run
             .stages
@@ -39,39 +44,19 @@ impl Boss {
             // A task a rerun carried over published nothing itself: the run it came from did.
             .map(|t| t.carried_from.unwrap_or(t.id))
         else {
-            let run_name = if this_run {
-                "this run".to_string()
-            } else {
-                format!("run {} of {}", run.short_id(), run.pipeline)
-            };
             return Err(format!("{cant}: {run_name} has no task {producer}."));
         };
-        let earlier = if this_run {
-            format!(
-                " Move {producer} to a stage that runs before this one for the artifact to be \
-                 available."
-            )
-        } else {
-            String::new()
-        };
         let db = self.db();
-        match db.task_state(id).map_err(|e| e.to_string())? {
-            None | Some(TaskState::Pending) => {
-                return Err(format!(
-                    "{cant} because {producer} hasn't run yet{in_run}.{earlier}"
-                ));
-            }
-            Some(TaskState::Running) => {
-                return Err(format!(
-                    "{cant} because {producer} is still running{in_run}.{earlier}"
-                ));
-            }
+        let unfinished = match db.task_state(id).map_err(|e| e.to_string())? {
+            None | Some(TaskState::Pending) => Some(format!("hasn't run yet{in_run}.{earlier}")),
+            Some(TaskState::Running) => Some(format!("is still running{in_run}.{earlier}")),
             Some(TaskState::Skipped) => {
-                return Err(format!(
-                    "{cant} because {producer} was skipped{in_run}, so it published nothing."
-                ));
+                Some(format!("was skipped{in_run}, so it published nothing."))
             }
-            Some(TaskState::Pass | TaskState::Fail) => {}
+            Some(TaskState::Pass | TaskState::Fail) => None,
+        };
+        if let Some(why) = unfinished {
+            return Err(format!("{cant} because {producer} {why}"));
         }
         let published = db.artifacts(id).map_err(|e| e.to_string())?;
         let (_, deleted) = db.deleted(id).map_err(|e| e.to_string())?;

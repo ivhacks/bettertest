@@ -377,11 +377,6 @@ pub(super) async fn remove_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Serialize)]
-pub(super) struct NewToken {
-    pub(super) token: String,
-}
-
 /// Makes an API token for a user, for scripts and curl. It is shown this once: the db keeps only
 /// its hash.
 pub(super) async fn new_token(
@@ -402,14 +397,6 @@ pub(super) async fn revoke_tokens(
 ) -> Result<StatusCode, Failure> {
     boss.db().revoke_api_tokens(user.id).map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Serialize)]
-pub(super) struct NewCertificate {
-    pub(super) label: String,
-    // The PKCS#12 file, base64, and its password: shown this once.
-    pub(super) p12: String,
-    pub(super) password: String,
 }
 
 /// Makes a client certificate for a user, for certificate login: the browser presents it over

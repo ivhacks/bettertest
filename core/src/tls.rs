@@ -13,6 +13,7 @@ use openssl::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
     ec::{EcGroup, EcKey},
+    error::ErrorStack,
     hash::MessageDigest,
     nid::Nid,
     pkcs12::Pkcs12,
@@ -165,11 +166,9 @@ impl Connected<IncomingStream<'_, TcpListener>> for Peer {
     }
 }
 
-pub fn fingerprint(certificate: &X509) -> Result<String, String> {
-    let digest = certificate
-        .digest(MessageDigest::sha256())
-        .map_err(|e| e.to_string())?;
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+fn fingerprint(certificate: &X509) -> Result<String, ErrorStack> {
+    let digest = certificate.digest(MessageDigest::sha256())?;
+    Ok(crate::auth::hex(&digest))
 }
 
 /// A client certificate for `user`, made fresh: a P-256 key and a self-signed certificate good for
@@ -183,62 +182,40 @@ pub struct ClientCertificate {
 }
 
 pub fn client_certificate(user: &str, label: &str) -> Result<ClientCertificate, String> {
-    let fail = |e: openssl::error::ErrorStack| e.to_string();
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(fail)?;
-    let key = PKey::from_ec_key(EcKey::generate(&group).map_err(fail)?).map_err(fail)?;
-    let mut name = X509NameBuilder::new().map_err(fail)?;
-    name.append_entry_by_nid(Nid::COMMONNAME, user)
-        .map_err(fail)?;
-    name.append_entry_by_nid(Nid::ORGANIZATIONNAME, "bettertest")
-        .map_err(fail)?;
+    make_client_certificate(user, label).map_err(|e| e.to_string())
+}
+
+fn make_client_certificate(user: &str, label: &str) -> Result<ClientCertificate, ErrorStack> {
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
+    let key = PKey::from_ec_key(EcKey::generate(&group)?)?;
+    let mut name = X509NameBuilder::new()?;
+    name.append_entry_by_nid(Nid::COMMONNAME, user)?;
+    name.append_entry_by_nid(Nid::ORGANIZATIONNAME, "bettertest")?;
     let name = name.build();
-    let mut serial = BigNum::new().map_err(fail)?;
-    serial
-        .rand(128, MsbOption::MAYBE_ZERO, false)
-        .map_err(fail)?;
-    let mut cert = X509::builder().map_err(fail)?;
-    cert.set_version(2).map_err(fail)?;
-    let serial = serial.to_asn1_integer().map_err(fail)?;
-    cert.set_serial_number(&serial).map_err(fail)?;
-    cert.set_subject_name(&name).map_err(fail)?;
-    cert.set_issuer_name(&name).map_err(fail)?;
-    cert.set_pubkey(&key).map_err(fail)?;
-    let (start, end) = (
-        Asn1Time::days_from_now(0).map_err(fail)?,
-        Asn1Time::days_from_now(730).map_err(fail)?,
-    );
-    cert.set_not_before(&start).map_err(fail)?;
-    cert.set_not_after(&end).map_err(fail)?;
-    cert.append_extension(BasicConstraints::new().critical().build().map_err(fail)?)
-        .map_err(fail)?;
-    cert.append_extension(
-        KeyUsage::new()
-            .critical()
-            .digital_signature()
-            .build()
-            .map_err(fail)?,
-    )
-    .map_err(fail)?;
-    cert.append_extension(
-        ExtendedKeyUsage::new()
-            .client_auth()
-            .build()
-            .map_err(fail)?,
-    )
-    .map_err(fail)?;
-    cert.sign(&key, MessageDigest::sha256()).map_err(fail)?;
+    let mut serial = BigNum::new()?;
+    serial.rand(128, MsbOption::MAYBE_ZERO, false)?;
+    let mut cert = X509::builder()?;
+    cert.set_version(2)?;
+    cert.set_serial_number(&*serial.to_asn1_integer()?)?;
+    cert.set_subject_name(&name)?;
+    cert.set_issuer_name(&name)?;
+    cert.set_pubkey(&key)?;
+    cert.set_not_before(&*Asn1Time::days_from_now(0)?)?;
+    cert.set_not_after(&*Asn1Time::days_from_now(730)?)?;
+    cert.append_extension(BasicConstraints::new().critical().build()?)?;
+    cert.append_extension(KeyUsage::new().critical().digital_signature().build()?)?;
+    cert.append_extension(ExtendedKeyUsage::new().client_auth().build()?)?;
+    cert.sign(&key, MessageDigest::sha256())?;
     let cert = cert.build();
     let mut random = [0u8; 9];
-    openssl::rand::rand_bytes(&mut random).map_err(fail)?;
+    openssl::rand::rand_bytes(&mut random)?;
     let password = openssl::base64::encode_block(&random).replace(['+', '/'], "x");
     let p12 = Pkcs12::builder()
         .name(label)
         .pkey(&key)
         .cert(&cert)
-        .build2(&password)
-        .map_err(fail)?
-        .to_der()
-        .map_err(fail)?;
+        .build2(&password)?
+        .to_der()?;
     Ok(ClientCertificate {
         p12,
         password,

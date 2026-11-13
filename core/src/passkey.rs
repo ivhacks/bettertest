@@ -39,7 +39,7 @@ pub fn user(handle: Uuid) -> i64 {
 
 /// A credential id (the authenticator's name for a passkey) as the db finds it: hex.
 pub fn credential_key(id: &[u8]) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
+    crate::auth::hex(id)
 }
 
 #[cfg(test)]

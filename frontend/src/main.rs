@@ -43,31 +43,20 @@ fn main() {
 
 fn render(path: &str) {
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+    let id = |id: &str| PageProps { id: id.to_string() };
     match segments.as_slice() {
-        ["pipeline", name] => {
-            let props = PageProps {
-                id: name.to_string(),
-            };
-            yew::Renderer::<pages::pipeline::PipelinePage>::with_props(props).render();
-        }
-        ["task", id] => {
-            let props = PageProps { id: id.to_string() };
-            yew::Renderer::<pages::task::TaskPage>::with_props(props).render();
-        }
-        ["workers"] => {
-            yew::Renderer::<pages::workers::WorkersPage>::new().render();
-        }
-        ["settings"] => {
-            yew::Renderer::<pages::settings::SettingsPage>::new().render();
-        }
-        ["users"] => {
-            yew::Renderer::<pages::users::UsersPage>::new().render();
-        }
-        ["login"] => {
-            yew::Renderer::<pages::login::LoginPage>::new().render();
-        }
+        ["pipeline", name] => page::<pages::pipeline::PipelinePage>(id(name)),
+        ["task", task] => page::<pages::task::TaskPage>(id(task)),
+        ["workers"] => page::<pages::workers::WorkersPage>(()),
+        ["settings"] => page::<pages::settings::SettingsPage>(()),
+        ["users"] => page::<pages::users::UsersPage>(()),
+        ["login"] => page::<pages::login::LoginPage>(()),
         _ => {}
     }
+}
+
+fn page<C: BaseComponent>(props: C::Properties) {
+    yew::Renderer::<C>::with_props(props).render();
 }
 
 /// Cancels run `run`, all of it. What happens to its tasks arrives through the live stream like

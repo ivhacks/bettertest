@@ -117,10 +117,7 @@ impl Db {
             commit,
         };
 
-        let (sha, branch) = match &run.commit {
-            Some(commit) => (Some(&commit.sha), Some(&commit.branch)),
-            None => (None, None),
-        };
+        let (sha, branch) = run.commit.as_ref().map(|c| (&c.sha, &c.branch)).unzip();
         tx.execute(
             "INSERT INTO pl_runs (id, pipeline, state, commit_sha, branch)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -264,11 +261,9 @@ impl Db {
     }
 
     pub fn add_artifact(&self, task: Uuid, artifact: &Artifact) -> rusqlite::Result<usize> {
-        // sqlite integers are i64. No file is 8 EiB.
-        let size = i64::try_from(artifact.size).unwrap_or(i64::MAX);
         self.conn.execute(
             "INSERT INTO task_artifacts (task_run_id, name, size) VALUES (?1, ?2, ?3)",
-            (task.to_string(), &artifact.name, size),
+            (task.to_string(), &artifact.name, to_sql(artifact.size)),
         )
     }
 
@@ -281,22 +276,21 @@ impl Db {
             .query_map([task.to_string()], |row| {
                 Ok(Artifact {
                     name: row.get(0)?,
-                    size: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    size: from_sql(row.get(1)?),
                 })
             })?
             .collect()
     }
 
     pub fn run(&self, id: Uuid) -> rusqlite::Result<Option<Run>> {
-        let Some((pipeline, state, sha, branch)) = self
+        let Some((pipeline, state, (sha, branch))) = self
             .conn
             .prepare_cached(
                 "SELECT pipeline, state, commit_sha, branch FROM pl_runs WHERE id = ?1",
             )?
             .query_row([id.to_string()], |row| {
-                let sha: Option<String> = row.get(2)?;
-                let branch: Option<String> = row.get(3)?;
-                Ok((row.get(0)?, text(row, 1, RunState::parse)?, sha, branch))
+                let commit: (Option<String>, Option<String>) = (row.get(2)?, row.get(3)?);
+                Ok((row.get(0)?, text(row, 1, RunState::parse)?, commit))
             })
             .optional()?
         else {
@@ -326,29 +320,22 @@ impl Db {
                         started: row.get::<_, Option<i64>>(4)?.map(from_sql),
                         ended: row.get::<_, Option<i64>>(5)?.map(from_sql),
                         carried_from: row.get::<_, Option<String>>(6)?.as_deref().and_then(uuid),
-                        tests: match (row.get(7)?, row.get(8)?) {
-                            (Some(total), Some(failed)) => Some(Tests {
-                                total: from_sql(total),
-                                failed: from_sql(failed),
-                            }),
-                            _ => None,
-                        },
+                        tests: Option::zip(row.get(7)?, row.get(8)?).map(|(total, failed)| Tests {
+                            total: from_sql(total),
+                            failed: from_sql(failed),
+                        }),
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
             stages.push(StageRun { name, tasks });
         }
 
-        let commit = match (sha, branch) {
-            (Some(sha), Some(branch)) => Some(Commit { sha, branch }),
-            _ => None,
-        };
         Ok(Some(Run {
             id,
             pipeline,
             state,
             stages,
-            commit,
+            commit: sha.zip(branch).map(|(sha, branch)| Commit { sha, branch }),
         }))
     }
 
@@ -362,13 +349,9 @@ impl Db {
             .query_map((pipeline, limit), |row| text(row, 0, uuid))?
             .collect::<rusqlite::Result<_>>()?;
 
-        let mut runs = vec![];
-        for id in ids {
-            if let Some(run) = self.run(id)? {
-                runs.push(run);
-            }
-        }
-        Ok(runs)
+        ids.into_iter()
+            .filter_map(|id| self.run(id).transpose())
+            .collect()
     }
 
     /// The run a task belongs to, and the name of the task's stage.

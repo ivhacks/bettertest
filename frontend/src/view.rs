@@ -475,12 +475,9 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
             .collect();
         html! { <td class="certs">if listed.is_empty() { { "-" } }{ for listed }</td> }
     };
-    let count = |n: u32| {
-        if n == 0 {
-            "-".to_string()
-        } else {
-            n.to_string()
-        }
+    let count = |n: u32| match n {
+        0 => "-".to_string(),
+        n => n.to_string(),
     };
     html! {
         <table class="users">

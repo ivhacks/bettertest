@@ -485,11 +485,10 @@ fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
     let spec = format!("{}?offset={offset}", raw.0.display());
     // Debian's grub.cfg and Fedora's grub2 one. The edit is on a raw copy; the cached qcow is
     // replaced only after e2fsck accepts it, so a crash mid-edit leaves the previous image.
-    let (cfg_path, grub, _grub_missing) = find_grub(&spec)?;
-    if cfg_path.is_empty() {
+    let Some((cfg_path, grub)) = find_grub(&spec)? else {
         write_marker(&marker)?;
         return Ok(());
-    }
+    };
     // Always write a new inode. An image whose text is already right can still have grub.cfg
     // pointing at a deleted inode, and skipping the write would stamp that image as done.
     let updated = extend_linux_cmdline(&grub, EMULATED_KERNEL_ARGS)?;
@@ -507,26 +506,22 @@ fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
 }
 
 fn marker_is_current(image: &Path, marker: &Path) -> bool {
-    let (Ok(image_meta), Ok(marker_meta)) = (fs::metadata(image), fs::metadata(marker)) else {
-        return false;
-    };
-    let (Ok(image_time), Ok(marker_time)) = (image_meta.modified(), marker_meta.modified()) else {
+    let modified = |path| fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    let (Some(image_time), Some(marker_time)) = (modified(image), modified(marker)) else {
         return false;
     };
     marker_time >= image_time && fs::read_to_string(marker).ok().as_deref() == Some(CMDLINE_STAMP)
 }
 
 fn write_marker(marker: &Path) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new()
+    fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o666)
         .open(marker)
-        .map_err(|e| e.to_string())?;
-    file.write_all(CMDLINE_STAMP.as_bytes())
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .and_then(|mut file| file.write_all(CMDLINE_STAMP.as_bytes()))
+        .map_err(|e| e.to_string())
 }
 
 fn sibling(image: &Path, suffix: &str) -> Result<PathBuf, String> {
@@ -667,21 +662,21 @@ fn without_debugfs_banner(stdout: &str) -> &str {
     }
 }
 
-/// `(path, contents, missing)`. `path` is empty when the image has no grub.cfg to edit.
-fn find_grub(spec: &str) -> Result<(String, String, bool), String> {
+/// `(path, contents)` of the image's grub.cfg. None when it has none to edit.
+fn find_grub(spec: &str) -> Result<Option<(String, String)>, String> {
     for path in ["/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"] {
         match debugfs_cat(spec, path) {
-            Ok(text) => return Ok((path.to_string(), text, false)),
+            Ok(text) => return Ok(Some((path.to_string(), text))),
             Err(e) if e.contains("File not found") => {
                 let staged = format!("{path}.bettertest");
                 if let Ok(text) = debugfs_cat(spec, &staged) {
-                    return Ok((path.to_string(), text, true));
+                    return Ok(Some((path.to_string(), text)));
                 }
             }
             Err(e) => return Err(e),
         }
     }
-    Ok((String::new(), String::new(), false))
+    Ok(None)
 }
 
 /// Replaces grub.cfg with the host file. The old name is removed first, then the file is written
@@ -727,18 +722,14 @@ fn extend_linux_cmdline(cfg: &str, extra: &str) -> Result<String, String> {
             out.push('\n');
         }
     }
-    if changed {
-        Ok(out)
-    } else {
-        Err("grub.cfg has no linux command, so the emulated boot timeout cannot be set".to_string())
-    }
+    changed.then_some(out).ok_or_else(|| {
+        "grub.cfg has no linux command, so the emulated boot timeout cannot be set".to_string()
+    })
 }
 
 fn is_kernel_line(trimmed: &str) -> bool {
-    trimmed.starts_with("linux ")
-        || trimmed.starts_with("linux\t")
-        || trimmed.starts_with("linuxefi ")
-        || trimmed.starts_with("linuxefi\t")
+    (trimmed.split_once([' ', '\t']))
+        .is_some_and(|(command, _)| matches!(command, "linux" | "linuxefi"))
 }
 
 fn strip_timeout_args(line: &str) -> String {
