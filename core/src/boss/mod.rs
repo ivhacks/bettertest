@@ -467,11 +467,12 @@ fn embedded<Files: rust_embed::RustEmbed>(headers: &HeaderMap, path: &str) -> Re
         .then_some([(header::VARY, "accept-encoding")]);
     let accepted = headers.get(header::ACCEPT_ENCODING);
     let accepted = accepted.and_then(|v| v.to_str().ok()).unwrap_or_default();
-    // index.html names the hashed shell, so a browser has to recheck it. Everything else has a
-    // content hash or, under assets/, a version in its name, and can be kept forever.
-    let cache = match path {
-        "index.html" => "no-cache",
-        _ => "public, max-age=31536000, immutable",
+    // index.html names the hashed shell, so a browser has to recheck it, and so do wasm-bindgen's
+    // snippets, whose names stay the same when their code changes. Everything else has a content
+    // hash or, under assets/, a version in its name, and can be kept forever.
+    let cache = match path == "index.html" || path.starts_with("snippets/") {
+        true => "no-cache",
+        false => "public, max-age=31536000, immutable",
     };
     let headers = [
         (header::CONTENT_TYPE, file.metadata.mimetype()),

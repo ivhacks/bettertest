@@ -525,6 +525,15 @@ async fn shell_files_are_gzipped_when_the_browser_takes_gzip() {
         (ok, document, html)
     );
 
+    // wasm-bindgen names a snippet after its crate, not its code, so it is checked too.
+    let snippet = headers(&[
+        ("content-type", "text/javascript"),
+        ("cache-control", "no-cache"),
+    ]);
+    let plot = "export function plot() {}\n".to_string();
+    let inline = serve("snippets/app-0123/inline0.js", Some("gzip")).await;
+    assert_eq!(inline, (ok, snippet, plot));
+
     let text = headers(&[("content-type", "text/plain; charset=utf-8")]);
     let missing = serve("app.js.map", Some("gzip")).await;
     assert_eq!(missing, (StatusCode::NOT_FOUND, text, "not found".into()));
