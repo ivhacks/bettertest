@@ -67,14 +67,9 @@ pub fn load(cert: &Path, key: &Path) -> Result<Tls, String> {
                 cert.display()
             )
         })?;
-    // Ask every browser for a client certificate, without insisting, and take any it offers: the
-    // boss decides whose it is by its fingerprint (certificate login), so it needs no CA.
-    acceptor.set_verify_callback(SslVerifyMode::PEER, |_, _| true);
-    // Once it asks for client certificates, OpenSSL resumes no session without this, and every
-    // connection pays for a full handshake.
-    acceptor
-        .set_session_id_context(b"bettertest")
-        .map_err(|e| format!("could not set up TLS: {e}"))?;
+    // Ask no browser for a client certificate: iPhone Safari loads the page but never starts the
+    // app while the boss asks (without insisting) on every handshake. Certificate login is off.
+    acceptor.set_verify(SslVerifyMode::NONE);
     // No ALPN, so no HTTP/2: iPhone Safari got the page over it but never started the app, while
     // over HTTP/1.1, with the same certificate request, it does.
     let acceptor = acceptor.build();

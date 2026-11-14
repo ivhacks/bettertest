@@ -1,5 +1,5 @@
 use super::*;
-use axum::{Router, routing::get};
+use axum::{Router, extract::ConnectInfo, routing::get};
 use openssl::ssl::{SslConnector, SslSession, SslSessionCacheMode, SslStream as BlockingSslStream};
 use std::{
     io::{Read, Write},
@@ -120,4 +120,37 @@ async fn boss_speaks_http1_over_tls_and_resumes_sessions() {
     }
     assert!(!visits[0].resumed);
     assert!(visits[1].resumed, "the second visit did a full handshake");
+}
+
+/// iPhone Safari loads the page but never starts the app while the boss asks for a client
+/// certificate on every handshake, so it asks no one: a client that has one keeps it to itself.
+#[tokio::test]
+async fn boss_asks_no_one_for_a_client_certificate() {
+    let (cert, key) = localhost_certificate();
+    let tls = load(&cert, &key).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/",
+        get(|ConnectInfo(peer): ConnectInfo<Peer>| async move {
+            match peer.certificate {
+                Some(_) => "a certificate came, hello",
+                None => "hello",
+            }
+        }),
+    );
+    let service = app.into_make_service_with_connect_info::<Peer>();
+    spawn(async move { axum::serve(listen(listener, &tls), service).await });
+
+    let reply = tokio::task::spawn_blocking(move || {
+        let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        connector.set_verify(SslVerifyMode::NONE);
+        connector.set_certificate_file(&cert, SslFiletype::PEM).unwrap();
+        connector.set_private_key_file(&key, SslFiletype::PEM).unwrap();
+        visit(&connector.build(), addr, None).reply
+    })
+    .await
+    .unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply:?}");
+    assert!(!reply.contains("a certificate came"), "{reply:?}");
 }
