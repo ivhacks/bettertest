@@ -76,11 +76,11 @@ Assume bettertest runs nonstop for five years at a company with thousands of com
 
 `bettertest` with clap subcommands:
 
-- `boss [--sources FILE] [--cert C --key K] [--boss-port N] <pipedef, directory or repo url>...` — `:7357` ("test" in leetspeak) unless `--boss-port` says otherwise. HTTPS with `--cert`/`--key`, plain HTTP without (see HTTPS). `--sources` reads more sources from a file, one per line (`#` comments): the place for repo urls with credentials, so they never show in the process list. One pipeline per pipedef file; a directory stands for every `*.py` in it, read at startup (no pipedefs is fine); a git repo url (`http://user:token@host/owner/name.git`) for every `.bettertest/*.py` on its default branch. See Repos. Re-reads and re-parses a pipedef whenever it is needed (page load, new run), so edits show up without a restart. A run: stages one at a time, top to bottom; a failed stage skips the rest.
-- `worker [--label L]... [--tasks N] [--worker-port P]` — `:7358` unless `--worker-port` says otherwise. Runs tasks and their sandboxes, at most `N` at once (1 unless told otherwise: a worker with hardware on it can rarely run two tests at the same time). Its labels are its architecture's (`x86`, `arm`) plus each `--label`. On start, removes containers and VMs a crashed worker left behind.
+- `boss [--sources FILE] [--cert C --key K] [--boss-port N] [--workdir DIR] <pipedef, directory or repo url>...` — `:7357` ("test" in leetspeak) unless `--boss-port` says otherwise. HTTPS with `--cert`/`--key`, plain HTTP without (see HTTPS). `--sources` reads more sources from a file, one per line (`#` comments): the place for repo urls with credentials, so they never show in the process list. One pipeline per pipedef file; a directory stands for every `*.py` in it, read at startup (no pipedefs is fine); a git repo url (`http://user:token@host/owner/name.git`) for every `.bettertest/*.py` on its default branch. See Repos. Re-reads and re-parses a pipedef whenever it is needed (page load, new run), so edits show up without a restart. A run: stages one at a time, top to bottom; a failed stage skips the rest.
+- `worker [--label L]... [--tasks N] [--worker-port P] [--workdir DIR]` — `:7358` unless `--worker-port` says otherwise. Runs tasks and their sandboxes, at most `N` at once (1 unless told otherwise: a worker with hardware on it can rarely run two tests at the same time). Its labels are its architecture's (`x86`, `arm`) plus each `--label`. On start, removes containers and VMs a crashed worker left behind.
 - `dispatch <pipedef> --stage S --task T [--worker URL]` — runs one task on its worker (`--worker` for one that picks by labels, or to override the url the pipedef names) with no boss (in its stage's sandbox, if the stage has one), prints the log, exits 0 on pass and 1 on fail.
 - `parse <pipedef>` — prints the pipedef's stages and tasks as JSON. Touches no worker.
-- `unified [--boss-port N] [--worker-port P] <pipedef>...` — boss and worker in one process (`tokio::try_join!`). Same port flags as the separate commands, same defaults.
+- `unified [--boss-port N] [--worker-port P] [--workdir DIR] <pipedef>...` — boss and worker in one process (`tokio::try_join!`). Same port flags as the separate commands, same defaults. Enrolls that worker at `http://[::1]:<worker-port>` (plain HTTP even when the boss speaks HTTPS: the worker has no certificate; a task calls the boss back at the address that connection came from, on the boss's port). The same url already in the db, or added again, stays one row.
 
 ### Code map
 
@@ -107,7 +107,7 @@ core/                   bettertest (the binary)
   src/tls.rs            HTTPS for the boss: loading --cert/--key, the listener
   src/worker.rs         worker HTTP API, containers, docker-load artifacts, start-task, task files
   src/vm.rs             rootless qemu VMs
-  src/workdir.rs        /var/tmp/bettertest and its 0777/0666 permissions
+  src/workdir.rs        /var/tmp/bettertest (or --workdir) and its 0777/0666 permissions
   test/                 the tests of src/, one file per module they test
 frontend/               bettertest-frontend: Yew/wasm, built by trunk, embedded in the binary
   src/main.rs           client-side routing (History API), who is logged in, live streams
@@ -233,7 +233,7 @@ A finished run can be rerun whole, from a stage, or from one task (`POST /api/re
 
 ### Workers page
 
-The boss keeps a connection to every worker it knows: each one a pipedef names by url (enrolled when its pipeline page loads or a run starts) and each one added on the workers page, kept in the `workers` table. A task that only names labels runs on any enrolled worker whose labels cover that set. The connection is the worker's `GET /events` stream: one `worker` event saying what it is (hostname, arch, version), then keep-alives every 15 s. While that stream lasts the worker is up. When it ends, or stays quiet for 45 s (a frozen or unplugged machine never says goodbye), the worker is down, and the boss tries again after 1 s, doubling up to 30 s. The boss also tracks which tasks run on each worker. The workers page (`/workers`) shows all of it live, through the same snapshot-then-events stream as the other pages (`Event::Worker`, `Event::WorkerForgotten`). The worker state lives in memory, changed only under the db lock as well, so the snapshot is gapless. "forget" removes a worker; a pipedef that names it adds it back.
+The boss keeps a connection to every worker it knows: each one a pipedef names by url (enrolled when its pipeline page loads or a run starts), each one added on the workers page, and, in `unified`, the worker in that process, kept in the `workers` table. A task that only names labels runs on any enrolled worker whose labels cover that set. The connection is the worker's `GET /events` stream: one `worker` event saying what it is (hostname, arch, version), then keep-alives every 15 s. While that stream lasts the worker is up. When it ends, or stays quiet for 45 s (a frozen or unplugged machine never says goodbye), the worker is down, and the boss tries again after 1 s, doubling up to 30 s. The boss also tracks which tasks run on each worker. The workers page (`/workers`) shows all of it live, through the same snapshot-then-events stream as the other pages (`Event::Worker`, `Event::WorkerForgotten`). The worker state lives in memory, changed only under the db lock as well, so the snapshot is gapless. "forget" removes a worker; a pipedef that names it adds it back.
 
 ### Users
 
@@ -261,7 +261,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 
 ### Persistence
 
-- sqlite at `/var/tmp/bettertest/bettertest.db`, rusqlite bundled, WAL, `synchronous=NORMAL`, foreign keys on.
+- sqlite at `/var/tmp/bettertest/bettertest.db`, rusqlite bundled, WAL, `synchronous=NORMAL`, foreign keys on. `--workdir DIR` on `boss`, `worker` and `unified` keeps the db and the other files in DIR instead. The default is this directory: it survives reboot and every user can write it.
 - **No migrations, until release.** `schema.sql` is the schema, as if the db had never been any other way. A new db gets it; a db with any tables is used as it is. Every change to it is a breaking one: change `schema.sql` in place, and delete the old db. No version tracking, no upgrade code, no compatibility with older dbs or older workers: none of that until Iv says bettertest is released and backward compatibility starts to matter.
 - Tables: `pl_runs`, `stage_runs`, `task_runs`, `log_lines` (one row per line; the lines a task prints within 20 ms of each other are written in one transaction). Order is insertion order (`rowid`).
 - **Heartbeats.** The boss writes its own heartbeat to the `heartbeats` table every 15 s, and a worker's whenever its `/events` stream says anything (a keep-alive every 15 s). Once one is gone, the db says when it went.

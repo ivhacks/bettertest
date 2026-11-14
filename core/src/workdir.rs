@@ -9,10 +9,23 @@ use std::{
     io::{self, ErrorKind},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 // /tmp is tmpfs on fedora and empties on reboot. /var/tmp survives reboot and anyone can write it.
 const ROOT: &str = "/var/tmp/bettertest";
+
+// `--workdir`, when it was given. Set once, before anything reads or writes, so the db and the
+// files around it cannot land in two places.
+static CHOSEN: OnceLock<PathBuf> = OnceLock::new();
+
+/// Uses `path` instead of `/var/tmp/bettertest`. One call, from `--workdir`. A second call is an
+/// error: the first directory may already hold the db.
+pub fn choose(path: PathBuf) -> io::Result<()> {
+    CHOSEN
+        .set(path)
+        .map_err(|_| io::Error::other("workdir is already set"))
+}
 
 /// `/var/tmp/bettertest/<name>`, created if it does not exist yet.
 pub fn dir(name: &str) -> io::Result<PathBuf> {
@@ -21,10 +34,11 @@ pub fn dir(name: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// `/var/tmp/bettertest` itself.
+/// `/var/tmp/bettertest`, or the directory `--workdir` named.
 pub fn root() -> io::Result<PathBuf> {
-    shared_dir(Path::new(ROOT))?;
-    Ok(PathBuf::from(ROOT))
+    let path = CHOSEN.get_or_init(|| PathBuf::from(ROOT));
+    shared_dir(path)?;
+    Ok(path.clone())
 }
 
 pub fn shared_dir(path: &Path) -> io::Result<()> {

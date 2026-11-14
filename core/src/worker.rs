@@ -42,6 +42,13 @@ use uuid::Uuid;
 
 pub const LISTEN_PORT: u16 = 7358;
 
+/// Where a worker started on `port` is reached. Unified enrolls this same string, and `entry`
+/// prints it, so the boss and the log cannot name two urls: a restart, or adding the printed url,
+/// would otherwise be a second row.
+pub(crate) fn listen_url(port: u16) -> String {
+    format!("http://[::1]:{port}")
+}
+
 // Every container we start carries this label, so ones a crashed worker left behind can be found.
 const CONTAINER_LABEL: &str = "bettertest.worker";
 
@@ -191,7 +198,7 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
     };
     let router = router(shared, labels, capacity);
 
-    println!("worker listening on http://[::1]:{port}");
+    println!("worker listening on {}", listen_url(port));
     let listener = TcpListener::bind(("::", port)).await?;
     // start-task learns the boss's address from the connection it arrives on.
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
