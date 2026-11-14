@@ -55,6 +55,12 @@ fn dispatch_has_no_boss_url() {
     assert_eq!(boss_url(&req, address(7357)).unwrap(), None);
 }
 
+#[test]
+fn the_printed_listen_url_is_ipv6_loopback() {
+    assert_eq!(listen_url(7358), "http://[::1]:7358");
+    assert_eq!(listen_url(8001), "http://[::1]:8001");
+}
+
 const PIPEDEF: &str = "
 from bettertest import Stage, task
 

@@ -56,6 +56,8 @@ enum Command {
         #[arg(long, default_value_t = boss::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
         boss_port: u16,
         #[command(flatten)]
+        workdir: Workdir,
+        #[command(flatten)]
         https: Https,
     },
     /// Run tasks for the boss.
@@ -71,6 +73,8 @@ enum Command {
         /// Port this worker listens on.
         #[arg(long, default_value_t = worker::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
         worker_port: u16,
+        #[command(flatten)]
+        workdir: Workdir,
     },
     /// Run one task on its worker, without a boss, and print its log.
     ///
@@ -98,6 +102,9 @@ enum Command {
         pipedef: PathBuf,
     },
     /// Boss and worker in one process: bettertest on one machine.
+    ///
+    /// Enrolls that worker at http://[::1]:<worker port>, so a pipedef that only names labels has
+    /// this machine to run on.
     Unified {
         /// Pipedef files, directories (every *.py in them), and git repo urls
         /// (http://user:token@host/owner/name.git: every .bettertest/*.py of the default branch).
@@ -111,8 +118,19 @@ enum Command {
         #[arg(long, default_value_t = worker::LISTEN_PORT, value_parser = clap::value_parser!(u16).range(1..))]
         worker_port: u16,
         #[command(flatten)]
+        workdir: Workdir,
+        #[command(flatten)]
         https: Https,
     },
+}
+
+/// Where the db and the files around it live. `/var/tmp/bettertest` when omitted.
+#[derive(clap::Args)]
+struct Workdir {
+    /// Directory for the db, artifacts and task files. `/var/tmp/bettertest` when omitted: it
+    /// survives a reboot, and every user on the machine can write it.
+    #[arg(long)]
+    workdir: Option<PathBuf>,
 }
 
 /// HTTPS, off unless both are given. bettertest makes no certificates: bring one the browsers and
@@ -149,22 +167,27 @@ async fn main() -> ExitCode {
 }
 
 async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
+    if let Some(path) = command.workdir() {
+        workdir::choose(path)?;
+    }
     match command {
         Command::Boss {
             mut sources,
             sources_file,
             boss_port,
             https,
+            ..
         } => {
             if let Some(file) = sources_file {
                 sources.extend(read_sources(&file)?);
             }
-            boss::entry(sources, https.load()?, boss_port).await?;
+            boss::entry(sources, https.load()?, boss_port, None).await?;
         }
         Command::Worker {
             labels,
             tasks,
             worker_port,
+            ..
         } => worker::entry(labels, tasks, worker_port).await?,
         Command::Dispatch {
             pipedef,
@@ -178,15 +201,31 @@ async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             boss_port,
             worker_port,
             https,
+            ..
         } => {
             let tls = https.load()?;
+            // Plain HTTP even when the boss speaks HTTPS. The worker has no certificate; the boss
+            // connects here, and the task calls the boss back at the address that connection came
+            // from, on --boss-port, over HTTPS when the boss presented one.
+            let local = worker::listen_url(worker_port);
             tokio::try_join!(
                 worker::entry(vec![], 1, worker_port),
-                boss::entry(sources, tls, boss_port)
+                boss::entry(sources, tls, boss_port, Some(&local))
             )?;
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+impl Command {
+    fn workdir(&self) -> Option<PathBuf> {
+        match self {
+            Command::Boss { workdir, .. }
+            | Command::Worker { workdir, .. }
+            | Command::Unified { workdir, .. } => workdir.workdir.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// The sources in `file`: one per line, ignoring blank lines and lines starting with #.
