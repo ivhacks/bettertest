@@ -78,7 +78,7 @@ fn names(carried: &BTreeMap<(String, String), TaskRun>) -> Vec<String> {
 use TaskState::{Fail, Pass, Skipped};
 
 #[test]
-fn rerunning_a_task_carries_over_what_came_before_and_its_siblings() {
+fn restarting_a_task_carries_over_what_came_before_and_its_siblings() {
     let earlier = run(&[
         ("Build", &[("compile", Pass)]),
         ("Test", &[("unit", Pass), ("e2e", Fail)]),
@@ -107,14 +107,14 @@ fn a_failed_earlier_stage_cannot_be_carried_over() {
         (
             StatusCode::CONFLICT,
             "Test.e2e failed in run 000000, so the stages after it have nothing to build on. \
-             Rerun Test instead."
+             Restart Test instead."
                 .to_string()
         )
     );
 }
 
 #[test]
-fn a_task_in_a_shared_sandbox_reruns_its_whole_stage() {
+fn a_task_in_a_shared_sandbox_restarts_its_whole_stage() {
     let earlier = run(&[
         ("Build", &[("compile", Pass)]),
         ("Test", &[("unit", Pass), ("e2e", Pass)]),
@@ -128,7 +128,7 @@ fn a_task_in_a_shared_sandbox_reruns_its_whole_stage() {
 }
 
 #[test]
-fn a_task_in_a_parallel_shared_sandbox_reruns_alone() {
+fn a_task_in_a_parallel_shared_sandbox_restarts_alone() {
     let earlier = run(&[
         ("Build", &[("compile", Pass)]),
         ("Test", &[("unit", Pass), ("e2e", Pass)]),
@@ -202,16 +202,16 @@ fn a_sandbox_spanning_stages_stops_after_the_last_one_using_it() {
 }
 
 #[test]
-fn rerunning_a_stage_that_uses_a_spanning_sandbox_reruns_from_its_first_stage() {
+fn restarting_a_stage_that_uses_a_spanning_sandbox_restarts_from_its_first_stage() {
     let pipeline = spanning_pipeline();
-    // Reboot needs DEBIAN and FEDORA as Install left them: Install reruns too.
-    assert_eq!(rerun_start(&pipeline, 2, None), (1, None));
-    assert_eq!(rerun_start(&pipeline, 2, Some("debian")), (1, None));
-    // Install is where they start, but a task in a sandbox reruns its whole stage.
-    assert_eq!(rerun_start(&pipeline, 1, Some("debian")), (1, None));
+    // Reboot needs DEBIAN and FEDORA as Install left them: Install restarts too.
+    assert_eq!(restart_start(&pipeline, 2, None), (1, None));
+    assert_eq!(restart_start(&pipeline, 2, Some("debian")), (1, None));
+    // Install is where they start, but a task in a sandbox restarts its whole stage.
+    assert_eq!(restart_start(&pipeline, 1, Some("debian")), (1, None));
     // Check and Build use no sandbox: as before.
-    assert_eq!(rerun_start(&pipeline, 3, Some("web")), (3, Some("web")));
-    assert_eq!(rerun_start(&pipeline, 0, None), (0, None));
+    assert_eq!(restart_start(&pipeline, 3, Some("web")), (3, Some("web")));
+    assert_eq!(restart_start(&pipeline, 0, None), (0, None));
     let earlier = run(&[
         ("Build", &[("compile", Pass)]),
         ("Install", &[("debian", Pass), ("fedora", Pass)]),
@@ -595,9 +595,9 @@ async fn worker_saying(stream: &'static str) -> String {
     url
 }
 
-/// Runs a `parallel` stage of tasks t0 to t39 on a worker that takes two at once, rerunning task
-/// `rerun` of `earlier` if given: whether it passed, and the tasks it started, in order.
-async fn parallel_stage(rerun: Option<(&Run, &str)>) -> (bool, Vec<String>) {
+/// Runs a `parallel` stage of tasks t0 to t39 on a worker that takes two at once, restarting task
+/// `restart` of `earlier` if given: whether it passed, and the tasks it started, in order.
+async fn parallel_stage(restart: Option<(&Run, &str)>) -> (bool, Vec<String>) {
     let url = quick_worker().await;
     let boss = boss(workers(&[(&url, &["x86"], 0, 2)]));
     let mut events = boss.events.subscribe();
@@ -618,7 +618,7 @@ async fn parallel_stage(rerun: Option<(&Run, &str)>) -> (bool, Vec<String>) {
         stages: vec![stage.clone()],
         sandboxes: Default::default(),
     };
-    let carried = match rerun {
+    let carried = match restart {
         Some((earlier, name)) => carry_over(earlier, &pipeline, Some("Test"), Some(name)).unwrap(),
         None => BTreeMap::new(),
     };
@@ -661,7 +661,7 @@ async fn a_parallel_stage_starts_its_tasks_in_the_order_the_pipedef_defines_them
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn rerunning_a_task_of_a_parallel_stage_runs_only_that_task() {
+async fn restarting_a_task_of_a_parallel_stage_runs_only_that_task() {
     let earlier = t7_failed();
     assert_eq!(
         parallel_stage(Some((&earlier, "t7"))).await,

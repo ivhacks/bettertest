@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// Playwright's image holds its browsers but not its Python package; both at one version.
 const PLAYWRIGHT: &str = "\
@@ -25,42 +26,15 @@ fn pipeline_page_fits_and_its_cells_answer() {
     playwright("test/pipeline_page.py");
 }
 
-/// Builds the frontend, then runs `script` in Playwright's image against it.
+/// Runs `script` in Playwright's image against the built frontend.
 fn playwright(script: &str) {
     let root = env!("CARGO_MANIFEST_DIR");
-    let built = Command::new("python3")
-        .args(["test/shell.py", "build"])
-        .current_dir(root)
-        .status()
-        .expect("python3 test/shell.py build");
-    assert!(
-        built.success(),
-        "could not build the frontend (exit {built})"
-    );
-    require_docker();
-    let mut build = Command::new("docker")
-        .args([
-            "build",
-            "--quiet",
-            "--tag",
-            "bettertest-test-playwright",
-            "-",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("docker build");
-    build
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(PLAYWRIGHT.as_bytes())
-        .expect("write Dockerfile");
-    let built = build.wait().expect("docker build");
-    assert!(
-        built.success(),
-        "could not build the playwright image (exit {built})"
-    );
+    // The tests run in parallel: two trunk builds into one dist/ at once break each other, and a
+    // test could read dist/ while the other rebuilds it. So the first test builds, the rest wait.
+    static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
+    if let Err(why) = PREPARED.get_or_init(prepare) {
+        panic!("{why}");
+    }
     let mount = format!("{root}:/frontend:ro,z");
     let status = Command::new("docker")
         .args([
@@ -76,6 +50,45 @@ fn playwright(script: &str) {
         .status()
         .expect("docker run");
     assert!(status.success(), "{script} failed (exit {status})");
+}
+
+/// Builds the frontend and Playwright's image, once for all the tests.
+fn prepare() -> Result<(), String> {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let built = Command::new("python3")
+        .args(["test/shell.py", "build"])
+        .current_dir(root)
+        .status()
+        .map_err(|e| format!("python3 test/shell.py build: {e}"))?;
+    if !built.success() {
+        return Err(format!("could not build the frontend (exit {built})"));
+    }
+    require_docker();
+    let mut build = Command::new("docker")
+        .args([
+            "build",
+            "--quiet",
+            "--tag",
+            "bettertest-test-playwright",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("docker build: {e}"))?;
+    build
+        .stdin
+        .take()
+        .ok_or("docker build has no stdin")?
+        .write_all(PLAYWRIGHT.as_bytes())
+        .map_err(|e| format!("write Dockerfile: {e}"))?;
+    let built = build.wait().map_err(|e| format!("docker build: {e}"))?;
+    if !built.success() {
+        return Err(format!(
+            "could not build the playwright image (exit {built})"
+        ));
+    }
+    Ok(())
 }
 
 /// Docker is the one thing the tests need from the machine. Without it this fails saying so.

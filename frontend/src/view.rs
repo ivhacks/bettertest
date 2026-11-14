@@ -5,22 +5,44 @@ use bettertest_shared::*;
 use std::collections::HashMap;
 use yew::prelude::*;
 
-/// The top of every page, laid out the same everywhere: a row of the mark, what this page is about
-/// and can do, and the account at its right end, then the links to the other pages.
+/// The top of every page, one row: the mark, what this page is about and can do, then an icon for
+/// each page and the account. On a phone the page's own things take a line below the icons.
 pub fn header(crumbs: Html, actions: Html, account: Html) -> Html {
+    let context = (crumbs != Html::default() || actions != Html::default()).then(|| {
+        html! { <span class="context">{ crumbs }<span class="actions">{ actions }</span></span> }
+    });
+    let page = |href: &'static str, name: &'static str, icon: Html| {
+        html! { <a class="icon" href={href} title={name} aria-label={name}>{ icon }</a> }
+    };
     html! {
         <header>
-            <div class="row">
-                <a class="home" href="/"><img src="/assets/mark.v1.svg" alt="bettertest" /></a>
-                <span class="context">{ crumbs }<span class="actions">{ actions }</span></span>
-                <span class="you">{ account }</span>
-            </div>
+            <a class="home" href="/"><img src="/assets/mark.v1.svg" alt="bettertest" /></a>
+            { for context }
             <nav class="links">
-                <a class="page" href="/workers">{ "Workers" }</a>
-                <a class="page" href="/settings">{ "Settings" }</a>
-                <a class="page" href="/users">{ "Users" }</a>
+                { page("/", "Pipelines", icon(html! {
+                    <><rect x="3.5" y="4.5" width="17" height="15" /><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10M15 9.5v10" /></>
+                })) }
+                { page("/workers", "Workers", icon(html! {
+                    <><rect x="3.5" y="4.5" width="17" height="6" /><rect x="3.5" y="13.5" width="17" height="6" /><path d="M7 7.5h2M7 16.5h2" /></>
+                })) }
+                { page("/settings", "Settings", icon(html! {
+                    <><path d="M3.5 7.5h17M3.5 16.5h17" /><circle cx="9" cy="7.5" r="2.5" fill="var(--background)" /><circle cx="15" cy="16.5" r="2.5" fill="var(--background)" /></>
+                })) }
+                { page("/users", "Users", icon(html! {
+                    <><circle cx="9" cy="8.5" r="3" /><path d="M3 19.5c1-3 3-4.5 6-4.5s5 1.5 6 4.5" /><path d="M15 5.8a3 3 0 0 1 0 5.4M17.5 15.3c1.6.6 2.7 2 3.3 4.2" /></>
+                })) }
+                { account }
             </nav>
         </header>
+    }
+}
+
+/// A 24px line drawing in the text's color, like the person icon.
+fn icon(shapes: Html) -> Html {
+    html! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            { shapes }
+        </svg>
     }
 }
 
@@ -107,8 +129,8 @@ pub fn label_layout(columns: &[f64], labels: &[Option<f64>], line: f64) -> Tilt 
 /// from before a task existed shows an empty cell there. A CSS grid, one track per task, each
 /// stage `stage_weight` wide; stages sit further apart than tasks. `rows` are `run_row`s.
 pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
-    // Room for a running run's cancel button beside its id.
-    let mut columns = String::from("88px");
+    // The run ids' own width: a running run is cancelled from its results or a task's page.
+    let mut columns = String::from("max-content");
     for stage in &pipeline.stages {
         let each = stage_weight(stage.tasks.len()) / stage.tasks.len().max(1) as f64;
         for _ in &stage.tasks {
@@ -166,12 +188,7 @@ fn cell_classes(layout: &GridLayout, stage: usize, task: usize) -> Classes {
     classes!((task == 0).then_some("first"), dense.then_some("dense"))
 }
 
-pub fn run_row(
-    pipeline: &Pipeline,
-    run: &Run,
-    layout: &GridLayout,
-    cancel: &Callback<String>,
-) -> Html {
+pub fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout) -> Html {
     // By (stage, task): a stage can have thousands of tasks, too many to search for each cell.
     let task_runs: HashMap<(&str, &str), &TaskRun> = run
         .stages
@@ -220,7 +237,7 @@ pub fn run_row(
     html! {
         <tr>
             <th class={classes!("run", run.state.as_str())} title={commit}>
-                { cancel_button(run, cancel) }<a href={run_href(run)}>{ run.short_id() }</a>
+                <a href={run_href(run)}>{ run.short_id() }</a>
             </th>
             { for cells }
         </tr>
@@ -308,9 +325,9 @@ pub fn results(run: &Run, views: Html) -> Html {
                 <td><span class={classes!("state", outcome(task))}>{ outcome(task) }</span></td>
                 <td>{ *stage }</td>
                 <td><a href={format!("/task/{}", task.id)}>{ &task.name }</a></td>
-                <td class="number">{ for took(task).map(duration) }</td>
-                <td class="number">{ for task.tests.map(|t| count(t.total)) }</td>
-                <td class="number">{ for task.tests.map(|t| count(t.failed)) }</td>
+                <td class="number" data-label="took">{ for took(task).map(duration) }</td>
+                <td class="number" data-label="tests">{ for task.tests.map(|t| count(t.total)) }</td>
+                <td class="number" data-label="failed">{ for task.tests.map(|t| count(t.failed)) }</td>
             </tr>
         }
     });
@@ -322,8 +339,10 @@ pub fn results(run: &Run, views: Html) -> Html {
             </p>
             { views }
             <table class="results">
-                <tr><th></th><th>{ "Stage" }</th><th>{ "Task" }</th><th>{ "Took" }</th><th>{ "Tests" }</th><th>{ "Failed" }</th></tr>
-                { for rows }
+                <thead>
+                    <tr><th></th><th>{ "Stage" }</th><th>{ "Task" }</th><th>{ "Took" }</th><th>{ "Tests" }</th><th>{ "Failed" }</th></tr>
+                </thead>
+                <tbody>{ for rows }</tbody>
             </table>
         </>
     }
@@ -390,39 +409,39 @@ pub fn task_facts(task: &TaskRun, now: u64) -> Html {
     html! { <>{ for worker }{ for runtime }</> }
 }
 
-/// What a rerun can run again, from the task page. Each button reruns that much of the run, and
+/// What a restart can run again, from the task page. Each button restarts that much of the run, and
 /// every stage after it.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Rerun {
+pub enum Restart {
     Task,
     Stage,
     Run,
 }
 
-/// The rerun buttons for a task of `run` in `stage`. A stage after one that failed never ran, so
-/// there is nothing to rerun from it: only the whole run.
-pub fn rerun_buttons(run: &Run, stage: &str, rerun: &Callback<Rerun>) -> Html {
-    let button = |what: Rerun, label: &str| {
-        let onclick = rerun.reform(move |_| what);
+/// The restart buttons for a task of `run` in `stage`. A stage after one that failed never ran, so
+/// there is nothing to restart from it: only the whole run.
+pub fn restart_buttons(run: &Run, stage: &str, restart: &Callback<Restart>) -> Html {
+    let button = |what: Restart, label: &str| {
+        let onclick = restart.reform(move |_| what);
         html! { <button {onclick}>{ label }</button> }
     };
     let from_here = run.passed_before(stage).then(|| {
         html! {
             <>
-                { button(Rerun::Task, "Rerun Task") }
-                { button(Rerun::Stage, "Rerun Stage") }
+                { button(Restart::Task, "Restart Task") }
+                { button(Restart::Stage, "Restart Stage") }
             </>
         }
     });
     html! {
         <>
             { for from_here }
-            { button(Rerun::Run, "Rerun Run") }
+            { button(Restart::Run, "Restart Run") }
         </>
     }
 }
 
-/// For a task a rerun carried over: where its result, log and artifacts come from.
+/// For a task a restart carried over: where its result, log and artifacts come from.
 pub fn carried(snapshot: &TaskSnapshot) -> Html {
     let (Some(task), Some(run)) = (snapshot.task.carried_from, snapshot.carried_from) else {
         return html! {};
@@ -431,7 +450,7 @@ pub fn carried(snapshot: &TaskSnapshot) -> Html {
     html! {
         <p class="note">
             { "Carried over from run " }<a href={format!("/task/{task}")}>{ short }</a>
-            { ". This rerun did not run it again." }
+            { ", not started again." }
         </p>
     }
 }
@@ -507,11 +526,9 @@ pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEve
 }
 
 fn person() -> Html {
-    html! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-            <circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5" />
-        </svg>
-    }
+    icon(
+        html! { <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5" /></> },
+    )
 }
 
 /// One row per user, logged out first, with a column per way of logging in. `change` gets a user's
@@ -538,8 +555,9 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
         remove,
     } = actions;
     // Each with its label, and when it expires if it does.
-    let credentials = |listed: &mut dyn Iterator<Item = (i64, &String, Option<String>)>| {
-        let listed: Vec<Html> = listed
+    let credentials =
+        |label: &'static str, listed: &mut dyn Iterator<Item = (i64, &String, Option<String>)>| {
+            let listed: Vec<Html> = listed
             .map(|(credential, label, title)| html! {
                 <span class="cert" {title}>
                     { label }
@@ -547,8 +565,8 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                 </span>
             })
             .collect();
-        html! { <td class="certs">if listed.is_empty() { { "-" } }{ for listed }</td> }
-    };
+            html! { <td class="certs" data-label={label}>if listed.is_empty() { { "-" } }{ for listed }</td> }
+        };
     let count = |n: u32| match n {
         0 => "-".to_string(),
         n => n.to_string(),
@@ -590,7 +608,7 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                     html! {
                         <tr class={classes!(u.builtin.then_some("builtin"))}>
                             <td class="name">{ &u.name }</td>
-                            <td>
+                            <td data-label="role">
                                 <select {onchange}>
                                     { for roles.iter().map(|r| html! {
                                         <option value={r.as_str()} selected={*r == u.role}>{ r.as_str() }</option>
@@ -600,10 +618,10 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                             if u.builtin {
                                 <td colspan="4" class="hint">{ "Anyone who has not logged in" }</td>
                             } else {
-                                <td>{ if u.passwords > 0 { "set" } else { "-" } }</td>
-                                { credentials(&mut u.certs.iter().map(|c| (c.id, &c.label, Some(format!("expires {}", c.expires))))) }
-                                { credentials(&mut u.keys.iter().map(|k| (k.id, &k.label, None))) }
-                                <td>{ count(u.tokens) }</td>
+                                <td data-label="password">{ if u.passwords > 0 { "set" } else { "-" } }</td>
+                                { credentials("certificate", &mut u.certs.iter().map(|c| (c.id, &c.label, Some(format!("expires {}", c.expires))))) }
+                                { credentials("passkey", &mut u.keys.iter().map(|k| (k.id, &k.label, None))) }
+                                <td data-label="api tokens">{ count(u.tokens) }</td>
                             }
                             <td class="actions">{ for actions }</td>
                         </tr>
@@ -685,7 +703,7 @@ pub fn artifacts(task: &TaskRun, artifacts: &[Artifact]) -> Html {
 pub fn workers(workers: &[Worker], now: u64, forget: &Callback<String>) -> Html {
     if workers.is_empty() {
         return html! {
-            <p class="empty">{ "No workers yet. A pipedef that names one adds it, or add one above." }</p>
+            <p class="empty">{ "No workers yet. A pipedef that names one adds it, or New Worker does." }</p>
         };
     }
     html! {
@@ -716,11 +734,11 @@ fn worker_row(worker: &Worker, now: u64, forget: &Callback<String>) -> Html {
     let about = match &worker.info {
         Some(info) => html! {
             <>
-                <td>{ &info.hostname }</td>
-                <td>{ info.arch.as_str() }</td>
-                <td>{ info.labels.join(", ") }</td>
-                <td>{ &info.version }</td>
-                <td class="busy">{ format!("{}/{}", worker.tasks.len(), info.capacity) }</td>
+                <td data-label="host">{ &info.hostname }</td>
+                <td data-label="arch">{ info.arch.as_str() }</td>
+                <td data-label="labels">{ info.labels.join(", ") }</td>
+                <td data-label="version">{ &info.version }</td>
+                <td class="busy" data-label="busy">{ format!("{}/{}", worker.tasks.len(), info.capacity) }</td>
             </>
         },
         None => {

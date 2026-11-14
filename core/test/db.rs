@@ -209,9 +209,9 @@ fn test_counts_stay_with_their_task_and_carry_over() {
         ("Test".to_string(), "quick".to_string()),
         run.stages[0].tasks[0].clone(),
     )]);
-    let rerun = db.insert_run("app", &pipeline, None, &carried).unwrap();
-    let rerun = db.run(rerun.id).unwrap().unwrap();
-    assert_eq!(rerun.stages[0].tasks[0].carried_from, Some(quick));
-    assert_eq!(rerun.stages[0].tasks[0].tests, Some(tests));
-    assert_eq!(rerun.stages[0].tasks[1].tests, None);
+    let restart = db.insert_run("app", &pipeline, None, &carried).unwrap();
+    let restart = db.run(restart.id).unwrap().unwrap();
+    assert_eq!(restart.stages[0].tasks[0].carried_from, Some(quick));
+    assert_eq!(restart.stages[0].tasks[0].tests, Some(tests));
+    assert_eq!(restart.stages[0].tasks[1].tests, None);
 }

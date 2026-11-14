@@ -71,27 +71,22 @@ a {
     text-decoration: none;
 }
 
-/* The same at every width: a row of the mark, the page's own path and buttons, and the account
-   icon at its right end, then a row of links. The mark and the icon stay put however many lines
-   the page's things wrap onto between them. */
+/* One row: the mark, the page's own path and buttons, then an icon for each page and the account.
+   The mark and the icons sit at the same place on every page. */
 header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     font-size: 19px;
     font-stretch: 70%;
 }
 
-header .row {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-}
-
-/* The mark at its 24px minimum, centred on the 44px icon beside it. */
+/* The mark at its 24px minimum. */
 header .home img {
     display: block;
     height: 30px;
-    margin: 7px 0;
 }
 
 header .context {
@@ -101,7 +96,6 @@ header .context {
     align-items: center;
     gap: 10px;
     min-width: 0;
-    min-height: 44px;
     overflow-wrap: anywhere;
 }
 
@@ -116,15 +110,16 @@ header .actions {
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    min-width: 0;
     margin-left: auto;
 }
 
 header .links {
     display: flex;
-    gap: 10px;
+    flex-shrink: 0;
+    margin-left: auto;
 }
 
+header .icon,
 header .account {
     --fill: transparent;
     display: grid;
@@ -149,21 +144,6 @@ header .menu:popover-open {
     background: var(--surface);
 }
 
-/* The url field gives up its width rather than push the button onto a line of its own. */
-header .add {
-    flex-wrap: nowrap;
-    gap: 10px;
-    min-width: 0;
-}
-
-header .add input {
-    flex: 0 1 16em;
-    min-width: 0;
-}
-
-header .page {
-    color: var(--muted);
-}
 
 /* Buttons cut their top-left and bottom-right corners at 45 degrees. Outlined ones draw the border
    as the button's background and fill an inner shape cut 0.586px less, so the border follows the
@@ -333,8 +313,10 @@ main {
     padding-left: 0;
 }
 
-/* Hidden, the names still have their size, for measuring, but take no room past their column. */
+/* Hidden, the names still have their size, for measuring, but take no room: a row of only hidden
+   names is no taller than nothing. */
 .grid .task.dense {
+    height: 0;
     overflow: hidden;
 }
 
@@ -447,7 +429,7 @@ button.cancel svg {
     opacity: 0.4;
 }
 
-/* A rerun's carried-over result: the same color, faded, so what ran again stands out. */
+/* A restart's carried-over result: the same color, faded, so what ran again stands out. */
 .cell.carried {
     opacity: 0.55;
 }
@@ -564,8 +546,8 @@ input:focus {
     border-color: var(--highlight);
 }
 
-/* Too wide for a phone, they scroll sideways on their own. Results are on the pipeline page, which
-   never scrolls sideways, so they break their words instead. */
+/* A little too wide, they scroll sideways on their own. On a phone, see below, each row is a block
+   of labelled values instead, so no text is cut off. */
 .workers,
 .users {
     display: block;
@@ -576,10 +558,6 @@ input:focus {
 .users,
 .results {
     border-collapse: collapse;
-}
-
-.results {
-    overflow-wrap: anywhere;
 }
 
 .workers th,
@@ -818,8 +796,65 @@ main > .add {
     margin-left: 6px;
 }
 
-/* Phones. */
+/* Phones. The icons fill the row, so the page's own path and buttons take a line below them. */
 @media (max-width: 640px) {
+    header {
+        flex-wrap: wrap;
+    }
+
+    header .context {
+        order: 1;
+        flex-basis: 100%;
+    }
+
+    .workers,
+    .users,
+    .results,
+    .workers tbody,
+    .users tbody,
+    .results tbody,
+    .workers td,
+    .users td,
+    .results td {
+        display: block;
+    }
+
+    .workers thead,
+    .users thead,
+    .results thead {
+        display: none;
+    }
+
+    .workers tr,
+    .users tr,
+    .results tr {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 16px;
+        padding: 8px 0;
+        border-top: 1px solid var(--line);
+    }
+
+    .workers td,
+    .users td,
+    .results td {
+        padding: 0;
+        border: none;
+    }
+
+    .workers td:empty,
+    .users td:empty,
+    .results td:empty {
+        display: none;
+    }
+
+    td[data-label]::before {
+        content: attr(data-label) " ";
+        color: var(--muted);
+        font-family: var(--font);
+    }
+
     /* The red square stays 18px, drawn by ::before. The clear 44px button around it is what a
        finger hits, in no more room than the square takes. Rows sit further apart so that pad
        stays off the next run's id. */

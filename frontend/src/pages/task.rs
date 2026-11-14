@@ -1,4 +1,4 @@
-// The task page: one task of one run, its live log, artifacts and rerun buttons.
+// The task page: one task of one run, its live log, artifacts and restart buttons.
 
 use crate::{PageProps, account, cancel_run, fetch, follow, monotonic, view};
 use bettertest_shared::*;
@@ -22,7 +22,7 @@ pub enum TaskMsg {
     Live(Box<Live<TaskSnapshot>>),
     Notice(String),
     Tick,
-    Rerun(view::Rerun),
+    Restart(view::Restart),
     Cancel(String),
 }
 
@@ -54,7 +54,7 @@ impl Component for TaskPage {
                 cancel_run(run, ctx.link().callback(TaskMsg::Notice));
                 return false;
             }
-            TaskMsg::Rerun(what) => {
+            TaskMsg::Restart(what) => {
                 let Some(snapshot) = &self.snapshot else {
                     return false;
                 };
@@ -64,16 +64,16 @@ impl Component for TaskPage {
                     snapshot.task.name.clone(),
                 );
                 let url = match what {
-                    view::Rerun::Task => format!("/api/rerun/{run}/{stage}/{task}"),
-                    view::Rerun::Stage => format!("/api/rerun/{run}/{stage}"),
-                    view::Rerun::Run => format!("/api/rerun/{run}"),
+                    view::Restart::Task => format!("/api/restart/{run}/{stage}/{task}"),
+                    view::Restart::Stage => format!("/api/restart/{run}/{stage}"),
+                    view::Restart::Run => format!("/api/restart/{run}"),
                 };
                 let link = ctx.link().clone();
                 // Off to this task in the new run, to watch it run again.
                 spawn_local(async move {
                     match fetch::<Run>(Request::post(&url).build()).await {
-                        Ok(rerun) => {
-                            let same = rerun
+                        Ok(restart) => {
+                            let same = restart
                                 .stages
                                 .iter()
                                 .filter(|s| s.name == stage)
@@ -81,12 +81,12 @@ impl Component for TaskPage {
                                 .find(|t| t.name == task);
                             let page = match same {
                                 Some(t) => format!("/task/{}", t.id),
-                                None => format!("/pipeline/{}", rerun.pipeline),
+                                None => format!("/pipeline/{}", restart.pipeline),
                             };
                             crate::navigate(&page);
                         }
                         Err(e) => {
-                            link.send_message(TaskMsg::Notice(format!("could not rerun: {e}")))
+                            link.send_message(TaskMsg::Notice(format!("could not restart: {e}")))
                         }
                     }
                 });
@@ -122,16 +122,16 @@ impl Component for TaskPage {
         let now = boss_then + (monotonic() - then).max(0.0) as u64;
         let (crumbs, right, carried, artifacts, lines) = match &self.snapshot {
             Some(snapshot) => {
-                // Only a run that is over can be rerun.
-                let rerun = match snapshot.run.state {
+                // Only a run that is over can be restarted.
+                let restart = match snapshot.run.state {
                     RunState::Running => html! {},
-                    _ => view::rerun_buttons(
+                    _ => view::restart_buttons(
                         &snapshot.run,
                         &snapshot.stage,
-                        &ctx.link().callback(TaskMsg::Rerun),
+                        &ctx.link().callback(TaskMsg::Restart),
                     ),
                 };
-                let right = html! { <>{ view::task_facts(&snapshot.task, now) }{ rerun }</> };
+                let right = html! { <>{ view::task_facts(&snapshot.task, now) }{ restart }</> };
                 (
                     view::task_crumbs(snapshot, &ctx.link().callback(TaskMsg::Cancel)),
                     right,
