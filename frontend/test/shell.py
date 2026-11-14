@@ -922,6 +922,8 @@ def main():
             try:
                 for test in TESTS:
                     run(test, browser, base)
+                # Plotly draws in WebKit as well: iPhone Safari is a browser the results page has.
+                run(test_views_draw_and_only_they_load_plotly, webkit, base)
                 iphone = playwright.devices["iPhone 15"]
                 run(test_webkit_starts_the_app_over_tls, webkit, tls_base, iphone)
                 both = {"chromium": (browser, {}), "webkit": (webkit, iphone)}
