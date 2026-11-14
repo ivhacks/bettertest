@@ -604,9 +604,19 @@ fn le<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], String> {
     slice.ok_or_else(|| "truncated partition table".to_string())
 }
 
+/// The disk image tools, qemu-img and e2fsprogs. Tests run them in a container instead, so they
+/// need nothing from the machine but docker.
+#[cfg(not(test))]
+fn command(program: &str) -> std::process::Command {
+    std::process::Command::new(program)
+}
+
+#[cfg(test)]
+use tests::command;
+
 /// Runs `program` to its end. Ok is its stdout; Err says what went wrong.
 fn tool(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new(program)
+    let output = command(program)
         .args(args)
         .output()
         .map_err(|e| format!("could not run {program}: {e}"))?;
@@ -621,11 +631,11 @@ fn tool(program: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn debugfs(spec: &str, request: &str, write: bool) -> Result<String, String> {
-    let mut command = std::process::Command::new("debugfs");
+    let mut debugfs = command("debugfs");
     if write {
-        command.arg("-w");
+        debugfs.arg("-w");
     }
-    let output = command
+    let output = debugfs
         .args(["-R", request, spec])
         .output()
         .map_err(|e| format!("could not run debugfs (e2fsprogs): {e}"))?;

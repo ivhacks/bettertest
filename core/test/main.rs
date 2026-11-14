@@ -4,6 +4,23 @@
 use super::*;
 use clap::Parser;
 
+/// Docker is the one thing bettertest's tests need from the machine. A test that uses it calls
+/// this first, so that without it the test fails saying so, not on whatever came back instead.
+pub fn require_docker() {
+    let info = std::process::Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output();
+    let why = match info {
+        Ok(out) if out.status.success() => return,
+        Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        Err(e) => format!("could not run docker: {e}"),
+    };
+    panic!(
+        "this test needs docker, the one thing the tests need from the machine: install it and \
+         start its daemon, as the cloud VM's start script does. docker info said: {why}"
+    );
+}
+
 fn parse(args: &[&str]) -> Command {
     Args::try_parse_from(args).unwrap().command
 }

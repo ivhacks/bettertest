@@ -212,16 +212,20 @@ else:
 }
 
 async fn start_container(client: &reqwest::Client, url: &str, image: &str) -> String {
-    let started: Started = client
+    crate::tests::require_docker();
+    let response = client
         .post(format!("{url}/start-container"))
         .json(&serde_json::json!({"image": image}))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
-    started.id
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert!(
+        status.is_success(),
+        "start-container answered {status}: {body}"
+    );
+    serde_json::from_str::<Started>(&body).unwrap().id
 }
 
 /// The SSE stream of task C.commands of `pipedef`, run in container `id`, up to its exit.
@@ -366,6 +370,7 @@ class C(Stage):
 
 #[tokio::test]
 async fn deleting_a_container_deletes_the_volumes_its_image_declares() {
+    crate::tests::require_docker();
     let image = "bettertest-test-volume";
     let mut build = std::process::Command::new("docker")
         .args(["build", "--quiet", "--tag", image, "-"])

@@ -431,9 +431,11 @@ Open `http://boss-host:7357`. History lives in `/var/tmp/bettertest` and survive
 ./release.sh 0.2.0                           # both archs, every package, into dist/0.2.0/
 target/x86_64-unknown-linux-musl/release/bettertest unified pipedefs   # http://[::1]:7357
 cd frontend && trunk serve                   # :8080, proxies /api/ to :7357, hot reload
-cargo test                                   # core (needs docker) + frontend (exact HTML; the shell in Chromium and WebKit, in Playwright's image)
+cargo test                                   # core + frontend (exact HTML; the shell in Chromium and WebKit); needs docker
 ./prettify.sh                                # clippy --fix, fmt, one blank line between fns, ruff, ty
 ```
+
+- **Tests need nothing from the machine but docker** (and the build tools below). A test failure is never "environmental": one that only happens on a fresh machine is a bug to fix. A test that uses docker calls `require_docker()` first, so without it the test fails saying docker is missing. What else a test needs comes in an image: the vm test runs qemu-img and e2fsprogs in `bettertest-test-disk-tools` (`vm.rs`'s `command()` is the test seam), and the frontend's shell test drives Chromium and WebKit in `bettertest-test-playwright`, built on Playwright's own image; docker's cache makes both instant after the first build. Cloud agent VMs run `.cursor/install.sh` (docker, rust, its targets, trunk) once per environment build and `.cursor/start.sh` (dockerd, the socket open to the agent's user) on every boot.
 
 - Core embeds `frontend/dist` at compile time, with gzip copies `core/build.rs` makes: rebuild the frontend (or run `build.sh`) before `cargo run`, or the binary serves a stale UI. Brotli was measured and left out: 13% fewer bytes on a first HTTPS visit, no faster to a usable page on Fast 3G (with or without 4x CPU), never offered by browsers over plain HTTP, and its copies would add ~166 KB to the binary.
 - `uv sync` at the repo root installs `pylib` editable so IDEs type-check pipedefs.
