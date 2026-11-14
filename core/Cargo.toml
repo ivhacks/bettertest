@@ -29,12 +29,8 @@ tokio-util = { version = "0.7", features = ["io"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 webauthn-rs = { version = "0.6", features = ["conditional-ui"] }
 
-[dev-dependencies]
-bettertest-shared = { path = "../shared" }
-serde_json = "1"
-
 # Runs the bettertest binary. Cargo only sets CARGO_BIN_EXE for an integration test, so this is
-# one, living in test/ beside the unit tests rather than in tests/.
+# one, living in test/ beside the unit tests rather than in tests/. It uses the dependencies above.
 [[test]]
 name = "unified"
 path = "test/unified.rs"
