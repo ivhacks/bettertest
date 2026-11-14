@@ -55,6 +55,10 @@ SYEVE_BODY = os.urandom(20_000)
 MEASUREMENTS = {}
 # Over TLS, whether each request came on a resumed session.
 RESUMED = []
+# What browsers that could not start the app reported to /api/startup-error.
+STARTUP_ERRORS = []
+# While set, the wasm is served corrupt, so the app cannot start.
+BREAK_WASM = threading.Event()
 
 
 def accepts_gzip(header):
@@ -193,7 +197,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
+        body = self.rfile.read(length)
+        if urlparse(self.path).path == "/api/startup-error":
+            STARTUP_ERRORS.append(body.decode("utf-8", "replace"))
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "2")
@@ -288,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _file(self, rel):
         data = (DIST / rel).read_bytes()
+        if rel.endswith(".wasm") and BREAK_WASM.is_set():
+            data = b"not wasm" + data
         accept = self.headers.get("Accept-Encoding", "")
         encoding = None
         if compressible(rel) and accepts_gzip(accept):
@@ -512,12 +520,13 @@ def test_repeat_visit_uses_the_cache_for_the_shell(browser, base):
     page = Page(browser, base)
     try:
         page.goto_app()
-        # The mark is an SVG image. Let it finish so the reload is a cache check, not a race
-        # with the first fetch.
+        # The mark is an SVG image, and the fonts load once text uses them. Let them finish so the
+        # reload is a cache check, not a race with the first fetch.
         page.page.wait_for_function(
             """() => {
                 const images = [...document.images];
-                return images.length > 0 && images.every(img => img.complete);
+                return images.length > 0 && images.every(img => img.complete)
+                    && document.fonts.status === "loaded";
             }"""
         )
         page.page.reload(wait_until="domcontentloaded")
@@ -681,6 +690,58 @@ def test_webkit_starts_the_app_over_tls(webkit, tls_base, iphone):
         context.close()
 
 
+# Every animation frame until the app starts, as the page would paint it.
+RECORD_FRAMES = """
+window.__btFrames = [];
+const sample = () => {
+    if (document.body?.hasAttribute("data-started")) return;
+    if (document.body) window.__btFrames.push(document.body.innerText);
+    requestAnimationFrame(sample);
+};
+requestAnimationFrame(sample);
+"""
+
+
+def test_nothing_is_painted_before_the_app(browsers, base):
+    """The first visible frame is the page itself: no wordmark-only shell before the app."""
+    for name, (browser, device) in browsers.items():
+        context = browser.new_context(**device)
+        try:
+            context.add_init_script(RECORD_FRAMES)
+            page = context.new_page()
+            page.goto(base + "/pipeline/app", wait_until="domcontentloaded")
+            page.wait_for_selector(f"a[href='/task/{TASK}']", timeout=30_000)
+            frames = page.evaluate("window.__btFrames")
+            assert frames, f"{name}: no frame was sampled before the app started"
+            painted = [text for text in frames if text.strip()]
+            assert not painted, f"{name}: painted before the app started: {painted[:3]}"
+        finally:
+            context.close()
+
+
+def test_a_browser_that_cannot_start_the_app_says_why(browsers, base):
+    """Rather than a blank page: the reason, on the page and to the boss."""
+    BREAK_WASM.set()
+    try:
+        for name, (browser, device) in browsers.items():
+            del STARTUP_ERRORS[:]
+            context = browser.new_context(**device)
+            try:
+                page = context.new_page()
+                page.goto(base + "/pipeline/app", wait_until="domcontentloaded")
+                page.wait_for_selector("body[data-failed]", timeout=30_000)
+                shown = page.inner_text("body")
+                assert shown.startswith("bettertest could not start: "), f"{name}: {shown!r}"
+                page.wait_for_timeout(500)
+                assert STARTUP_ERRORS, f"{name}: the boss heard nothing"
+                assert STARTUP_ERRORS[0] in shown, f"{name}: {STARTUP_ERRORS[0]!r} vs {shown!r}"
+                MEASUREMENTS[f"{name}_startup_error"] = STARTUP_ERRORS[0]
+            finally:
+                context.close()
+    finally:
+        BREAK_WASM.clear()
+
+
 TESTS = [
     test_in_app_navigation_does_not_redownload_the_shell,
     test_back_and_forward_restore_the_page_without_a_shell_reload,
@@ -720,6 +781,9 @@ def main():
                     run(test, browser, base)
                 iphone = playwright.devices["iPhone 15"]
                 run(test_webkit_starts_the_app_over_tls, webkit, tls_base, iphone)
+                both = {"chromium": (browser, {}), "webkit": (webkit, iphone)}
+                run(test_nothing_is_painted_before_the_app, both, base)
+                run(test_a_browser_that_cannot_start_the_app_says_why, both, base)
             finally:
                 browser.close()
                 webkit.close()

@@ -14,6 +14,22 @@
   <link rel="icon" href="/assets/favicon-32.v1.png" type="image/png" sizes="32x32" />
   <link rel="preload" href="/assets/archivo.v1.woff2" as="font" type="font/woff2" crossorigin />
   <link data-trunk rel="css" href="style.css" />
+  <!-- The page stays blank until the app draws it. A browser that cannot start the app says why,
+       on the page and in the boss's log, instead of staying blank. -->
+  <script>
+    addEventListener("error", (e) => failed(`${e.message} at ${e.filename}:${e.lineno}`));
+    addEventListener("unhandledrejection", (e) => failed(String(e.reason?.stack || e.reason)));
+    setTimeout(() => {
+      const fetched = performance.getEntriesByType("resource").map((r) => r.name.split("/").pop());
+      failed(`not started after 20 s; fetched: ${fetched.join(" ")}`);
+    }, 20000);
+    function failed(why) {
+      if (document.body.hasAttribute("data-started") || document.body.hasAttribute("data-failed")) return;
+      document.body.setAttribute("data-failed", "");
+      document.body.textContent = `bettertest could not start: ${why}`;
+      navigator.sendBeacon("/api/startup-error", why);
+    }
+  </script>
 </head>
-<body>bettertest</body>
+<body></body>
 </html>

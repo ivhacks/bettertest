@@ -197,6 +197,7 @@ pub async fn entry(
         .route("/api/rerun/{*rerun}", post(rerun))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/me", get(get_me))
+        .route("/api/startup-error", post(startup_error))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/users", get(get_users))
@@ -423,6 +424,15 @@ fn valid_pipeline_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// A browser that could not start the web ui says why, and the boss logs it: the page alone would
+/// show it only to whoever is holding that browser.
+async fn startup_error(headers: HeaderMap, body: String) {
+    let agent = headers.get(header::USER_AGENT);
+    let agent = agent.and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let said: String = body.chars().take(2000).collect();
+    println!("a browser could not start the web ui ({agent}): {said:?}");
 }
 
 /// There is no landing page: `/` is the first pipeline's page. It is served here rather than
