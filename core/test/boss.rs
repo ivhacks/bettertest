@@ -3,7 +3,6 @@
 
 use super::*;
 use std::collections::BTreeSet;
-use std::io::Read;
 
 fn task(name: &str) -> Task {
     Task {
@@ -450,60 +449,95 @@ fn labels_one_typo_away_are_named() {
     );
 }
 
-#[test]
-fn shell_bytes_are_gzipped_and_the_document_is_not_cached_forever() {
+// Stand-ins for frontend/dist and the gzip copies build.rs makes of it. Each says which it is.
+#[derive(Embed)]
+#[folder = "test/web/"]
+struct WebFixture;
+
+/// The headers that matter and the body of serving `path` to a browser that sends `accept`.
+async fn serve(path: &str, accept: Option<&str>) -> (StatusCode, BTreeMap<String, String>, String) {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::ACCEPT_ENCODING,
-        "gzip, deflate, br".parse().unwrap(),
-    );
-    let css = b"body { color: black; background: #000; }\n".repeat(80);
-    let served = serve_bytes(&headers, "app-9f3c.css", "text/css", &css);
-    assert_eq!(served.status, StatusCode::OK);
-    assert_eq!(served.cache, "public, max-age=31536000, immutable");
-    assert_eq!(served.encoding.as_deref(), Some("gzip"));
-    assert!(served.vary);
-    assert!(served.body.len() < css.len());
-    let mut decoded = Vec::new();
-    flate2::read::GzDecoder::new(served.body.as_slice())
-        .read_to_end(&mut decoded)
+    if let Some(accept) = accept {
+        headers.insert(header::ACCEPT_ENCODING, accept.parse().unwrap());
+    }
+    let response = embedded::<WebFixture>(&headers, path);
+    let status = response.status();
+    let mut seen = BTreeMap::new();
+    for name in ["content-type", "content-encoding", "cache-control", "vary"] {
+        if let Some(value) = response.headers().get(name) {
+            seen.insert(name.to_string(), value.to_str().unwrap().to_string());
+        }
+    }
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
         .unwrap();
-    assert_eq!(decoded, css);
-    // The gzip is remembered: a second request is the same bytes, not a second compression.
-    let again = serve_bytes(&headers, "app-9f3c.css", "text/css", &css);
-    assert_eq!(again.body, served.body);
+    (status, seen, String::from_utf8(body.to_vec()).unwrap())
+}
 
-    let page = b"<!DOCTYPE html><html><body>bettertest</body></html>";
-    let document = serve_bytes(&headers, "index.html", "text/html", page);
-    assert_eq!(document.cache, "no-cache");
-    // Smaller than a gzip header, so it stays as it is. The first burst is the point, and a
-    // document this small already fits.
-    assert_eq!(document.encoding, None);
-    assert_eq!(document.body, page);
+fn headers(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
 
-    let png = vec![0_u8; 4000];
-    let image = serve_bytes(&headers, "favicon-32.v1.png", "image/png", &png);
-    assert_eq!(image.encoding, None);
-    assert!(!image.vary);
-    assert_eq!(image.body, png);
+#[tokio::test]
+async fn shell_files_are_gzipped_when_the_browser_takes_gzip() {
+    let forever = "public, max-age=31536000, immutable";
+    let js = |encoding: Option<&str>| {
+        let mut pairs = vec![
+            ("content-type", "text/javascript"),
+            ("cache-control", forever),
+            ("vary", "accept-encoding"),
+        ];
+        pairs.extend(encoding.map(|e| ("content-encoding", e)));
+        headers(&pairs)
+    };
+    let ok = StatusCode::OK;
+    let gzip = (ok, js(Some("gzip")), "app.js in gzip\n".to_string());
+    let plain = (ok, js(None), "app.js as it is\n".to_string());
+    // Chrome over HTTPS, then over plain HTTP.
+    assert_eq!(serve("app.js", Some("gzip, deflate, br, zstd")).await, gzip);
+    assert_eq!(serve("app.js", Some("gzip, deflate")).await, gzip);
+    assert_eq!(serve("app.js", Some("br, GZip;q=0.5")).await, gzip);
+    assert_eq!(serve("app.js", Some("br, gzip; Q=0")).await, plain);
+    assert_eq!(serve("app.js", Some("br, identity")).await, plain);
+    assert_eq!(serve("app.js", None).await, plain);
 
-    // Gzip would shrink this, and Chrome would then fetch it again anyway.
-    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><g></g></svg>"#.repeat(30);
-    let mark = serve_bytes(&headers, "mark.v1.svg", "image/svg+xml", &svg);
-    assert_eq!(mark.encoding, None);
-    assert_eq!(mark.body, svg);
+    // No compressed copy to choose from: as it is, with nothing to vary on.
+    let svg = headers(&[
+        ("content-type", "image/svg+xml"),
+        ("cache-control", forever),
+    ]);
+    let mark = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n".to_string();
+    assert_eq!(serve("mark.svg", Some("gzip")).await, (ok, svg, mark));
 
-    headers.insert(
-        header::ACCEPT_ENCODING,
-        "gzip;q=0, identity".parse().unwrap(),
+    // The document names the hashed files, so the browser checks it every time.
+    let document = headers(&[
+        ("content-type", "text/html"),
+        ("content-encoding", "gzip"),
+        ("cache-control", "no-cache"),
+        ("vary", "accept-encoding"),
+    ]);
+    let html = "index.html in gzip\n".to_string();
+    assert_eq!(
+        serve("index.html", Some("gzip")).await,
+        (ok, document, html)
     );
-    let refused = serve_bytes(&headers, "app-9f3c.css", "text/css", &css);
-    assert_eq!(refused.encoding, None);
-    assert_eq!(refused.body, css);
 
-    headers.insert(header::ACCEPT_ENCODING, "br".parse().unwrap());
-    let brotli_only = serve_bytes(&headers, "app.wasm", "application/wasm", &css);
-    assert_eq!(brotli_only.encoding, None);
+    let text = headers(&[("content-type", "text/plain; charset=utf-8")]);
+    let missing = serve("app.js.map", Some("gzip")).await;
+    assert_eq!(missing, (StatusCode::NOT_FOUND, text, "not found".into()));
+}
+
+#[test]
+fn home_names_the_first_pipeline_as_canonical() {
+    let index = b"<html><head><title>bettertest</title></head><body>bettertest</body></html>";
+    assert_eq!(
+        with_canonical(index, "app"),
+        "<html><head><title>bettertest</title>\
+         <link rel=\"canonical\" href=\"/pipeline/app\"></head><body>bettertest</body></html>"
+    );
 }
 
 #[test]

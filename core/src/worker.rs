@@ -16,6 +16,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
     routing::{delete, get, post},
+    serve::ListenerExt,
 };
 use bettertest_shared::{Arch, WorkerInfo, valid_artifact_name};
 use serde::{Deserialize, Serialize};
@@ -194,7 +195,7 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
     let listener = TcpListener::bind(("::", port)).await?;
     // start-task learns the boss's address from the connection it arrives on.
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service).await?;
+    axum::serve(listener.tap_io(crate::no_delay), service).await?;
     Ok(())
 }
 
