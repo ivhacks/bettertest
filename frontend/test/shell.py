@@ -14,6 +14,8 @@ and the document check does not fail for them. What it does demand:
 - a repeat load takes large assets from cache instead of transferring them again
 - a large text/wasm/css/js response is actually compressed
 - the same large asset is not fetched twice
+- WebKit, as an iPhone, starts the app over TLS as the boss speaks it, on a first visit and on a
+  second whose connections resume the TLS session
 
 The server is local and speaks the same cache and gzip rules as the boss's embedded files.
 It never talks to a live bettertest. Syeve is not in the product yet, so this file serves a
@@ -23,8 +25,10 @@ stand-in payload and the size test requests it after the frame is up.
 import gzip
 import json
 import os
+import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +53,8 @@ SYEVE_BODY = os.urandom(20_000)
 
 # Filled by the size test and printed at the end, so the run leaves real numbers behind.
 MEASUREMENTS = {}
+# Over TLS, whether each request came on a resumed session.
+RESUMED = []
 
 
 def accepts_gzip(header):
@@ -196,6 +202,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"{}")
 
     def do_GET(self):
+        if isinstance(self.connection, ssl.SSLSocket):
+            RESUMED.append(self.connection.session_reused)
         path = urlparse(self.path).path
         if path == "/api/me":
             self._json(b'{"name":"logged out","role":"admin","logged_in":false}')
@@ -310,19 +318,40 @@ def dist_stale():
     return any(path.stat().st_mtime > built for path in watched if path.exists())
 
 
-def ensure_dist():
+def build_dist():
     if dist_stale():
         subprocess.check_call(["trunk", "build", "--release"], cwd=ROOT)
     if not (DIST / "index.html").is_file():
         raise SystemExit("trunk build did not produce dist/index.html")
 
 
-def start_server():
+def start_server(tls=False):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    if tls:
+        server.socket = tls_context().wrap_socket(
+            server.socket, server_side=True, do_handshake_on_connect=False
+        )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
-    return server, f"http://{host}:{port}"
+    return server, f"{'https' if tls else 'http'}://{host}:{port}"
+
+
+def tls_context():
+    """TLS as the boss speaks it: HTTP/1.1, a client certificate asked for without insisting,
+    and sessions that resume (Python sets the session id context OpenSSL needs for that)."""
+    folder = Path(tempfile.mkdtemp())
+    cert, key = folder / "boss.crt", folder / "boss.key"
+    subprocess.check_call(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"]
+        + ["-nodes", "-days", "1", "-subj", "/CN=localhost", "-keyout", key, "-out", cert],
+        stderr=subprocess.DEVNULL,
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    context.load_verify_locations(cert)
+    context.verify_mode = ssl.CERT_OPTIONAL
+    return context
 
 
 def shell_path(url):
@@ -634,6 +663,24 @@ def test_transfer_sizes_stay_within_the_first_burst_rule(browser, base):
         page.close()
 
 
+def test_webkit_starts_the_app_over_tls(webkit, tls_base, iphone):
+    """iPhone Safari once got the page from the boss but never started the app (#15, when the
+    boss spoke HTTP/2). WebKit as an iPhone, over TLS as the boss speaks it: the app starts on a
+    first visit, and again on a second one in a new tab whose connections resume the session."""
+    context = webkit.new_context(ignore_https_errors=True, **iphone)
+    try:
+        for visit in ("first", "second"):
+            del RESUMED[:]
+            page = context.new_page()
+            page.goto(tls_base + "/pipeline/app", wait_until="domcontentloaded")
+            page.wait_for_selector(f"a[href='/task/{TASK}']", timeout=30_000)
+            MEASUREMENTS[f"webkit_tls_{visit}_visit_resumed"] = RESUMED[:]
+            page.close()
+        assert any(RESUMED), f"the second visit resumed no TLS session: {RESUMED}"
+    finally:
+        context.close()
+
+
 TESTS = [
     test_in_app_navigation_does_not_redownload_the_shell,
     test_back_and_forward_restore_the_page_without_a_shell_reload,
@@ -643,31 +690,42 @@ TESTS = [
 
 
 def main():
-    ensure_dist()
+    # The browser side runs in Playwright's image, which has no trunk.
+    if dist_stale():
+        raise SystemExit("frontend/dist is missing or stale: run python3 test/shell.py build first")
     server, base = start_server()
+    tls_server, tls_base = start_server(tls=True)
     from playwright.sync_api import sync_playwright
 
     failed = 0
+
+    def run(test, *args):
+        nonlocal failed
+        try:
+            test(*args)
+            print(f"PASS {test.__name__}")
+        except Exception:
+            failed += 1
+            print(f"FAIL {test.__name__}")
+            traceback.print_exc()
+
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
-                channel="chrome",
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
+            webkit = playwright.webkit.launch()
             try:
                 for test in TESTS:
-                    name = test.__name__
-                    try:
-                        test(browser, base)
-                        print(f"PASS {name}")
-                    except Exception:
-                        failed += 1
-                        print(f"FAIL {name}")
-                        traceback.print_exc()
+                    run(test, browser, base)
+                iphone = playwright.devices["iPhone 15"]
+                run(test_webkit_starts_the_app_over_tls, webkit, tls_base, iphone)
             finally:
                 browser.close()
+                webkit.close()
     finally:
         server.shutdown()
+        tls_server.shutdown()
     if MEASUREMENTS:
         print(
             "content-bytes",
@@ -687,5 +745,7 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
-    main()
+    if sys.argv[1:] == ["build"]:
+        build_dist()
+    else:
+        main()

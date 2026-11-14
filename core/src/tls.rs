@@ -18,7 +18,7 @@ use openssl::{
     nid::Nid,
     pkcs12::Pkcs12,
     pkey::PKey,
-    ssl::{self, AlpnError, Ssl, SslAcceptor, SslFiletype, SslMethod, SslVerifyMode},
+    ssl::{Ssl, SslAcceptor, SslFiletype, SslMethod, SslVerifyMode},
     x509::{
         X509, X509NameBuilder,
         extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
@@ -75,10 +75,8 @@ pub fn load(cert: &Path, key: &Path) -> Result<Tls, String> {
     acceptor
         .set_session_id_context(b"bettertest")
         .map_err(|e| format!("could not set up TLS: {e}"))?;
-    // HTTP/2 for browsers that speak it: one connection carries the page, its files and its streams.
-    acceptor.set_alpn_select_callback(|_, offered| {
-        ssl::select_next_proto(b"\x02h2\x08http/1.1", offered).ok_or(AlpnError::NOACK)
-    });
+    // No ALPN, so no HTTP/2: iPhone Safari got the page over it but never started the app, while
+    // over HTTP/1.1, with the same certificate request, it does.
     let acceptor = acceptor.build();
     let Some(leaf) = acceptor.context().certificate() else {
         return Err(format!("{} is not a PEM certificate", cert.display()));
@@ -277,3 +275,7 @@ impl Listener for HttpsListener {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../test/tls.rs"]
+mod tests;
