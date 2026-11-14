@@ -168,6 +168,55 @@ def snapshot(body):
     return json.dumps({"Snapshot": body}).encode()
 
 
+def log_table(x, name, lines):
+    return {
+        "type": "table",
+        "domain": {"x": x},
+        "header": {"values": [name]},
+        "cells": {"values": [[f"{name} line {i}" for i in range(lines)]], "height": 22},
+    }
+
+
+# What /api/run/<id>/views says for RUN: one of each kind of view the demo pipedef has.
+VIEWS = json.dumps(
+    [
+        {
+            "name": "tests_by_task",
+            "wide": False,
+            "figure": {
+                "data": [{"type": "pie", "labels": ["unit", "smoke", "e2e"], "values": [12, 1, 3]}]
+            },
+        },
+        {
+            "name": "seconds_per_task",
+            "wide": False,
+            "figure": {"data": [{"type": "bar", "x": ["unit", "e2e"], "y": [0.6, 4.0]}]},
+        },
+        {
+            "name": "tests_passed",
+            "wide": False,
+            "figure": {
+                "data": [
+                    {"type": "indicator", "mode": "number", "value": 16, "number": {"suffix": " / 16"}}
+                ]
+            },
+        },
+        {
+            "name": "logs",
+            "wide": True,
+            "figure": {
+                "data": [log_table([0, 0.49], "unit", 60), log_table([0.51, 1], "e2e", 60)],
+                "layout": {"height": 300},
+            },
+        },
+        {"name": "report", "wide": True, "page": f"/api/run/{RUN}/artifact/Test/e2e/report.html"},
+    ]
+).encode()
+# A report draws itself with a script, which the sandbox lets run in an origin of its own.
+REPORT = b"""<!DOCTYPE html><html><body><script>
+document.body.innerHTML = '<h1 id="drawn">report drawn by its script in origin ' + origin + '</h1>';
+</script></body></html>"""
+
 PIPELINES = {
     "app": snapshot(pipeline_body("app", "unit", TASK)),
     "docs": snapshot(pipeline_body("docs", "spell", OTHER)),
@@ -223,6 +272,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/workers/events":
             self._sse(WORKERS)
+            return
+        if path == f"/api/run/{RUN}/views":
+            self._json(VIEWS)
+            return
+        if path == f"/api/run/{RUN}/artifact/Test/e2e/report.html":
+            # As the boss serves an HTML artifact.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Security-Policy", "sandbox allow-scripts")
+            self.send_header("Content-Length", str(len(REPORT)))
+            self.end_headers()
+            self.wfile.write(REPORT)
             return
         if path == SYEVE_PATH:
             # Background AI payload. Immutable like any other big file, and not the document.
@@ -634,7 +695,90 @@ def test_transfer_sizes_stay_within_the_first_burst_rule(browser, base):
         page.close()
 
 
+def plotly_fetches(page):
+    return [e for e in page.resources() if e["name"].endswith("/assets/plotly.v1.min.js")]
+
+
+def first_visible_cells(page):
+    """The topmost row each log table shows below its header, which scrolling moves. A table's
+    own box takes in the rows clipped out of sight, so the figure's box is the window."""
+    return page.page.evaluate(
+        """() => {
+            const box = document.querySelector('figure.view.wide .figure').getBoundingClientRect();
+            return [...document.querySelectorAll('.table')].map(table => {
+                const rows = [...table.querySelectorAll('.cell-text')]
+                    .map(cell => [cell.getBoundingClientRect(), cell.textContent])
+                    .filter(([r, text]) => text.includes(' line ') && r.top > box.top + 40 && r.bottom < box.bottom)
+                    .sort((a, b) => a[0].top - b[0].top);
+                return rows.length ? rows[0][1] : null;
+            });
+        }"""
+    )
+
+
+def test_views_draw_and_only_they_load_plotly(browser, base):
+    page = Page(browser, base)
+    try:
+        page.goto_app()
+        page.page.wait_for_timeout(300)
+        assert not plotly_fetches(page), "the run grid, which has no views, loaded plotly"
+
+        # The run's id opens its results, in the app: the views come with them.
+        page.resources_since_clear()
+        page.page.locator(f"a[href='/pipeline/app?run={RUN}']").first.click()
+        page.page.wait_for_selector(".pielayer .slice path.surface")
+        page.page.wait_for_selector(".barlayer .point path")
+        page.page.wait_for_selector(".indicatorlayer text.number")
+        page.page.wait_for_selector(".table .cell-text")
+        assert page.shell_alive(), "opening the results reloaded the document"
+        drawn = page.page.evaluate(
+            """() => ({
+                captions: [...document.querySelectorAll('figure.view figcaption')].map(c => c.textContent),
+                slices: document.querySelectorAll('.pielayer .slice path.surface').length,
+                bars: document.querySelectorAll('.barlayer .point path').length,
+                number: document.querySelector('.indicatorlayer text.number').textContent,
+                tables: document.querySelectorAll('.table').length,
+                svgs: document.querySelectorAll('figure.view .figure .main-svg').length,
+            })"""
+        )
+        MEASUREMENTS["views"] = drawn
+        assert drawn["captions"] == [
+            "tests by task",
+            "seconds per task",
+            "tests passed",
+            "logs",
+            "report",
+        ], drawn
+        assert drawn["slices"] == 3 and drawn["bars"] == 2 and drawn["tables"] == 2, drawn
+        assert drawn["number"] == "16 / 16", drawn
+        assert drawn["svgs"] >= 4, drawn
+
+        # The report's own script ran, sandboxed: its origin is opaque, not the boss's.
+        frame = page.page.frame_locator("figure.view iframe")
+        report = frame.locator("#drawn").inner_text()
+        assert report == "report drawn by its script in origin null", report
+
+        # Each log scrolls by itself.
+        assert first_visible_cells(page) == ["unit line 0", "e2e line 0"]
+        box = page.page.locator("figure.view.wide .figure").first.bounding_box()
+        page.page.mouse.move(box["x"] + box["width"] / 4, box["y"] + box["height"] / 2)
+        page.page.mouse.wheel(0, 400)
+        page.page.wait_for_timeout(300)
+        left, right = first_visible_cells(page)
+        assert left != "unit line 0" and right == "e2e line 0", (left, right)
+
+        fetched = plotly_fetches(page)
+        assert len(fetched) == 1, f"plotly fetched {len(fetched)} times: {fetched}"
+        headers = [r.headers for r in page.responses if r.url.endswith("/plotly.v1.min.js")][-1]
+        assert headers.get("content-encoding") == "gzip", headers
+        assert "immutable" in headers.get("cache-control", ""), headers
+        MEASUREMENTS["plotly"] = fetched[0]
+    finally:
+        page.close()
+
+
 TESTS = [
+    test_views_draw_and_only_they_load_plotly,
     test_in_app_navigation_does_not_redownload_the_shell,
     test_back_and_forward_restore_the_page_without_a_shell_reload,
     test_repeat_visit_uses_the_cache_for_the_shell,

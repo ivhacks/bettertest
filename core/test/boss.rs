@@ -719,3 +719,44 @@ async fn test_counts_a_task_reports_are_kept_and_sent_live() {
     assert_eq!(kept.stages[0].tasks[0].tests, Some(tests));
     assert_eq!(kept.stages[0].tasks[0].state, Fail);
 }
+
+#[tokio::test]
+async fn an_html_artifact_shows_sandboxed_and_the_rest_downloads() {
+    let dir = artifacts::task_artifacts_dir(Uuid::new_v4()).expect("dir");
+    std::fs::create_dir_all(&dir).expect("dir");
+    for name in ["report.html", "app.deb"] {
+        std::fs::write(dir.join(name), "<script>alert(1)</script>").expect("write");
+    }
+    let headers = |response: Response| {
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .map(|v| v.to_str().expect("ascii").to_string())
+        };
+        (
+            header(header::CONTENT_TYPE),
+            header(header::CONTENT_SECURITY_POLICY),
+        )
+    };
+    let sandbox = Some("sandbox allow-scripts".to_string());
+    let html = artifacts::file_response(&dir.join("report.html"), "report.html", None).await;
+    let html = headers(html.expect("html"));
+    assert_eq!(
+        html,
+        (
+            Some("text/html; charset=utf-8".to_string()),
+            sandbox.clone()
+        )
+    );
+    let deb = artifacts::file_response(&dir.join("app.deb"), "app.deb", None).await;
+    let deb = headers(deb.expect("deb"));
+    assert_eq!(
+        deb,
+        (
+            Some("application/octet-stream".to_string()),
+            sandbox.clone()
+        )
+    );
+    std::fs::remove_dir_all(&dir).expect("clean up");
+}

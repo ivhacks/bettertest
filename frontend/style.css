@@ -536,6 +536,45 @@ input:focus {
     text-align: right;
 }
 
+/* A run's views, above its tasks: as many columns as fit, a wide view taking a row. */
+.views {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+    gap: 16px;
+    margin: 0 0 24px;
+}
+
+.view {
+    min-width: 0;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--line);
+}
+
+.view.wide {
+    grid-column: 1 / -1;
+}
+
+.view figcaption {
+    margin-bottom: 8px;
+    color: var(--muted);
+    font: 500 16px/1.2 var(--font);
+    font-stretch: 70%;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.view .figure {
+    min-height: 300px;
+}
+
+.view iframe {
+    display: block;
+    width: 100%;
+    height: 640px;
+    border: 0;
+}
+
 .workers .url {
     padding-left: 10px;
     border-left: 4px solid var(--pass);

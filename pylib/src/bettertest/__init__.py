@@ -154,14 +154,14 @@ def task(
         raise ValueError(f"timeout is a number of seconds above 0, not {timeout!r}")
 
     def decorator(fn: Callable[[], None]):
-        fn.bettertest_task = True  # ty: ignore[unresolved-attribute]
-        fn.bettertest_worker = worker  # ty: ignore[unresolved-attribute]
-        fn.bettertest_image = image  # ty: ignore[unresolved-attribute]
-        fn.bettertest_vm = vm  # ty: ignore[unresolved-attribute]
-        fn.bettertest_arch = arch  # ty: ignore[unresolved-attribute]
-        fn.bettertest_timeout = timeout  # ty: ignore[unresolved-attribute]
-        fn.bettertest_labels = tuple(labels)  # ty: ignore[unresolved-attribute]
-        fn.bettertest_sandbox = sandbox  # ty: ignore[unresolved-attribute]
+        fn.bettertest_task = True  # ty: ignore[missing-attribute]
+        fn.bettertest_worker = worker  # ty: ignore[missing-attribute]
+        fn.bettertest_image = image  # ty: ignore[missing-attribute]
+        fn.bettertest_vm = vm  # ty: ignore[missing-attribute]
+        fn.bettertest_arch = arch  # ty: ignore[missing-attribute]
+        fn.bettertest_timeout = timeout  # ty: ignore[missing-attribute]
+        fn.bettertest_labels = tuple(labels)  # ty: ignore[missing-attribute]
+        fn.bettertest_sandbox = sandbox  # ty: ignore[missing-attribute]
         return staticmethod(fn)
 
     return decorator
@@ -592,3 +592,92 @@ def _fetch(url: str, parts: list[str], announce: str | None) -> Path:
         run = response.headers.get("bettertest-run", "").replace("-", "")[:6]
         print(f"got {announce} from run {run}", flush=True)
     return path
+
+
+# The run views are drawn for, and the pipe to the boss that answers log(). Set by the glue
+# script; None outside views.
+_run: dict | None = None
+_boss: tuple[Any, Any] | None = None
+
+
+def view(wide: bool = False):
+    """Mark a function of the pipedef as a view of its runs, shown on a run's results page.
+
+    It is called with the run, a dict as GET /api/run/<id> gives it (its state, its stages, their
+    tasks with each one's state, started, ended and tests), and returns a Plotly figure: a dict
+    of `data` and `layout`, which needs nothing installed, or a plotly.graph_objects.Figure where
+    plotly is. Or it returns embed(...), to show an HTML artifact. log() reads a task's log.
+    `wide` gives the view the page's whole width rather than a column of it.
+    """
+
+    def decorator(fn: Callable[[dict], Any]):
+        fn.bettertest_view = wide  # ty: ignore[missing-attribute]
+        return fn
+
+    return decorator
+
+
+def _run_task(task: Callable[[], None]) -> tuple[str, str, dict]:
+    """The stage and name of `task`, a task of this pipedef like Check.version, and the run's
+    record of it."""
+    if _run is None:
+        raise RuntimeError("only a view can read the run it is drawn for")
+    qualname: str = getattr(task, "__qualname__", "")
+    stage, _, name = qualname.rpartition(".")
+    for stage_run in _run["stages"]:
+        for task_run in stage_run["tasks"]:
+            if (stage_run["name"], task_run["name"]) == (stage, name):
+                return stage, name, task_run
+    raise LookupError(f"run {_run['id']} has no task {qualname}")
+
+
+def log(task: Callable[[], None]) -> str:
+    """The log of `task`, like Check.version, in the run the view is drawn for."""
+    _, _, task_run = _run_task(task)
+    if _boss is None:
+        raise RuntimeError("only a view can read a log")
+    ask, answer = _boss
+    print(
+        json.dumps({"log": task_run["carried_from"] or task_run["id"]}),
+        file=ask,
+        flush=True,
+    )
+    return json.loads(answer.readline())
+
+
+def embed(task: Callable[[], None], *, name: str) -> dict:
+    """What a view returns to show HTML artifact `name` of `task`, like a test report, on the
+    results page, in a frame of its own."""
+    stage, task_name, _ = _run_task(task)
+    if not _ARTIFACT_NAME.fullmatch(name):
+        raise ValueError(f"{name!r} is not an artifact name")
+    return {
+        "page": f"/api/run/{_run['id'] if _run else ''}/artifact/{stage}/{task_name}/{name}"
+    }
+
+
+def views_json(pipedef: dict[str, Any]) -> str:
+    """What every view of the pipedef shows of the run, as JSON for the results page. A view that
+    fails shows why instead, and the others still show."""
+    import traceback  # here, not at the top: tasks never need it
+
+    views = []
+    for name, fn in pipedef.items():
+        if not callable(fn) or not hasattr(fn, "bettertest_view"):
+            continue
+        shown: dict[str, Any] = {"name": name, "wide": fn.bettertest_view}
+        try:
+            figure = fn(_run)
+            if hasattr(figure, "to_json"):
+                figure = json.loads(figure.to_json())
+            if not isinstance(figure, dict) or not (
+                "data" in figure or "page" in figure
+            ):
+                raise TypeError(
+                    f"view {name} returns a Plotly figure or embed(...), not {figure!r}"
+                )
+            shown.update(figure if "page" in figure else {"figure": figure})
+        except Exception:  # noqa: BLE001 (a broken view shows why in its place)
+            shown["error"] = traceback.format_exc()
+        views.append(shown)
+    return json.dumps(views)

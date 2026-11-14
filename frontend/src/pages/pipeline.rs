@@ -1,18 +1,21 @@
 // The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs. With
-// ?run=<id>, what the tasks of that run came to instead of the grid.
+// ?run=<id>, what the tasks of that run came to instead of the grid, under the pipedef's views.
 
-use crate::{PageProps, account, cancel_run, follow, send, view};
+use crate::{PageProps, account, cancel_run, fetch, follow, send, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
 use std::sync::Arc;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlElement, wasm_bindgen::JsCast};
+use web_sys::{Element, HtmlElement};
 use yew::prelude::*;
 
 pub struct PipelinePage {
     snapshot: Option<PipelineSnapshot>,
     notice: Option<String>,
+    // The views of the run whose results show, once the boss has drawn them.
+    views: Vec<view::View>,
     // Measured after each render, from the columns and names as the browser lays them out.
     layout: view::GridLayout,
     // A live event moves no column, so only a render after anything else measures again.
@@ -30,6 +33,7 @@ pub struct PipelinePage {
 pub enum PipelineMsg {
     Live(Live<PipelineSnapshot>),
     Notice(String),
+    Views(Vec<view::View>),
     StartRun,
     Cancel(String),
     Layout(view::GridLayout),
@@ -53,15 +57,20 @@ impl Component for PipelinePage {
         // Names are measured in the embedded font, which may arrive after the first render.
         let fonts_loaded = link.callback(|()| PipelineMsg::Resized);
         let fonts = gloo::utils::document().fonts();
+        let run = (window().location().search().ok())
+            .and_then(|query| Some(query.strip_prefix("?run=")?.to_string()));
+        if let Some(run) = &run {
+            draw_views(ctx, run);
+        }
         Self {
             snapshot: None,
             notice: None,
+            views: vec![],
             layout: view::GridLayout::default(),
             measure: true,
             main: NodeRef::default(),
             cancel: link.callback(PipelineMsg::Cancel),
-            run: (window().location().search().ok())
-                .and_then(|query| Some(query.strip_prefix("?run=")?.to_string())),
+            run,
             _resize: EventListener::new(&window(), "resize", move |_| resized.emit(())),
             _fonts: Some(EventListener::new(&fonts, "loadingdone", move |_| {
                 fonts_loaded.emit(())
@@ -80,9 +89,17 @@ impl Component for PipelinePage {
                 if let Some(snapshot) = &mut self.snapshot {
                     snapshot.apply(&event);
                 }
+                // Views drawn while the run ran showed it unfinished.
+                if let (bettertest_shared::Event::RunFinished { run, .. }, Some(shown)) =
+                    (&event, &self.run)
+                    && run.to_string() == *shown
+                {
+                    draw_views(ctx, shown);
+                }
                 return true;
             }
             PipelineMsg::Notice(text) => self.notice = Some(text),
+            PipelineMsg::Views(views) => self.views = views,
             PipelineMsg::Layout(layout) => self.layout = layout,
             PipelineMsg::Resized => {}
             PipelineMsg::Cancel(run) => {
@@ -184,7 +201,10 @@ impl Component for PipelinePage {
                 match snapshot.runs.iter().find(|run| run.id.to_string() == *id) {
                     Some(run) => {
                         crumbs = view::run_page_crumbs(run, &self.cancel);
-                        view::results(run)
+                        let figure = |figure: &serde_json::Value| {
+                            html! { <Figure figure={figure.to_string()} /> }
+                        };
+                        view::results(run, view::views(&self.views, figure))
                     }
                     None => view::not_recent(id),
                 }
@@ -209,6 +229,109 @@ impl Component for PipelinePage {
                 <main ref={self.main.clone()}>{ body }</main>
                 { tabs }
             </>
+        }
+    }
+}
+
+/// Has the boss draw the views of `run` for its results.
+fn draw_views(ctx: &Context<PipelinePage>, run: &str) {
+    let url = format!("/api/run/{run}/views");
+    let link = ctx.link().clone();
+    spawn_local(async move {
+        match fetch(Request::get(&url).build()).await {
+            Ok(views) => link.send_message(PipelineMsg::Views(views)),
+            Err(e) => link.send_message(PipelineMsg::Notice(format!("no views: {e}"))),
+        }
+    });
+}
+
+// Plotly is big, so only a page with a figure on it loads it, once. It draws in the page's own
+// colors and type, which CSS variables hold for either color scheme.
+#[wasm_bindgen(inline_js = r##"
+let plotly;
+export function plot(element, figure) {
+    plotly ??= new Promise((loaded, failed) => {
+        const script = document.createElement("script");
+        script.src = "/assets/plotly.v1.min.js";
+        script.onload = loaded;
+        script.onerror = () => failed("could not load /assets/plotly.v1.min.js");
+        document.head.append(script);
+    });
+    plotly.then(() => {
+        const css = getComputedStyle(element);
+        const color = (name) => css.getPropertyValue(name).trim();
+        const text = { family: css.fontFamily, color: color("--text"), size: 14 };
+        const mono = { family: color("--mono"), color: color("--text"), size: 11 };
+        const clear = "rgba(0,0,0,0)";
+        const axis = { gridcolor: color("--line"), linecolor: color("--line"), zerolinecolor: color("--line"), automargin: true };
+        const template = {
+            layout: {
+                font: text,
+                paper_bgcolor: clear,
+                plot_bgcolor: clear,
+                // Not pass green or fail red: a series in either would read as an outcome.
+                colorway: [color("--highlight"), "#ffb700", color("--muted"), color("--text")],
+                margin: { l: 16, r: 16, t: 16, b: 16 },
+                xaxis: axis,
+                yaxis: axis,
+                hoverlabel: { bgcolor: color("--surface"), bordercolor: color("--line"), font: text },
+            },
+            data: {
+                pie: [{ marker: { line: { color: color("--background"), width: 2 } } }],
+                table: [{
+                    header: { fill: { color: color("--surface") }, line: { color: color("--line") }, font: { ...mono, color: color("--muted") }, align: "left" },
+                    cells: { fill: { color: clear }, line: { color: color("--line") }, font: mono, align: "left" },
+                }],
+            },
+        };
+        const { data, layout } = JSON.parse(figure);
+        const config = { responsive: true, displayModeBar: false };
+        Plotly.react(element, data, { ...layout, template }, config);
+    }, (problem) => { element.textContent = problem; });
+}
+export function purge(element) {
+    window.Plotly?.purge(element);
+}
+"##)]
+extern "C" {
+    fn plot(element: &Element, figure: &str);
+    fn purge(element: &Element);
+}
+
+/// A Plotly figure, drawn by plotly.js into a div of its own.
+struct Figure {
+    node: NodeRef,
+}
+
+#[derive(Properties, PartialEq)]
+struct FigureProps {
+    // The figure as JSON: its data and layout.
+    figure: String,
+}
+
+impl Component for Figure {
+    type Message = ();
+    type Properties = FigureProps;
+
+    fn create(_ctx: &Context<Self>) -> Self {
+        Self {
+            node: NodeRef::default(),
+        }
+    }
+
+    fn view(&self, _ctx: &Context<Self>) -> Html {
+        html! { <div class="figure" ref={self.node.clone()}></div> }
+    }
+
+    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        if let Some(element) = self.node.cast::<Element>() {
+            plot(&element, &ctx.props().figure);
+        }
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let Some(element) = self.node.cast::<Element>() {
+            purge(&element);
         }
     }
 }

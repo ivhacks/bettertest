@@ -623,7 +623,7 @@ async fn start_task(
     });
     let task = Some((req.stage.as_str(), req.task.as_str()));
     let src = files.src();
-    let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src));
+    let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src), None);
 
     let (tx, rx) = mpsc::channel::<Event>(64);
     spawn(async move {

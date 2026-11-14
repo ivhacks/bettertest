@@ -220,6 +220,7 @@ pub async fn entry(
         .route("/api/run/{id}", get(get_run))
         .route("/api/run/{id}/events", get(run_events))
         .route("/api/run/{id}/source.tar", get(get_source))
+        .route("/api/run/{id}/views", get(get_views))
         .route("/api/task/{id}/log", get(get_task_log))
         .route("/api/task/{id}/events", get(task_events))
         .route("/api/task/{id}/artifact/{name}", get(get_task_artifact))
