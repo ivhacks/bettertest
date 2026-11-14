@@ -1,8 +1,8 @@
 // Drives the frontend in a browser: the shell (navigation, history, the bytes on the wire), and the
 // pipeline page (nothing scrolls sideways, grid cells answer like buttons). The browser runs in
-// Playwright's own image, so beyond trunk, which builds the frontend, this needs nothing from the
-// machine but docker. By hand, from frontend/, once this test has built the image:
-//   python3 test/shell.py build
+// Playwright's own image, so this needs nothing from the machine but docker. It tests the frontend
+// that frontend/build.sh built (./build.sh runs it), and fails saying so when that is missing or
+// older than the source. By hand, from frontend/, once this test has built the image:
 //   docker run --rm --init -v "$PWD:/frontend:ro,z" -w /frontend bettertest-test-playwright \
 //     python3 test/shell.py    (or test/pipeline_page.py)
 
@@ -29,8 +29,7 @@ fn pipeline_page_fits_and_its_cells_answer() {
 /// Runs `script` in Playwright's image against the built frontend.
 fn playwright(script: &str) {
     let root = env!("CARGO_MANIFEST_DIR");
-    // The tests run in parallel: two trunk builds into one dist/ at once break each other, and a
-    // test could read dist/ while the other rebuilds it. So the first test builds, the rest wait.
+    // The tests run in parallel; the first builds the image, the rest wait for it.
     static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
     if let Err(why) = PREPARED.get_or_init(prepare) {
         panic!("{why}");
@@ -52,17 +51,8 @@ fn playwright(script: &str) {
     assert!(status.success(), "{script} failed (exit {status})");
 }
 
-/// Builds the frontend and Playwright's image, once for all the tests.
+/// Builds Playwright's image, once for all the tests.
 fn prepare() -> Result<(), String> {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let built = Command::new("python3")
-        .args(["test/shell.py", "build"])
-        .current_dir(root)
-        .status()
-        .map_err(|e| format!("python3 test/shell.py build: {e}"))?;
-    if !built.success() {
-        return Err(format!("could not build the frontend (exit {built})"));
-    }
     require_docker();
     let mut build = Command::new("docker")
         .args([

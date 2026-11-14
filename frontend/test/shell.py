@@ -387,13 +387,6 @@ def dist_stale():
     return any(path.stat().st_mtime > built for path in watched if path.exists())
 
 
-def build_dist():
-    if dist_stale():
-        subprocess.check_call(["trunk", "build", "--release"], cwd=ROOT)
-    if not (DIST / "index.html").is_file():
-        raise SystemExit("trunk build did not produce dist/index.html")
-
-
 def start_server(tls=False):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     if tls:
@@ -898,7 +891,7 @@ TESTS = [
 def main():
     # The browser side runs in Playwright's image, which has no trunk.
     if dist_stale():
-        raise SystemExit("frontend/dist is missing or stale: run python3 test/shell.py build first")
+        raise SystemExit("frontend/dist is missing or older than frontend/: run ./build.sh (or frontend/build.sh) first")
     server, base = start_server()
     tls_server, tls_base = start_server(tls=True)
     from playwright.sync_api import sync_playwright
@@ -956,7 +949,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["build"]:
-        build_dist()
-    else:
-        main()
+    main()

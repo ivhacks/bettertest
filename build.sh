@@ -1,14 +1,8 @@
 #!/bin/bash
 set -e
 
-# Build the WebAssembly frontend. Trunk runs wasm-bindgen and bundles everything into frontend/dist.
-# trunk 0.21 refuses to start when NO_COLOR is anything but true or false, and some shells set it to 1.
-# wasm-bindgen never removes the snippet directories of earlier builds from its output, and trunk
-# copies all of them into dist, so the binary would carry every old one.
-rm -rf target/wasm-bindgen
-cd frontend
-env -u NO_COLOR trunk build --release
-cd ..
+# The WebAssembly frontend, into frontend/dist, which the binary embeds.
+frontend/build.sh
 
 # Build the server binary for this machine's architecture (x86_64 or aarch64): fully static, so it
 # runs on any Linux of that architecture without a single library from the machine. The musl target links statically; sqlite and OpenSSL are compiled in from source

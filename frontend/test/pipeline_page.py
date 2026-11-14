@@ -226,7 +226,7 @@ def main():
     # The browser side runs in Playwright's image, which has no trunk.
     if shell.dist_stale():
         raise SystemExit(
-            "frontend/dist is missing or stale: run python3 test/shell.py build first"
+            "frontend/dist is missing or older than frontend/: run ./build.sh (or frontend/build.sh) first"
         )
     shell.PIPELINES["many_stages"] = shell.snapshot(body())
     server, base = shell.start_server()
