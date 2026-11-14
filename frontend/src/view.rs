@@ -127,7 +127,8 @@ pub fn label_layout(columns: &[f64], labels: &[Option<f64>], line: f64) -> Tilt 
 
 /// One row per run, newest on top. The columns are the tasks of the pipedef as it is now. A run
 /// from before a task existed shows an empty cell there. A CSS grid, one track per task, each
-/// stage `stage_weight` wide; stages sit further apart than tasks. `rows` are `run_row`s.
+/// stage `stage_weight` wide; stages sit further apart than tasks. `rows` are rows whose cells
+/// `run_row` makes.
 pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
     // The run ids' own width: a running run is cancelled from its results or a task's page.
     let mut columns = String::from("max-content");
@@ -141,9 +142,10 @@ pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
     let (stages, tasks) = (layout.stages, layout.tasks);
     html! {
         <table class="grid" style={format!("grid-template-columns: {columns}")}>
+            <style>{ dense_rule(pipeline, layout) }</style>
             <thead>
                 <tr class={stages.class()}>
-                    <th style={stages.height()}></th>
+                    <th class="run" style={stages.height()}></th>
                     { for pipeline.stages.iter().map(|stage| html! {
                         <th class="stage" style={format!("grid-column: span {0}; --tasks: {0}", stage.tasks.len())}>
                             <span style={stages.rotate()}>{ &stage.name }</span>
@@ -188,7 +190,13 @@ fn cell_classes(layout: &GridLayout, stage: usize, task: usize) -> Classes {
     classes!((task == 0).then_some("first"), dense.then_some("dense"))
 }
 
-pub fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout) -> Html {
+/// The cells of one run's row of the grid, as HTML for the row's innerHTML. A row is the run's id,
+/// then a cell per task of the pipedef as it is now. Built as text and handed over in one piece,
+/// which a browser takes in far quicker than a node at a time: a page of 50 runs of 200 tasks is
+/// 10 000 cells. Nothing here depends on how the names are laid out, so measuring them never
+/// draws the rows again.
+pub fn run_row(pipeline: &Pipeline, run: &Run) -> String {
+    use std::fmt::Write;
     // By (stage, task): a stage can have thousands of tasks, too many to search for each cell.
     let task_runs: HashMap<(&str, &str), &TaskRun> = run
         .stages
@@ -199,48 +207,85 @@ pub fn run_row(pipeline: &Pipeline, run: &Run, layout: &GridLayout) -> Html {
                 .map(move |t| ((s.name.as_str(), t.name.as_str()), t))
         })
         .collect();
-    let cells = pipeline.stages.iter().enumerate().flat_map(|(s, stage)| {
-        let task_runs = &task_runs;
-        stage.tasks.iter().enumerate().map(move |(t, task)| {
-            let task_run = task_runs.get(&(stage.name.as_str(), task.name.as_str()));
-            let place = cell_classes(layout, s, t);
-            match task_run {
-                Some(t) => {
-                    // A running task's time would go stale in a tooltip, so only finished ones say.
-                    let mut title = match (t.state.is_over(), t.runtime(0)) {
-                        (true, Some(ms)) => format!("{} in {}", t.state.as_str(), duration(ms)),
-                        _ => t.state.as_str().to_string(),
-                    };
-                    // A dense stage hides its tasks' names, so the cell says whose it is.
-                    if layout.dense.get(s).copied().unwrap_or(false) {
-                        title = format!("{}: {title}", task.name);
-                    }
-                    let carried = t.carried_from.is_some();
-                    if carried {
-                        title.push_str(", carried over");
-                    }
-                    // A skipped task never ran: it has no page worth opening.
-                    let href = format!("/task/{}", t.id);
-                    let link = (t.state != TaskState::Skipped)
-                        .then(|| html! { <a href={href} title={title} draggable="false"></a> });
-                    html! {
-                        <td class={classes!("cell", t.state.as_str(), carried.then_some("carried"), place)}>
-                            { for link }
-                        </td>
-                    }
+    // Writing to a String cannot fail, so the results of write! are ignored.
+    let tasks: usize = pipeline.stages.iter().map(|stage| stage.tasks.len()).sum();
+    let mut row = String::with_capacity(160 * (1 + tasks));
+    let _ = write!(row, r#"<th class="run {}""#, run.state.as_str());
+    if let Some(commit) = &run.commit {
+        row.push_str(r#" title=""#);
+        escape(&mut row, &commit.label());
+        row.push('"');
+    }
+    row.push_str(r#"><a href=""#);
+    escape(&mut row, &run_href(run));
+    let _ = write!(row, r#"">{}</a></th>"#, run.short_id());
+    for stage in &pipeline.stages {
+        for (t, task) in stage.tasks.iter().enumerate() {
+            let first = if t == 0 { " first" } else { "" };
+            let Some(task_run) = task_runs.get(&(stage.name.as_str(), task.name.as_str())) else {
+                let _ = write!(row, r#"<td class="cell{first}"></td>"#);
+                continue;
+            };
+            let state = task_run.state.as_str();
+            let carried = task_run.carried_from.is_some();
+            let carried_class = if carried { " carried" } else { "" };
+            let _ = write!(row, r#"<td class="cell {state}{carried_class}{first}">"#);
+            // A skipped task never ran: it has no page worth opening.
+            if task_run.state != TaskState::Skipped {
+                // The cell says whose it is: a dense stage hides its tasks' names. A running
+                // task's time would go stale in a tooltip, so only finished ones say.
+                let _ = write!(row, r#"<a href="/task/{}" title=""#, task_run.id);
+                escape(&mut row, &task.name);
+                let _ = write!(row, ": {state}");
+                if let (true, Some(ms)) = (task_run.state.is_over(), task_run.runtime(0)) {
+                    let _ = write!(row, " in {}", duration(ms));
                 }
-                None => html! { <td class={classes!("cell", place)}></td> },
+                if carried {
+                    row.push_str(", carried over");
+                }
+                row.push_str(r#"" draggable="false"></a>"#);
             }
-        })
-    });
-    let commit = run.commit.as_ref().map(Commit::label);
-    html! {
-        <tr>
-            <th class={classes!("run", run.state.as_str())} title={commit}>
-                <a href={run_href(run)}>{ run.short_id() }</a>
-            </th>
-            { for cells }
-        </tr>
+            row.push_str("</td>");
+        }
+    }
+    row
+}
+
+/// Appends `text` to `html` as it can stand there, in an attribute or between tags.
+fn escape(html: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => html.push_str("&amp;"),
+            '<' => html.push_str("&lt;"),
+            '>' => html.push_str("&gt;"),
+            '"' => html.push_str("&quot;"),
+            c => html.push(c),
+        }
+    }
+}
+
+/// The rule packing the tasks of each dense stage together in the rows (the header's task names
+/// carry a `dense` class instead): every cell of the stage but its first, which keeps the gap
+/// before the stage. The rows' cells carry no classes that depend on the layout, so a new layout
+/// changes this rule, not the rows.
+fn dense_rule(pipeline: &Pipeline, layout: &GridLayout) -> String {
+    // Each row's first child is the run's id, so the first task is child 2.
+    let mut column = 2;
+    let mut selectors = vec![];
+    for (s, stage) in pipeline.stages.iter().enumerate() {
+        let tasks = stage.tasks.len();
+        if layout.dense.get(s).copied().unwrap_or(false) && tasks > 1 {
+            selectors.push(format!(
+                ".grid tbody td:nth-child(n+{}):nth-child(-n+{})",
+                column + 1,
+                column + tasks - 1
+            ));
+        }
+        column += tasks;
+    }
+    match selectors.is_empty() {
+        true => String::new(),
+        false => format!("{} {{ padding-left: 0 }}", selectors.join(", ")),
     }
 }
 

@@ -146,7 +146,7 @@ labels, and overrides a worker url the pipedef names.
 
 - **The grid:** one row per run and one column per task, with every pipeline as a tab. The red X
   before a running run's id cancels all of it.
-- **The task log:** live as it runs, with rerun buttons for the run, the stage or the task.
+- **The task log:** live as it runs, with restart buttons for the run, the stage or the task.
 - **Workers:** which ones are up, how busy, and what they are running.
 - **Settings:** how long to keep logs and artifacts, and whether the boss speaks HTTPS.
 - **Users:** who may do what, and how each logs in.

@@ -15,10 +15,7 @@ use axum::{
     extract::{ConnectInfo, Path as AxumPath, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
-    response::{
-        IntoResponse, Response,
-        sse::{self, KeepAlive, Sse},
-    },
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use bettertest_shared::*;
@@ -67,6 +64,11 @@ struct Boss {
     // Pipeline name (the pipedef's file name without .py) to where its pipedef is. Repos add the
     // pipedefs their default branch has whenever they are fetched.
     pipedefs: Mutex<BTreeMap<String, Pipedef>>,
+    // By pipeline name, the source it last parsed and what parsing it gave, so that a run starts
+    // python only when the pipedef changed. One per pipeline, whichever commit it was.
+    parsed: Mutex<HashMap<String, (String, Pipeline)>>,
+    // By pipeline name, the pipeline as its page shows it.
+    shown: Mutex<HashMap<String, Shown>>,
     repos: Vec<Repo>,
     // Runs not finished yet, so a newer commit on the same branch can cancel them.
     going: Mutex<HashMap<Uuid, Going>>,
@@ -88,6 +90,16 @@ struct Boss {
     // Where the web UI and API listen. Workers call back here: they take the IP from the
     // start-task connection and this port from that same form.
     port: u16,
+}
+
+/// A pipeline as its page shows it, the default branch's or the file as it is now: parsed, and kept
+/// in memory, so that a page load starts no python and reads no pipedef. A repo's are parsed again
+/// whenever it is fetched. A file's are parsed again once the file changed: `stamp` is when it was
+/// modified, and its size, as of the parse, which a page load compares with the file's (a stat).
+#[derive(Clone)]
+struct Shown {
+    stamp: Option<(SystemTime, u64)>,
+    pipeline: Result<Pipeline, String>,
 }
 
 /// Where a pipeline's pipedef is.
@@ -163,6 +175,8 @@ pub async fn entry(
     let (events, _) = broadcast::channel(4096);
     let boss = Arc::new(Boss {
         pipedefs: Mutex::new(names),
+        parsed: Mutex::new(HashMap::new()),
+        shown: Mutex::new(HashMap::new()),
         repos,
         going: Mutex::new(HashMap::new()),
         db: Mutex::new(db),
@@ -191,6 +205,14 @@ pub async fn entry(
     if boss.pipelines().is_empty() {
         println!("no pipedefs yet. add some and restart the boss");
     }
+    // Parsed now, the first page load of each pipeline needs no python either. Fetching parsed
+    // the repos' already.
+    let parsing = boss.clone();
+    spawn(async move {
+        for name in parsing.pipelines() {
+            let _ = shown_pipeline(&parsing, &name).await;
+        }
+    });
 
     // The router takes the boss along; this keeps hold of its certificate for serving.
     let serving = boss.clone();
@@ -363,9 +385,11 @@ async fn put_settings(
 
 /// An SSE stream that starts with a snapshot, then sends every event `wanted` keeps. A client too
 /// slow to keep up gets a fresh snapshot rather than a gap. `snapshot` returning None means there
-/// is no such thing to watch.
+/// is no such thing to watch. Gzipped when the browser takes gzip (`headers`), which shrinks a big
+/// snapshot about tenfold: each message is flushed through on its own, so none waits for the next.
 fn live<S: Serialize + Send + 'static>(
     boss: Shared,
+    headers: &HeaderMap,
     snapshot: impl Fn(&Db) -> rusqlite::Result<Option<S>> + Send + 'static,
     wanted: impl Fn(&S, &Event) -> bool + Send + 'static,
 ) -> Result<Response, Failure> {
@@ -373,29 +397,37 @@ fn live<S: Serialize + Send + 'static>(
     let Some(mut current) = current else {
         return Err((StatusCode::NOT_FOUND, "not found".into()));
     };
+    let accepted = headers.get(header::ACCEPT_ENCODING);
+    let gzip = accepts_gzip(accepted.and_then(|v| v.to_str().ok()).unwrap_or_default());
+    let mut wire = Wire::new(gzip);
 
-    let (tx, rx) = mpsc::channel::<sse::Event>(64);
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
     spawn(async move {
         loop {
             let message = sse_message(&Live::Snapshot(&current));
-            if tx.send(message).await.is_err() {
+            if !send(&tx, &mut wire, &message).await {
                 return;
             }
             loop {
                 let received = tokio::select! {
                     _ = tx.closed() => return,
-                    received = events.recv() => received,
+                    received = events.recv() => Some(received),
+                    () = sleep(PING) => None,
                 };
-                match received {
-                    Ok(event) if wanted(&current, &event) => {
-                        let message = sse_message(&Live::<&S>::Event(event));
-                        if tx.send(message).await.is_err() {
-                            return;
-                        }
+                let message = match received {
+                    Some(Ok(event)) if wanted(&current, &event) => {
+                        sse_message(&Live::<&S>::Event(event))
                     }
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => break,
-                    Err(broadcast::error::RecvError::Closed) => return,
+                    Some(Ok(_)) => continue,
+                    Some(Err(broadcast::error::RecvError::Lagged(_))) => break,
+                    Some(Err(broadcast::error::RecvError::Closed)) => return,
+                    // A named event rather than the usual comment, which browsers keep from the
+                    // page: hearing nothing, not even this, is how the page tells a lost boss from
+                    // a quiet one. It has data, since browsers drop an event without any.
+                    None => b"event: ping\ndata: ping\n\n".to_vec(),
+                };
+                if !send(&tx, &mut wire, &message).await {
+                    return;
                 }
             }
             match boss.subscribe(&snapshot) {
@@ -409,21 +441,66 @@ fn live<S: Serialize + Send + 'static>(
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(Ok::<_, Infallible>);
-    // A named event rather than the usual comment, which browsers keep from the page: hearing
-    // nothing, not even this, is how the page tells a lost boss from a quiet one.
-    let ping = KeepAlive::new()
-        .interval(PING)
-        .event(sse::Event::default().event("ping"));
-    Ok(Sse::new(stream).keep_alive(ping).into_response())
+    let body = Body::from_stream(ReceiverStream::new(rx).map(Ok::<_, Infallible>));
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::VARY, "accept-encoding"),
+        ],
+        body,
+    )
+        .into_response();
+    if gzip {
+        let gzip = header::HeaderValue::from_static("gzip");
+        response
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, gzip);
+    }
+    Ok(response)
+}
+
+/// Sends `message` down a live stream, through `wire`. False once the browser is gone.
+async fn send(tx: &mpsc::Sender<Vec<u8>>, wire: &mut Wire, message: &[u8]) -> bool {
+    match wire.pack(message) {
+        Some(bytes) => tx.send(bytes).await.is_ok(),
+        None => false,
+    }
 }
 
 /// How often a live stream says it is still there when there is nothing else to say.
 const PING: Duration = Duration::from_secs(15);
 
-fn sse_message(data: &impl Serialize) -> sse::Event {
-    // Serializing our own plain structs cannot fail. If it somehow did, an empty event is harmless.
-    sse::Event::default().data(serde_json::to_string(data).unwrap_or_default())
+/// One SSE message of `data` as JSON, on one line: serde_json writes no line breaks.
+fn sse_message(data: &impl Serialize) -> Vec<u8> {
+    // Serializing our own plain structs cannot fail. If it somehow did, an empty message is
+    // harmless.
+    let json = serde_json::to_vec(data).unwrap_or_default();
+    [b"data: ".as_slice(), &json, b"\n\n"].concat()
+}
+
+/// The bytes of a stream as they go on the wire: as they are, or gzipped as one gzip stream for
+/// the whole connection.
+struct Wire(Option<flate2::write::GzEncoder<Vec<u8>>>);
+
+impl Wire {
+    fn new(gzip: bool) -> Self {
+        // The fastest level: a snapshot is mostly ids and repeated names, which compress anyway.
+        Wire(gzip.then(|| flate2::write::GzEncoder::new(vec![], flate2::Compression::fast())))
+    }
+
+    /// `message`'s bytes on the wire, all of them, so the browser can read it now. None if gzip
+    /// failed, which ends the stream; the browser reconnects and starts over.
+    fn pack(&mut self, message: &[u8]) -> Option<Vec<u8>> {
+        use std::io::Write;
+        let Some(gzip) = &mut self.0 else {
+            return Some(message.to_vec());
+        };
+        // A sync flush: everything written so far comes out, and the stream goes on after it.
+        gzip.write_all(message).ok()?;
+        gzip.flush().ok()?;
+        Some(std::mem::take(gzip.get_mut()))
+    }
 }
 
 /// Pipeline names end up in URLs.
@@ -558,24 +635,40 @@ impl Boss {
                 return;
             }
         };
-        let mut pipedefs = lock(&self.pipedefs);
-        for (name, path) in found {
-            if !valid_pipeline_name(&name) {
-                eprintln!(
-                    "{} has {path}: pipedef names are letters, digits, '-' and '_'",
-                    repo.public
-                );
-                continue;
-            }
-            match pipedefs.get(&name) {
-                Some(Pipedef::Repo { repo: other, .. }) if *other == index => {}
-                Some(_) => eprintln!(
-                    "{} has {path}, but pipeline {name} exists already",
-                    repo.public
-                ),
-                None => {
-                    pipedefs.insert(name, Pipedef::Repo { repo: index, path });
+        // The lock ends with this block, before anything below waits.
+        let names: Vec<String> = {
+            let mut pipedefs = lock(&self.pipedefs);
+            for (name, path) in found {
+                if !valid_pipeline_name(&name) {
+                    eprintln!(
+                        "{} has {path}: pipedef names are letters, digits, '-' and '_'",
+                        repo.public
+                    );
+                    continue;
                 }
+                match pipedefs.get(&name) {
+                    Some(Pipedef::Repo { repo: other, .. }) if *other == index => {}
+                    Some(_) => eprintln!(
+                        "{} has {path}, but pipeline {name} exists already",
+                        repo.public
+                    ),
+                    None => {
+                        pipedefs.insert(name, Pipedef::Repo { repo: index, path });
+                    }
+                }
+            }
+            pipedefs
+                .iter()
+                .filter(
+                    |(_, pipedef)| matches!(pipedef, Pipedef::Repo { repo, .. } if *repo == index),
+                )
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        // What the pages show is the default branch as of this fetch.
+        for name in names {
+            if let Err((_, e)) = refresh_shown(self, &name, None).await {
+                eprintln!("could not read pipeline {name}: {e}");
             }
         }
     }

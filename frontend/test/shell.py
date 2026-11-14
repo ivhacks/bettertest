@@ -556,7 +556,7 @@ def test_back_and_forward_restore_the_page_without_a_shell_reload(browser, base)
         page.page.wait_for_url("**/pipeline/app")
         page.page.wait_for_selector(f"a[href='/task/{TASK}']")
         assert page.page.locator("text=shell-nav-marker").count() == 0
-        assert "6dfde7" in page.page.locator("th.run").inner_text()
+        assert "6dfde7" in page.page.locator("tbody th.run").inner_text()
         assert "unit" in page.page.locator("th.task").inner_text()
         page.assert_no_shell_transfer("back")
 

@@ -283,75 +283,88 @@ impl Db {
     }
 
     pub fn run(&self, id: Uuid) -> rusqlite::Result<Option<Run>> {
-        let Some((pipeline, state, (sha, branch))) = self
-            .conn
-            .prepare_cached(
-                "SELECT pipeline, state, commit_sha, branch FROM pl_runs WHERE id = ?1",
-            )?
-            .query_row([id.to_string()], |row| {
-                let commit: (Option<String>, Option<String>) = (row.get(2)?, row.get(3)?);
-                Ok((row.get(0)?, text(row, 1, RunState::parse)?, commit))
-            })
-            .optional()?
-        else {
-            return Ok(None);
-        };
-
-        let stage_rows: Vec<(String, String)> = self
-            .conn
-            .prepare_cached("SELECT id, name FROM stage_runs WHERE pl_run_id = ?1 ORDER BY rowid")?
-            .query_map([id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-
-        let mut stages = vec![];
-        for (stage_id, name) in stage_rows {
-            let tasks = self
-                .conn
-                .prepare_cached(
-                    "SELECT id, name, state, worker, started_at, ended_at, carried_from, tests,
-                     tests_failed FROM task_runs WHERE stage_run_id = ?1 ORDER BY rowid",
-                )?
-                .query_map([stage_id], |row| {
-                    Ok(TaskRun {
-                        id: text(row, 0, uuid)?,
-                        name: row.get(1)?,
-                        state: text(row, 2, TaskState::parse)?,
-                        worker: row.get(3)?,
-                        started: row.get::<_, Option<i64>>(4)?.map(from_sql),
-                        ended: row.get::<_, Option<i64>>(5)?.map(from_sql),
-                        carried_from: row.get::<_, Option<String>>(6)?.as_deref().and_then(uuid),
-                        tests: Option::zip(row.get(7)?, row.get(8)?).map(|(total, failed)| Tests {
-                            total: from_sql(total),
-                            failed: from_sql(failed),
-                        }),
-                    })
-                })?
-                .collect::<rusqlite::Result<_>>()?;
-            stages.push(StageRun { name, tasks });
-        }
-
-        Ok(Some(Run {
-            id,
-            pipeline,
-            state,
-            stages,
-            commit: sha.zip(branch).map(|(sha, branch)| Commit { sha, branch }),
-        }))
+        let runs = self.runs_where(
+            "SELECT rowid, * FROM pl_runs WHERE id = ?1",
+            [id.to_string()],
+        )?;
+        Ok(runs.into_iter().next())
     }
 
     /// The newest `limit` runs of `pipeline`, newest first.
     pub fn runs(&self, pipeline: &str, limit: i64) -> rusqlite::Result<Vec<Run>> {
-        let ids: Vec<Uuid> = self
-            .conn
-            .prepare_cached(
-                "SELECT id FROM pl_runs WHERE pipeline = ?1 ORDER BY rowid DESC LIMIT ?2",
-            )?
-            .query_map((pipeline, limit), |row| text(row, 0, uuid))?
-            .collect::<rusqlite::Result<_>>()?;
+        self.runs_where(
+            "SELECT rowid, * FROM pl_runs WHERE pipeline = ?1 ORDER BY rowid DESC LIMIT ?2",
+            (pipeline, limit),
+        )
+    }
 
-        ids.into_iter()
-            .filter_map(|id| self.run(id).transpose())
-            .collect()
+    /// The runs `chosen` picks out of pl_runs (its rows, with their rowid), newest first, with
+    /// their stages and tasks: one query, one row per task, which the rows of a run's stages and
+    /// tasks join onto. A run or stage with no tasks still has its row, with the task's NULL.
+    fn runs_where(
+        &self,
+        chosen: &str,
+        params: impl rusqlite::Params,
+    ) -> rusqlite::Result<Vec<Run>> {
+        let sql = format!(
+            "SELECT r.id, r.pipeline, r.state, r.commit_sha, r.branch, s.id, s.name,
+                    t.id, t.name, t.state, t.worker, t.started_at, t.ended_at, t.carried_from,
+                    t.tests, t.tests_failed
+             FROM ({chosen}) r
+             LEFT JOIN stage_runs s ON s.pl_run_id = r.id
+             LEFT JOIN task_runs t ON t.stage_run_id = s.id
+             ORDER BY r.rowid DESC, s.rowid, t.rowid"
+        );
+        let mut statement = self.conn.prepare_cached(&sql)?;
+        let mut rows = statement.query(params)?;
+        let mut runs: Vec<Run> = vec![];
+        // The stage the last row was of, so that the next row of it adds to it.
+        let mut last_stage: Option<String> = None;
+        while let Some(row) = rows.next()? {
+            let id = text(row, 0, uuid)?;
+            if runs.last().is_none_or(|run| run.id != id) {
+                let (sha, branch): (Option<String>, Option<String>) = (row.get(3)?, row.get(4)?);
+                runs.push(Run {
+                    id,
+                    pipeline: row.get(1)?,
+                    state: text(row, 2, RunState::parse)?,
+                    stages: vec![],
+                    commit: sha.zip(branch).map(|(sha, branch)| Commit { sha, branch }),
+                });
+                last_stage = None;
+            }
+            let Some(run) = runs.last_mut() else { continue };
+            let Some(stage) = row.get::<_, Option<String>>(5)? else {
+                continue;
+            };
+            if last_stage.as_ref() != Some(&stage) {
+                run.stages.push(StageRun {
+                    name: row.get(6)?,
+                    tasks: vec![],
+                });
+                last_stage = Some(stage);
+            }
+            let Some(stage) = run.stages.last_mut() else {
+                continue;
+            };
+            if row.get::<_, Option<String>>(7)?.is_none() {
+                continue;
+            }
+            stage.tasks.push(TaskRun {
+                id: text(row, 7, uuid)?,
+                name: row.get(8)?,
+                state: text(row, 9, TaskState::parse)?,
+                worker: row.get(10)?,
+                started: row.get::<_, Option<i64>>(11)?.map(from_sql),
+                ended: row.get::<_, Option<i64>>(12)?.map(from_sql),
+                carried_from: row.get::<_, Option<String>>(13)?.as_deref().and_then(uuid),
+                tests: Option::zip(row.get(14)?, row.get(15)?).map(|(total, failed)| Tests {
+                    total: from_sql(total),
+                    failed: from_sql(failed),
+                }),
+            });
+        }
+        Ok(runs)
     }
 
     /// The run a task belongs to, and the name of the task's stage.
