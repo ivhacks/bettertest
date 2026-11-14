@@ -20,6 +20,7 @@ export async function passkey(options, create) {
         throw e && e.message ? e.message : String(e);
     }
 }
+
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]

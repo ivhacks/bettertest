@@ -4,7 +4,6 @@ use crate::{account, follow, monotonic, post_json, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 pub struct WorkersPage {
@@ -12,7 +11,6 @@ pub struct WorkersPage {
     // As on the task page: the boss's clock at the snapshot, and the browser's monotonic one then.
     clock: (u64, f64),
     notice: Option<String>,
-    url: NodeRef,
     // The worker the forget window asks about, while it is open.
     forgetting: Option<String>,
     _tick: Interval,
@@ -45,7 +43,6 @@ impl Component for WorkersPage {
             snapshot: None,
             clock: (0, 0.0),
             notice: None,
-            url: NodeRef::default(),
             forgetting: None,
             _tick: Interval::new(1_000, move || tick.emit(())),
             _stream: stream,
@@ -69,11 +66,11 @@ impl Component for WorkersPage {
             WorkersMsg::Notice(text) => self.notice = Some(text),
             WorkersMsg::Tick => {}
             WorkersMsg::Add => {
-                let Some(input) = self.url.cast::<HtmlInputElement>() else {
+                let Some(url) =
+                    gloo::dialogs::prompt("Worker url", Some("http://worker-host:7358"))
+                else {
                     return false;
                 };
-                let url = input.value();
-                input.set_value("");
                 let link = ctx.link().clone();
                 // The worker shows up through the live stream like any other change.
                 spawn_local(async move {
@@ -114,16 +111,8 @@ impl Component for WorkersPage {
             ),
             None => html! {},
         };
-        let onsubmit = link.callback(|e: SubmitEvent| {
-            // The page stays; the request goes out from update().
-            e.prevent_default();
-            WorkersMsg::Add
-        });
         let add = html! {
-            <form class="add" {onsubmit}>
-                <input ref={self.url.clone()} type="url" placeholder="http://worker-host:7358" required=true />
-                <button class="primary" type="submit">{ "Add Worker" }</button>
-            </form>
+            <button class="primary" onclick={link.callback(|_| WorkersMsg::Add)}>{ "New Worker" }</button>
         };
         let body = match &self.snapshot {
             Some(snapshot) => view::workers(

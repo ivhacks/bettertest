@@ -201,7 +201,7 @@ pub async fn entry(
         .route("/api/start-run/{name}", post(start_run))
         .route("/api/push-hook", post(push_hook))
         .route("/api/cancel-run/{run}", post(cancel_run))
-        .route("/api/rerun/{*rerun}", post(rerun))
+        .route("/api/restart/{*restart}", post(restart))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/me", get(get_me))
         .route("/api/startup-error", post(startup_error))

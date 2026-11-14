@@ -210,7 +210,7 @@ impl Component for PipelinePage {
                     let rows = snapshot.runs.iter().map(|run| {
                         html! {
                             <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
-                                layout={self.layout.clone()} cancel={self.cancel.clone()} />
+                                layout={self.layout.clone()} />
                         }
                     });
                     view::grid(pipeline, &self.layout, html! { { for rows } })
@@ -341,7 +341,6 @@ struct RunRowProps {
     pipeline: Arc<Pipeline>,
     run: Arc<Run>,
     layout: view::GridLayout,
-    cancel: Callback<String>,
 }
 
 impl PartialEq for RunRowProps {
@@ -350,7 +349,6 @@ impl PartialEq for RunRowProps {
         Arc::ptr_eq(&self.pipeline, &other.pipeline)
             && Arc::ptr_eq(&self.run, &other.run)
             && self.layout == other.layout
-            && self.cancel == other.cancel
     }
 }
 
@@ -364,6 +362,6 @@ impl Component for RunRow {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let props = ctx.props();
-        view::run_row(&props.pipeline, &props.run, &props.layout, &props.cancel)
+        view::run_row(&props.pipeline, &props.run, &props.layout)
     }
 }

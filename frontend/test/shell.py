@@ -543,7 +543,7 @@ def test_in_app_navigation_does_not_redownload_the_shell(browser, base):
         page.assert_no_shell_transfer("open task")
 
         page.resources_since_clear()
-        page.page.locator("a.page[href='/workers']").click()
+        page.page.locator("header a[href='/workers']").click()
         page.page.wait_for_selector("text=No workers yet")
         assert page.page.url.endswith("/workers")
         page.assert_no_shell_transfer("workers")

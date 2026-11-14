@@ -41,7 +41,7 @@ impl Boss {
             .iter()
             .find(|s| s.name == stage)
             .and_then(|s| s.tasks.iter().find(|t| t.name == task))
-            // A task a rerun carried over published nothing itself: the run it came from did.
+            // A task a restart carried over published nothing itself: the run it came from did.
             .map(|t| t.carried_from.unwrap_or(t.id))
         else {
             return Err(format!("{cant}: {run_name} has no task {producer}."));

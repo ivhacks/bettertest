@@ -95,7 +95,10 @@ struct Container(String);
 impl Container {
     fn start(network: &Network, alias: &str, pipedefs: &PathBuf, args: &[&str]) -> Self {
         let name = format!("bettertest-unified-{}", uuid::Uuid::new_v4());
-        let binary = format!("{}:/usr/bin/bettertest:ro", env!("CARGO_BIN_EXE_bettertest"));
+        let binary = format!(
+            "{}:/usr/bin/bettertest:ro",
+            env!("CARGO_BIN_EXE_bettertest")
+        );
         let pipedefs = format!("{}:/pipedefs:ro,z", pipedefs.display());
         let mut run = vec![
             "run",
@@ -188,7 +191,11 @@ async fn add_worker(container: &Container, url: &str) {
         .send()
         .await
         .unwrap();
-    assert!(reply.status().is_success(), "{reply:?}\n{}", container.logs());
+    assert!(
+        reply.status().is_success(),
+        "{reply:?}\n{}",
+        container.logs()
+    );
 }
 
 #[tokio::test]
@@ -217,7 +224,11 @@ async fn unified_alone_enrolls_its_worker_and_runs() {
         if now.state != RunState::Running {
             break now;
         }
-        assert!(Instant::now() < deadline, "run still going\n{}", unified.logs());
+        assert!(
+            Instant::now() < deadline,
+            "run still going\n{}",
+            unified.logs()
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     let task = &run.stages[0].tasks[0];

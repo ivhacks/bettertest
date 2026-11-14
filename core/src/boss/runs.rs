@@ -1,4 +1,4 @@
-// Runs: starting them (by hand, by push, as reruns), running their stages and tasks, cancelling
+// Runs: starting them (by hand, by push, as restarts), running their stages and tasks, cancelling
 // them, and what the pages ask about runs and tasks.
 
 use super::*;
@@ -286,15 +286,15 @@ pub(super) async fn cancel_run(
     }
 }
 
-/// `/api/rerun/{run}[/{stage}[/{task}]]`: starts a new run of the pipeline at the commit `run`
+/// `/api/restart/{run}[/{stage}[/{task}]]`: starts a new run of the pipeline at the commit `run`
 /// tested, which runs `stage` (or only its `task`) and every stage after it again, and carries over
-/// the results of the rest (see `carry_over`). No stage reruns all of it. Returns the new run.
-pub(super) async fn rerun(
+/// the results of the rest (see `carry_over`). No stage restarts all of it. Returns the new run.
+pub(super) async fn restart(
     State(boss): State<Shared>,
-    AxumPath(rerun): AxumPath<String>,
+    AxumPath(restart): AxumPath<String>,
     headers: HeaderMap,
 ) -> Result<Json<Run>, Failure> {
-    let mut parts = rerun.split('/');
+    let mut parts = restart.split('/');
     let id = parse_id(parts.next().unwrap_or_default())?;
     let (stage, task) = (parts.next(), parts.next());
     let earlier = boss.db().run(id).map_err(internal)?;
@@ -303,7 +303,7 @@ pub(super) async fn rerun(
         return Err((
             StatusCode::CONFLICT,
             format!(
-                "run {} is still running. Rerun it once it is over.",
+                "run {} is still running. Restart it once it is over.",
                 earlier.short_id()
             ),
         ));
@@ -326,10 +326,10 @@ pub(super) async fn rerun(
     Ok(Json(run))
 }
 
-/// Where a rerun from stage `at` (or of only its `task`) really starts. A sandbox of the
-/// pipeline's lives only as long as its run, so whatever reruns needs every one of its sandboxes
-/// built up again from the first stage that uses it: rerunning from there, whole stages.
-pub(super) fn rerun_start<'a>(
+/// Where a restart from stage `at` (or of only its `task`) really starts. A sandbox of the
+/// pipeline's lives only as long as its run, so whatever restarts needs every one of its sandboxes
+/// built up again from the first stage that uses it: restarting from there, whole stages.
+pub(super) fn restart_start<'a>(
     pipeline: &Pipeline,
     at: usize,
     task: Option<&'a str>,
@@ -347,7 +347,7 @@ pub(super) fn rerun_start<'a>(
     };
     let mut start = at;
     loop {
-        // What reruns: from `start` on, but of stage `at` only `task`, while `start` is `at`.
+        // What restarts: from `start` on, but of stage `at` only `task`, while `start` is `at`.
         let mut needed = BTreeSet::new();
         for (index, stage) in pipeline.stages.iter().enumerate().skip(start) {
             let only = if index == at && start == at {
@@ -367,7 +367,7 @@ pub(super) fn rerun_start<'a>(
         }
         start = earliest;
     }
-    // A task that runs in a sandbox builds on the tasks before it there: they rerun with it.
+    // A task that runs in a sandbox builds on the tasks before it there: they restart with it.
     let in_sandbox = pipeline
         .stages
         .get(at)
@@ -378,11 +378,11 @@ pub(super) fn rerun_start<'a>(
     }
 }
 
-/// The tasks of `earlier` a rerun of `stage` (or of only its `task`) carries over instead of running
+/// The tasks of `earlier` a restart of `stage` (or of only its `task`) carries over instead of running
 /// again, by (stage, task). Every stage before `stage` is carried over, so each of its tasks must
 /// have passed: the stages after it ran on that result. So are the other tasks of `stage` when only
-/// `task` reruns, unless the stage shares a sandbox, where each task builds on the one before and
-/// the whole stage reruns. A task the pipedef has gained since runs, and so does the rest of a
+/// `task` restarts, unless the stage shares a sandbox, where each task builds on the one before and
+/// the whole stage restarts. A task the pipedef has gained since runs, and so does the rest of a
 /// shared stage it is in. No `stage` carries nothing over.
 pub(super) fn carry_over(
     earlier: &Run,
@@ -408,7 +408,7 @@ pub(super) fn carry_over(
             earlier.pipeline
         )));
     }
-    let (at, task) = rerun_start(pipeline, at, task);
+    let (at, task) = restart_start(pipeline, at, task);
     let earlier_task = |stage: &str, task: &str| {
         let stage = earlier.stages.iter().find(|s| s.name == stage)?;
         stage.tasks.iter().find(|t| t.name == task)
@@ -434,7 +434,7 @@ pub(super) fn carry_over(
                     StatusCode::CONFLICT,
                     format!(
                         "{}.{} {what} in run {}, so the stages after it have nothing to build \
-                         on. Rerun {} instead.",
+                         on. Restart {} instead.",
                         this.name,
                         t.name,
                         earlier.short_id(),
@@ -444,7 +444,7 @@ pub(super) fn carry_over(
             }
             carried_here.push(was);
         }
-        // In a stage whose tasks build on each other in one sandbox, rerunning one reruns them all.
+        // In a stage whose tasks build on each other in one sandbox, restarting one restarts them all.
         let all = carried_here.len() == this.tasks.len();
         let sequential = this.sandbox.as_ref().is_some_and(|s| !s.parallel);
         if sequential && !all {
@@ -479,7 +479,7 @@ pub(super) async fn execute_run(
     let mut failed = false;
     // The run was created from this pipeline, so its stages and tasks line up one to one.
     for (index, (stage, stage_run)) in pipeline.stages.iter().zip(&r.run.stages).enumerate() {
-        // Tasks a rerun carried over keep the result they have.
+        // Tasks a restart carried over keep the result they have.
         let fresh = || stage_run.tasks.iter().filter(|t| t.carried_from.is_none());
         if failed || r.is_cancelled() {
             for task_run in fresh() {
@@ -625,7 +625,7 @@ impl Running {
 }
 
 /// Every task gets a sandbox of its own, and they all run at the same time, but for the tasks of
-/// each of the pipeline's sandboxes, which take turns in it (see run_in_sandbox). Those a rerun
+/// each of the pipeline's sandboxes, which take turns in it (see run_in_sandbox). Those a restart
 /// carried over do not run again, but count.
 pub(super) async fn run_parallel_stage(
     r: &Running,
@@ -778,7 +778,7 @@ pub(super) async fn run_in_sandbox(
 /// The tasks share one sandbox. They run one at a time, in order, each building on the one before,
 /// and once one fails the rest are skipped; or, in a `parallel` stage, all at once. Starting the
 /// sandbox shows in the first task's log, stopping it in the log of the last task to end. Tasks a
-/// rerun carried over (only a `parallel` stage has them) do not run again, but count.
+/// restart carried over (only a `parallel` stage has them) do not run again, but count.
 pub(super) async fn run_shared_stage(
     r: &Running,
     stage: &Stage,
@@ -1095,7 +1095,7 @@ pub(super) async fn task_events(
         else {
             return Ok(None);
         };
-        // A task a rerun carried over shows the log and artifacts of the run that ran it.
+        // A task a restart carried over shows the log and artifacts of the run that ran it.
         let ran = task.carried_from.unwrap_or(id);
         let carried_from = match task.carried_from {
             Some(earlier) => db.task(earlier)?.map(|(run, _)| run.id),

@@ -106,19 +106,16 @@ fn grid_matches_tasks_by_name() {
     assert_eq!(
         to_html(&grid(&pipeline(), &GridLayout::default(), {
             let layout = GridLayout::default();
-            let rows = runs
-                .iter()
-                .map(|run| run_row(&pipeline(), run, &layout, &Callback::noop()));
+            let rows = runs.iter().map(|run| run_row(&pipeline(), run, &layout));
             html! { { for rows } }
         })),
         concat!(
-            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
+            r#"<table style="grid-template-columns: max-content minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
             r#"<tr><th></th><th style="grid-column: span 1; --tasks: 1" class="stage"><span>Build</span></th>"#,
             r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span>Test</span></th></tr>"#,
             r#"<tr><th></th><th class="task first"><span>compile</span></th><th class="task first"><span>unit</span></th>"#,
             r#"<th class="task"><span>e2e</span></th></tr></thead>"#,
-            r#"<tbody><tr><th class="run running"><button title="Cancel this run: every task, now" aria-label="Cancel run" class="cancel">"#,
-            r#"<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"></path></svg></button><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
+            r#"<tbody><tr><th class="run running"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
             r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass" draggable="false"></a></td>"#,
             r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running" draggable="false"></a></td>"#,
             r#"<td class="cell"></td>"#,
@@ -143,7 +140,7 @@ fn tilted_names_and_dense_stages() {
     assert_eq!(
         to_html(&grid(&pipeline(), &layout, html! {})),
         concat!(
-            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
+            r#"<table style="grid-template-columns: max-content minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
             r#"<tr class="tilted"><th style="height: 50px"></th>"#,
             r#"<th style="grid-column: span 1; --tasks: 1" class="stage"><span style="transform: rotate(-90.00deg)">Build</span></th>"#,
             r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span style="transform: rotate(-90.00deg)">Test</span></th></tr>"#,
@@ -175,7 +172,7 @@ fn tilted_names_and_dense_stages() {
         commit: None,
     };
     assert_eq!(
-        to_html(&run_row(&pipeline(), &run, &layout, &Callback::noop())),
+        to_html(&run_row(&pipeline(), &run, &layout)),
         concat!(
             r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell first"></td>"#,
             r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass" draggable="false"></a></td>"#,
@@ -240,12 +237,7 @@ fn runs_show_their_commit() {
         sandboxes: Default::default(),
     };
     assert_eq!(
-        to_html(&run_row(
-            &pipeline,
-            &run,
-            &GridLayout::default(),
-            &Callback::noop()
-        )),
+        to_html(&run_row(&pipeline, &run, &GridLayout::default())),
         r#"<tr><th title="main @ 3fe66e3" class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th></tr>"#
     );
     let snapshot = TaskSnapshot {
@@ -342,12 +334,7 @@ fn finished_tasks_keep_their_runtime() {
         sandboxes: Default::default(),
     };
     assert_eq!(
-        to_html(&run_row(
-            &pipeline,
-            &run,
-            &GridLayout::default(),
-            &Callback::noop()
-        )),
+        to_html(&run_row(&pipeline, &run, &GridLayout::default())),
         concat!(
             r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell fail first">"#,
             r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s" draggable="false"></a></td></tr>"#,
@@ -387,7 +374,7 @@ fn skipped_tasks_are_no_link() {
     };
     let layout = GridLayout::default();
     assert_eq!(
-        to_html(&run_row(&pipeline, &run, &layout, &Callback::noop())),
+        to_html(&run_row(&pipeline, &run, &layout)),
         concat!(
             r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
             r#"<td class="cell skipped first"></td></tr>"#,
@@ -396,7 +383,7 @@ fn skipped_tasks_are_no_link() {
 }
 
 #[test]
-fn stages_after_a_failure_only_rerun_the_run() {
+fn stages_after_a_failure_only_restart_the_run() {
     let task = |n: u128, name: &str, state| TaskRun {
         id: id(n),
         name: name.into(),
@@ -430,20 +417,21 @@ fn stages_after_a_failure_only_rerun_the_run() {
         ],
         commit: None,
     };
-    let all = "<button>Rerun Task</button><button>Rerun Stage</button><button>Rerun Run</button>";
-    // The stage that failed, and the ones before it, can rerun from there.
+    let all =
+        "<button>Restart Task</button><button>Restart Stage</button><button>Restart Run</button>";
+    // The stage that failed, and the ones before it, can restart from there.
     assert_eq!(
-        to_html(&rerun_buttons(&run, "Build", &Callback::noop())),
+        to_html(&restart_buttons(&run, "Build", &Callback::noop())),
         all
     );
     assert_eq!(
-        to_html(&rerun_buttons(&run, "Test", &Callback::noop())),
+        to_html(&restart_buttons(&run, "Test", &Callback::noop())),
         all
     );
     // Deploy never ran.
     assert_eq!(
-        to_html(&rerun_buttons(&run, "Deploy", &Callback::noop())),
-        "<button>Rerun Run</button>"
+        to_html(&restart_buttons(&run, "Deploy", &Callback::noop())),
+        "<button>Restart Run</button>"
     );
 }
 
@@ -478,12 +466,7 @@ fn carried_over_tasks_say_where_from() {
         sandboxes: Default::default(),
     };
     assert_eq!(
-        to_html(&run_row(
-            &pipeline,
-            &run,
-            &GridLayout::default(),
-            &Callback::noop()
-        )),
+        to_html(&run_row(&pipeline, &run, &GridLayout::default())),
         concat!(
             r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell pass carried first">"#,
             r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over" draggable="false"></a></td></tr>"#,
@@ -505,7 +488,7 @@ fn carried_over_tasks_say_where_from() {
         concat!(
             r#"<p class="note">Carried over from run "#,
             r#"<a href="/task/00000000-0000-0000-0000-000000000004">6dfde7</a>"#,
-            r#". This rerun did not run it again.</p>"#,
+            r#", not started again.</p>"#,
         )
     );
 }
@@ -678,14 +661,14 @@ fn workers_show_what_runs_where() {
             r#"<td colspan="5" class="problem">could not reach http://worker-b:7358/events</td>"#,
             r#"<td class="since">down 1m 23s</td><td class="tasks"></td><td><button class="small">Forget</button></td></tr>"#,
             r#"<tr class="up"><td class="url">http://worker-a:7358</td>"#,
-            r#"<td>rack-1</td><td>x86_64</td><td>x86</td><td>0.1.0</td><td class="busy">1/2</td><td class="since">up 1m 23s</td>"#,
+            r#"<td data-label="host">rack-1</td><td data-label="arch">x86_64</td><td data-label="labels">x86</td><td data-label="version">0.1.0</td><td data-label="busy" class="busy">1/2</td><td class="since">up 1m 23s</td>"#,
             r#"<td class="tasks"><a href="/task/00000000-0000-0000-0000-000000000003">app 000000 Test.unit</a></td>"#,
             r#"<td><button class="small">Forget</button></td></tr></tbody></table>"#,
         )
     );
     assert_eq!(
         to_html(&super::workers(&[], 0, &Callback::noop())),
-        r#"<p class="empty">No workers yet. A pipedef that names one adds it, or add one above.</p>"#
+        r#"<p class="empty">No workers yet. A pipedef that names one adds it, or New Worker does.</p>"#
     );
 }
 
@@ -755,15 +738,15 @@ fn users_show_how_each_can_log_in() {
         concat!(
             r#"<table class="users"><thead><tr><th>User</th><th>Role</th><th>Password</th><th>Certificate</th>"#,
             r#"<th>Passkey</th><th>API Tokens</th><th></th></tr></thead><tbody>"#,
-            r#"<tr class="builtin"><td class="name">logged out</td><td><select>"#,
+            r#"<tr class="builtin"><td class="name">logged out</td><td data-label="role"><select>"#,
             r#"<option value="none">none</option><option value="read">read</option>"#,
             r#"<option value="write">write</option><option value="admin" selected="selected">admin</option></select></td>"#,
             r#"<td colspan="4" class="hint">Anyone who has not logged in</td><td class="actions"></td></tr>"#,
-            r#"<tr><td class="name">iv</td><td><select>"#,
+            r#"<tr><td class="name">iv</td><td data-label="role"><select>"#,
             r#"<option value="none">none</option><option value="read">read</option>"#,
             r#"<option value="write" selected="selected">write</option><option value="admin">admin</option></select></td>"#,
-            r#"<td>set</td><td class="certs"><span title="expires Nov  4 12:00:00 2028 GMT" class="cert">iv 1<button class="small">Revoke</button></span></td>"#,
-            r#"<td class="certs"><span class="cert">iv 1<button class="small">Revoke</button></span></td><td>1</td>"#,
+            r#"<td data-label="password">set</td><td data-label="certificate" class="certs"><span title="expires Nov  4 12:00:00 2028 GMT" class="cert">iv 1<button class="small">Revoke</button></span></td>"#,
+            r#"<td data-label="passkey" class="certs"><span class="cert">iv 1<button class="small">Revoke</button></span></td><td data-label="api tokens">1</td>"#,
             r#"<td class="actions"><button class="small">Set Password</button><button class="small">New Token</button><button class="small">New Certificate</button>"#,
             r#"<button class="small">New Passkey</button><button class="small">Remove</button></td></tr>"#,
             r#"</tbody></table>"#,
@@ -810,21 +793,50 @@ fn account_is_a_person_icon() {
 }
 
 #[test]
-fn header_keeps_the_account_at_the_end_of_its_row() {
+fn header_is_one_row_of_the_mark_the_page_and_icons() {
+    let svg = r#"<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">"#;
+    let icons = [
+        r#"<nav class="links"><a href="/" title="Pipelines" aria-label="Pipelines" class="icon">"#,
+        svg,
+        r#"<rect x="3.5" y="4.5" width="17" height="15"></rect><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10M15 9.5v10"></path></svg></a>"#,
+        r#"<a href="/workers" title="Workers" aria-label="Workers" class="icon">"#,
+        svg,
+        r#"<rect x="3.5" y="4.5" width="17" height="6"></rect><rect x="3.5" y="13.5" width="17" height="6"></rect><path d="M7 7.5h2M7 16.5h2"></path></svg></a>"#,
+        r#"<a href="/settings" title="Settings" aria-label="Settings" class="icon">"#,
+        svg,
+        r#"<path d="M3.5 7.5h17M3.5 16.5h17"></path><circle cx="9" cy="7.5" r="2.5" fill="var(--background)"></circle>"#,
+        r#"<circle cx="15" cy="16.5" r="2.5" fill="var(--background)"></circle></svg></a>"#,
+        r#"<a href="/users" title="Users" aria-label="Users" class="icon">"#,
+        svg,
+        r#"<circle cx="9" cy="8.5" r="3"></circle><path d="M3 19.5c1-3 3-4.5 6-4.5s5 1.5 6 4.5"></path>"#,
+        r#"<path d="M15 5.8a3 3 0 0 1 0 5.4M17.5 15.3c1.6.6 2.7 2 3.3 4.2"></path></svg></a>"#,
+        r#"<button class="account">me</button></nav>"#,
+    ]
+    .concat();
     assert_eq!(
         to_html(&header(
             html! { <a href="/pipeline/app">{ "app" }</a> },
             html! { <button class="primary">{ "New Run" }</button> },
             html! { <button class="account">{ "me" }</button> },
         )),
-        concat!(
-            r#"<header><div class="row"><a href="/" class="home"><img src="/assets/mark.v1.svg" alt="bettertest"></img></a>"#,
+        [
+            r#"<header><a href="/" class="home"><img src="/assets/mark.v1.svg" alt="bettertest"></img></a>"#,
             r#"<span class="context"><a href="/pipeline/app">app</a>"#,
             r#"<span class="actions"><button class="primary">New Run</button></span></span>"#,
-            r#"<span class="you"><button class="account">me</button></span></div>"#,
-            r#"<nav class="links"><a href="/workers" class="page">Workers</a>"#,
-            r#"<a href="/settings" class="page">Settings</a><a href="/users" class="page">Users</a></nav></header>"#,
-        )
+            &icons,
+            "</header>",
+        ]
+        .concat()
+    );
+    // A page with nothing of its own has no line for it on a phone.
+    assert_eq!(
+        to_html(&header(html! {}, html! {}, html! { <button class="account">{ "me" }</button> })),
+        [
+            r#"<header><a href="/" class="home"><img src="/assets/mark.v1.svg" alt="bettertest"></img></a>"#,
+            &icons,
+            "</header>",
+        ]
+        .concat()
     );
 }
 
@@ -926,7 +938,7 @@ fn results_put_failures_first_then_the_slowest() {
     };
     let row = |o: &str, stage: &str, n: u128, name: &str, took: &str, tests: &str, failed: &str| {
         format!(
-            r#"<tr><td><span class="state {o}">{o}</span></td><td>{stage}</td><td><a href="/task/{}">{name}</a></td><td class="number">{took}</td><td class="number">{tests}</td><td class="number">{failed}</td></tr>"#,
+            r#"<tr><td><span class="state {o}">{o}</span></td><td>{stage}</td><td><a href="/task/{}">{name}</a></td><td data-label="took" class="number">{took}</td><td data-label="tests" class="number">{tests}</td><td data-label="failed" class="number">{failed}</td></tr>"#,
             id(n)
         )
     };
@@ -936,7 +948,7 @@ fn results_put_failures_first_then_the_slowest() {
             r#"<p class="totals"><span class="state fail">1 fail</span><span class="state error">2 error</span>"#,
             r#"<span class="state skipped">1 skipped</span><span class="state pass">2 pass</span>"#,
             r#"<span>1,032,528 tests, 2 failed</span></p><table class="results">"#,
-            r#"<tr><th></th><th>Stage</th><th>Task</th><th>Took</th><th>Tests</th><th>Failed</th></tr>"#,
+            r#"<thead><tr><th></th><th>Stage</th><th>Task</th><th>Took</th><th>Tests</th><th>Failed</th></tr></thead><tbody>"#,
         )
         .to_string(),
         row("fail", "Test", 5, "fts", "1.0s", "1,234", "2"),
@@ -945,7 +957,7 @@ fn results_put_failures_first_then_the_slowest() {
         row("skipped", "Report", 7, "summary", "", "", ""),
         row("pass", "Build", 2, "testfixture", "1m 30s", "", ""),
         row("pass", "Test", 3, "quick", "2.0s", "1,031,284", "0"),
-        "</table>".to_string(),
+        "</tbody></table>".to_string(),
     ];
     assert_eq!(to_html(&results(&run, html! {})), expected.concat());
 }

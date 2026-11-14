@@ -3,6 +3,7 @@
 macro_rules! println {
     ($($t:tt)*) => {{ use std::io::Write as _; let _ = writeln!(std::io::stdout(), $($t)*); }};
 }
+
 macro_rules! eprintln {
     ($($t:tt)*) => {{ use std::io::Write as _; let _ = writeln!(std::io::stderr(), $($t)*); }};
 }

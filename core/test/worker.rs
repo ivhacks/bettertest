@@ -479,5 +479,8 @@ class C(Stage):
 async fn a_missing_program_is_named_as_not_installed() {
     let mut command = tokio::process::Command::new("bettertest-no-such-program");
     let err = output(&mut command).await.unwrap_err();
-    assert_eq!(err, "bettertest-no-such-program is not installed on this worker");
+    assert_eq!(
+        err,
+        "bettertest-no-such-program is not installed on this worker"
+    );
 }
