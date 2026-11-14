@@ -34,6 +34,8 @@ fn what_each_route_needs() {
     assert_eq!(needed("GET", "/pipeline/app"), None);
     assert_eq!(needed("GET", "/bettertest-frontend-1a2b.wasm"), None);
     assert_eq!(needed("POST", "/api/login"), None);
+    // A browser that cannot start the ui has not logged in, and still gets to say why.
+    assert_eq!(needed("POST", "/api/startup-error"), None);
     assert_eq!(needed("GET", "/api/pipeline/app/events"), Some(Role::Read));
     assert_eq!(needed("GET", "/artifact/debian.qcow2"), Some(Role::Read));
     assert_eq!(needed("POST", "/api/start-run/app"), Some(Role::Write));
