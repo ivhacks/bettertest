@@ -328,7 +328,10 @@ pub async fn output(command: &mut Command) -> Result<String, String> {
         .stdin(Stdio::null())
         .output()
         .await
-        .map_err(|e| format!("could not run {program}: {e}"))?;
+        .map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => format!("{program} is not installed on this worker"),
+            _ => format!("could not run {program}: {e}"),
+        })?;
     if !output.status.success() {
         return Err(format!(
             "{program} failed: {}",

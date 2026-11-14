@@ -470,7 +470,7 @@ python3 frontend/test/narrow.py              # phone widths, against `unified fr
 
 ### Releases
 
-Semantic versioning, from `core/Cargo.toml`'s version; a release is the tag `v<version>` on master plus a Forgejo release of that name with `release.sh`'s files attached. `./release.sh <version>` (on x86_64, zig on PATH) refuses a version Cargo.toml does not have, then builds each architecture once and packages it, so all of an architecture's files carry the same binary (rpm's post-install scripts are off so it does not re-strip it):
+Semantic versioning, from `core/Cargo.toml`'s version; a release is the tag `v<version>` on master plus a GitHub release of that name with `release.sh`'s files attached. `./release.sh <version>` (on x86_64, zig on PATH) refuses a version Cargo.toml does not have, then builds each architecture once and packages it, so all of an architecture's files carry the same binary (rpm's post-install scripts are off so it does not re-strip it):
 
 ```
 dist/0.2.0/  bettertest-0.2.0-x86_64-linux  bettertest-0.2.0-aarch64-linux
@@ -478,7 +478,7 @@ dist/0.2.0/  bettertest-0.2.0-x86_64-linux  bettertest-0.2.0-aarch64-linux
              bettertest-0.2.0-1.x86_64.rpm  bettertest-0.2.0-1.aarch64.rpm   SHA256SUMS
 ```
 
-To release: bump the version in `core/Cargo.toml` in a PR, merge it, tag the merge commit, run `release.sh`, and create the release on Forgejo with the files.
+To release: bump the version in `core/Cargo.toml` in a PR, merge it, tag the merge commit, run `release.sh`, and create the release on GitHub with the files.
 
 ### Verification toolkit
 
@@ -509,10 +509,10 @@ What has worked for evidence on this machine:
 
 ## Git and PRs
 
-- Forgejo at `http://van.local:3000/iv/bettertest` is the source of truth (git remote `origin`). The `github` remote (https://github.com/ivhacks/bettertest) is a mirror, not where PRs go. Never fork.
+- GitHub at https://github.com/ivhacks/bettertest is the source of truth (git remote `origin`), and where PRs go. Never fork.
 - Master is the only long-lived branch. Feature branches are short and literal (`trim-noise`, not `gork/trim-noise`, not a joke) and are deleted after merging.
-- Claude works on Forgejo as **`clod`** (admin): pushes, opens PRs, answers review comments, merges. Credentials come from the user per session and are never stored in git config or files in the repo. Forgejo's API cannot reply inside an inline review thread; answer with one PR comment quoting each point.
-- PRs land on master as **squash merges** only (the repo enforces it): one commit per PR, authored by whoever wrote the PR. Merge once Iv approves in a comment.
+- Claude commits as **`clod`** (`clod@bettertest.dev`) and pushes, opens PRs, answers review comments and merges through GitHub's API with a token Iv gives per session, never stored in git config or files in the repo.
+- PRs land on master as **squash merges**: one commit per PR. Merge once Iv approves, or, when Iv has handed over merging, once `cargo test --workspace` has 0 failures and the VE is on the PR.
 - Commits by Claude end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; PR descriptions end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 
 ### Verification evidence
