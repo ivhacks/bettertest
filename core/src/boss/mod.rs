@@ -49,13 +49,11 @@ use uuid::Uuid;
 mod artifacts;
 mod runs;
 mod users;
-pub(crate) mod views;
 mod workers;
 
 use artifacts::*;
 use runs::*;
 use users::*;
-use views::*;
 use workers::*;
 
 // frontend/dist, with the brotli and gzip copies build.rs made of it.
@@ -193,7 +191,6 @@ pub async fn entry(
         .route("/api/pipelines", get(get_pipelines))
         .route("/api/pipeline/{name}", get(get_pipeline))
         .route("/api/pipeline/{name}/events", get(pipeline_events))
-        .route("/api/pipeline/{name}/view/{view}", get(view_data))
         .route("/api/start-run/{name}", post(start_run))
         .route("/api/push-hook", post(push_hook))
         .route("/api/cancel-run/{run}", post(cancel_run))
@@ -267,7 +264,7 @@ pub async fn entry(
     Ok(())
 }
 
-pub(crate) type Failure = (axum::http::StatusCode, String);
+pub(crate) type Failure = (StatusCode, String);
 
 /// Milliseconds since 1970. A clock set before 1970 reads as 1970.
 fn now() -> u64 {
@@ -276,11 +273,11 @@ fn now() -> u64 {
 }
 
 pub(crate) fn internal(e: impl ToString) -> Failure {
-    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
 fn not_found(what: impl std::fmt::Display) -> Failure {
-    (axum::http::StatusCode::NOT_FOUND, format!("no {what}"))
+    (StatusCode::NOT_FOUND, format!("no {what}"))
 }
 
 fn parse_id(id: &str) -> Result<Uuid, Failure> {

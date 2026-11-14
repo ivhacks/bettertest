@@ -257,10 +257,6 @@ def dump_json(pipedef: dict[str, Any]) -> str:
         raise ValueError(
             f"a pipedef declares its labels in one Labels class, not in {names}"
         )
-    views = []
-    for name, obj in pipedef.items():
-        if callable(obj) and hasattr(obj, "bettertest_view"):
-            views.append(name)
     stages = []
     for stage in Stage.__subclasses__():
         name = stage.__name__
@@ -341,7 +337,7 @@ def dump_json(pipedef: dict[str, Any]) -> str:
     unused = sorted(set(sandbox_names.values()) - set(used))
     if unused:
         raise ValueError(f"no task runs in Sandbox {', '.join(unused)}")
-    return json.dumps({"stages": stages, "sandboxes": used, "views": views})
+    return json.dumps({"stages": stages, "sandboxes": used})
 
 
 def _sandbox() -> dict:
@@ -596,10 +592,3 @@ def _fetch(url: str, parts: list[str], announce: str | None) -> Path:
         run = response.headers.get("bettertest-run", "").replace("-", "")[:6]
         print(f"got {announce} from run {run}", flush=True)
     return path
-
-
-def view(fn: Callable[[list[Any]], Any]):
-    """Mark a function as a view that returns a Plotly figure. The function receives a list of
-    run data (as dicts) and returns a Plotly figure object, which the UI renders interactively."""
-    fn.bettertest_view = True  # ty: ignore[unresolved-attribute]
-    return fn

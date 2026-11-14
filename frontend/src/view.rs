@@ -591,46 +591,18 @@ pub fn forget_window(
 }
 
 /// Download links for the files the task published. Nothing at all when there are none.
-/// HTML reports are embedded inline for viewing.
 pub fn artifacts(task: &TaskRun, artifacts: &[Artifact]) -> Html {
     if artifacts.is_empty() {
         return html! {};
     }
-    let (html_reports, other): (Vec<_>, Vec<_>) = artifacts
-        .iter()
-        .partition(|a| a.name.ends_with(".html") || a.name.ends_with(".htm"));
-    let links = if !other.is_empty() {
-        html! {
-            <nav class="artifacts">
-                { for other.iter().map(|a| html! {
-                    <a href={format!("/api/task/{}/artifact/{}", task.id, a.name)} download="">
-                        { &a.name }<span class="size">{ size(a.size) }</span>
-                    </a>
-                }) }
-            </nav>
-        }
-    } else {
-        html! {}
-    };
-    let embedded = html! {
-        { for html_reports.iter().map(|a| {
-            let url = format!("/api/task/{}/artifact/{}", task.id, a.name);
-            html! {
-                <div class="embedded-report">
-                    <div class="embedded-report-header">
-                        <h3>{ &a.name }</h3>
-                        <a href={url.clone()} download="" class="download-link">{ "Download" }</a>
-                    </div>
-                    <iframe src={url} class="report-iframe" sandbox="allow-scripts allow-same-origin"></iframe>
-                </div>
-            }
-        }) }
-    };
     html! {
-        <>
-            { links }
-            { embedded }
-        </>
+        <nav class="artifacts">
+            { for artifacts.iter().map(|a| html! {
+                <a href={format!("/api/task/{}/artifact/{}", task.id, a.name)} download="">
+                    { &a.name }<span class="size">{ size(a.size) }</span>
+                </a>
+            }) }
+        </nav>
     }
 }
 
@@ -727,24 +699,6 @@ pub fn log(lines: &[LogLine]) -> Html {
                 <div class={l.stream.as_str()}>{ &l.line }</div>
             }) }
         </pre>
-    }
-}
-
-pub fn views(pipeline_name: &str, view_names: &[String]) -> Html {
-    html! {
-        <section class="views">
-            <h2>{ "Views" }</h2>
-            { for view_names.iter().map(|name| {
-                let id = format!("view-{}", name);
-                let url = format!("/api/pipeline/{}/view/{}", pipeline_name, name);
-                html! {
-                    <div class="view-container">
-                        <h3>{ name }</h3>
-                        <div id={id} class="plotly-view" data-url={url}></div>
-                    </div>
-                }
-            }) }
-        </section>
     }
 }
 

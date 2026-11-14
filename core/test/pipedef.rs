@@ -116,31 +116,3 @@ class Hello(Stage):
     let err = run(parse(source)).expect_err("a worker or labels are required");
     assert!(err.contains("needs a worker or labels"), "{err}");
 }
-
-#[test]
-fn views_are_extracted_from_pipedef() {
-    let source = r#"
-from bettertest import Labels, Stage, task, view
-
-class Label(Labels):
-    x86 = "x86"
-
-class Test(Stage):
-    labels = [Label.x86]
-    @task()
-    def run():
-        pass
-
-@view
-def outcomes(results):
-    return {"data": []}
-
-@view
-def durations(results):
-    return {"data": []}
-"#;
-    let pipeline = run(parse(source)).expect("pipedef");
-    assert_eq!(pipeline.views.len(), 2);
-    assert!(pipeline.views.contains(&"outcomes".to_string()));
-    assert!(pipeline.views.contains(&"durations".to_string()));
-}

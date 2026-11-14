@@ -69,51 +69,6 @@ pub async fn parse(pipedef: &str) -> Result<Pipeline, String> {
     serde_json::from_slice(&output.stdout).map_err(|e| format!("pipedef dumped bad json: {e}"))
 }
 
-pub async fn call_view(pipedef: &str, view: &str, results_json: &str) -> Result<String, String> {
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(GLUE)
-        .arg("view")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("could not start python3: {e}"))?;
-    let Some(mut stdin) = child.stdin.take() else {
-        return Err("python3 has no stdin".into());
-    };
-    let results: Value = serde_json::from_str(results_json)
-        .map_err(|e| format!("invalid results json: {e}"))?;
-    let mut input = library_line();
-    input.extend(
-        serde_json::json!({
-            "pipedef": pipedef,
-            "target": Value::Null,
-            "files": Value::Null,
-            "task": Value::Null,
-            "cwd": Value::Null,
-            "view": view,
-            "results": results,
-        })
-        .to_string()
-        .into_bytes(),
-    );
-    stdin
-        .write_all(&input)
-        .await
-        .map_err(|e| format!("could not send to python3: {e}"))?;
-    drop(stdin);
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("python3 failed: {e}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 #[cfg(test)]
 #[path = "../test/pipedef.rs"]
 mod tests;

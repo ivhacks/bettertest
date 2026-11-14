@@ -48,66 +48,6 @@ fn task(name: &str) -> Task {
     }
 }
 
-#[test]
-fn views_render_with_plotly_containers() {
-    let html = views("testpipe", &["outcomes".to_string(), "durations".to_string()]);
-    let s = to_html(&html);
-    assert!(s.contains(r#"<section class="views">"#), "{s}");
-    assert!(s.contains("<h2>Views</h2>"), "{s}");
-    assert!(s.contains(r#"<div class="view-container">"#), "{s}");
-    assert!(s.contains("<h3>outcomes</h3>"), "{s}");
-    assert!(
-        s.contains(r#"<div id="view-outcomes" data-url="/api/pipeline/testpipe/view/outcomes" class="plotly-view"></div>"#),
-        "{s}"
-    );
-    assert!(s.contains("<h3>durations</h3>"), "{s}");
-    assert!(
-        s.contains(r#"<div id="view-durations" data-url="/api/pipeline/testpipe/view/durations" class="plotly-view"></div>"#),
-        "{s}"
-    );
-}
-
-#[test]
-fn html_artifacts_are_embedded_in_iframes() {
-    let task = TaskRun {
-        id: id(1),
-        name: "test".into(),
-        state: TaskState::Pass,
-        worker: Some("worker".into()),
-        started: Some(100),
-        ended: Some(200),
-        carried_from: None,
-        tests: None,
-    };
-    let artifacts = vec![
-        Artifact {
-            name: "report.html".into(),
-            size: 1024,
-        },
-        Artifact {
-            name: "data.json".into(),
-            size: 512,
-        },
-    ];
-    let html = super::artifacts(&task, &artifacts);
-    let s = to_html(&html);
-    assert!(s.contains(r#"<div class="embedded-report">"#), "{s}");
-    assert!(s.contains(r#"<div class="embedded-report-header">"#), "{s}");
-    assert!(s.contains("<h3>report.html</h3>"), "{s}");
-    assert!(
-        s.contains(r#"<a href="/api/task/00000000-0000-0000-0000-000000000001/artifact/report.html" download="" class="download-link">Download</a>"#),
-        "{s}"
-    );
-    assert!(
-        s.contains(r#"<iframe src="/api/task/00000000-0000-0000-0000-000000000001/artifact/report.html" sandbox="allow-scripts allow-same-origin" class="report-iframe"></iframe>"#),
-        "{s}"
-    );
-    assert!(
-        s.contains(r#"<a href="/api/task/00000000-0000-0000-0000-000000000001/artifact/data.json" download="">data.json"#),
-        "{s}"
-    );
-}
-
 fn pipeline() -> Pipeline {
     Pipeline {
         stages: vec![
@@ -123,7 +63,6 @@ fn pipeline() -> Pipeline {
             },
         ],
         sandboxes: Default::default(),
-        views: vec![],
     }
 }
 
@@ -281,7 +220,6 @@ fn runs_show_their_commit() {
     let pipeline = Pipeline {
         stages: vec![],
         sandboxes: Default::default(),
-        views: vec![],
     };
     assert_eq!(
         to_html(&run_row(
@@ -384,7 +322,6 @@ fn finished_tasks_keep_their_runtime() {
             tasks: vec![task("compile")],
         }],
         sandboxes: Default::default(),
-        views: vec![],
     };
     assert_eq!(
         to_html(&run_row(
@@ -481,7 +418,6 @@ fn carried_over_tasks_say_where_from() {
             tasks: vec![super::tests::task("unit")],
         }],
         sandboxes: Default::default(),
-        views: vec![],
     };
     assert_eq!(
         to_html(&run_row(

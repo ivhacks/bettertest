@@ -65,9 +65,6 @@ pub struct Pipeline {
     // Sandboxes that tasks of several stages share, by name. Each lives from the first stage that
     // uses it to the last.
     pub sandboxes: BTreeMap<String, Sandbox>,
-    // View function names that return Plotly figures.
-    #[serde(default)]
-    pub views: Vec<String>,
 }
 
 // One execution of a pipeline. A run captures its own stage/task structure when it is created,
