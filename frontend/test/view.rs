@@ -113,14 +113,14 @@ fn grid_matches_tasks_by_name() {
         })),
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
-            r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
-            r#"<th style="grid-column: span 2" class="stage"><span>Test</span></th></tr>"#,
+            r#"<tr><th></th><th style="grid-column: span 1; --tasks: 1" class="stage"><span>Build</span></th>"#,
+            r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span>Test</span></th></tr>"#,
             r#"<tr><th></th><th class="task first"><span>compile</span></th><th class="task first"><span>unit</span></th>"#,
             r#"<th class="task"><span>e2e</span></th></tr></thead>"#,
             r#"<tbody><tr><th class="run running"><button title="Cancel this run: every task, now" aria-label="Cancel run" class="cancel">"#,
             r#"<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"></path></svg></button><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
-            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass"></a></td>"#,
-            r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running"></a></td>"#,
+            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass" draggable="false"></a></td>"#,
+            r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running" draggable="false"></a></td>"#,
             r#"<td class="cell"></td>"#,
             r#"</tr></tbody></table>"#,
         )
@@ -130,17 +130,24 @@ fn grid_matches_tasks_by_name() {
 #[test]
 fn tilted_names_and_dense_stages() {
     let layout = GridLayout {
-        angle: 37.5,
-        height: 84.0,
+        stages: Tilt {
+            angle: 90.0,
+            height: 50.0,
+        },
+        tasks: Tilt {
+            angle: 37.5,
+            height: 84.0,
+        },
         dense: vec![false, true],
     };
     assert_eq!(
         to_html(&grid(&pipeline(), &layout, html! {})),
         concat!(
-            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid tilted"><thead>"#,
-            r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
-            r#"<th style="grid-column: span 2" class="stage"><span>Test</span></th></tr>"#,
-            r#"<tr><th style="height: 84px"></th>"#,
+            r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
+            r#"<tr class="tilted"><th style="height: 50px"></th>"#,
+            r#"<th style="grid-column: span 1; --tasks: 1" class="stage"><span style="transform: rotate(-90.00deg)">Build</span></th>"#,
+            r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span style="transform: rotate(-90.00deg)">Test</span></th></tr>"#,
+            r#"<tr class="tilted"><th style="height: 84px"></th>"#,
             r#"<th style="height: 84px" class="task first"><span style="transform: rotate(-37.50deg)">compile</span></th>"#,
             r#"<th style="height: 84px" class="task first dense"><span style="transform: rotate(-37.50deg)">unit</span></th>"#,
             r#"<th style="height: 84px" class="task dense"><span style="transform: rotate(-37.50deg)">e2e</span></th>"#,
@@ -171,7 +178,7 @@ fn tilted_names_and_dense_stages() {
         to_html(&run_row(&pipeline(), &run, &layout, &Callback::noop())),
         concat!(
             r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell first"></td>"#,
-            r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass"></a></td>"#,
+            r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass" draggable="false"></a></td>"#,
             r#"<td class="cell dense"></td></tr>"#,
         )
     );
@@ -188,21 +195,32 @@ fn stages_with_more_tasks_are_wider_but_each_task_narrower() {
 
 #[test]
 fn names_lie_as_flat_as_they_can() {
+    let all = |labels: &[f64]| labels.iter().copied().map(Some).collect::<Vec<_>>();
     // Every name fits its column: flat.
     assert_eq!(
-        label_layout(&[100.0, 100.0], &[60.0, 90.0], 24.0),
-        (0.0, 0.0)
+        label_layout(&[100.0, 100.0], &all(&[60.0, 90.0]), 24.0),
+        Tilt::default()
     );
     // One does not: all tilt, by the angle that puts neighbours a line apart across.
-    let (angle, height) = label_layout(&[100.0, 100.0], &[60.0, 150.0], 24.0);
-    assert!((angle - 13.9).abs() < 0.1, "{angle}");
-    assert_eq!(height, 64.0);
+    let tilt = label_layout(&[100.0, 100.0, 300.0], &all(&[60.0, 150.0, 10.0]), 24.0);
+    assert!((tilt.angle - 13.9).abs() < 0.1, "{}", tilt.angle);
+    assert_eq!(tilt.height, 64.0);
     // The narrowest column sets the angle for all of them.
-    let (narrow, _) = label_layout(&[100.0, 50.0], &[60.0, 150.0], 24.0);
-    assert!((narrow - 28.7).abs() < 0.1, "{narrow}");
+    let narrow = label_layout(&[100.0, 50.0, 300.0], &all(&[60.0, 150.0, 10.0]), 24.0);
+    assert!((narrow.angle - 28.7).abs() < 0.1, "{}", narrow.angle);
     // Columns narrower than the spacing stand the names upright.
-    let (upright, _) = label_layout(&[20.0], &[150.0], 24.0);
-    assert_eq!(upright, 90.0);
+    let upright = label_layout(&[20.0], &all(&[150.0]), 24.0);
+    assert_eq!(upright.angle, 90.0);
+    // A name near the right edge tilts them all further, to stay inside the grid.
+    let edge = label_layout(&[100.0, 100.0], &all(&[60.0, 150.0]), 24.0);
+    assert!((edge.angle - 72.1).abs() < 0.1, "{}", edge.angle);
+    // A dense stage's hidden names neither tilt the others nor need room, but leave theirs.
+    let hidden = label_layout(
+        &[100.0, 10.0, 300.0],
+        &[Some(150.0), None, Some(10.0)],
+        24.0,
+    );
+    assert!((hidden.angle - 13.9).abs() < 0.1, "{}", hidden.angle);
 }
 
 #[test]
@@ -332,7 +350,47 @@ fn finished_tasks_keep_their_runtime() {
         )),
         concat!(
             r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell fail first">"#,
-            r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s"></a></td></tr>"#,
+            r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s" draggable="false"></a></td></tr>"#,
+        )
+    );
+}
+
+#[test]
+fn skipped_tasks_are_no_link() {
+    let compile = TaskRun {
+        id: id(2),
+        name: "compile".into(),
+        state: TaskState::Skipped,
+        worker: None,
+        started: None,
+        ended: None,
+        carried_from: None,
+        tests: None,
+    };
+    let run = Run {
+        id: id(1),
+        pipeline: "app".into(),
+        state: RunState::Fail,
+        stages: vec![StageRun {
+            name: "Build".into(),
+            tasks: vec![compile],
+        }],
+        commit: None,
+    };
+    let pipeline = Pipeline {
+        stages: vec![Stage {
+            name: "Build".into(),
+            sandbox: None,
+            tasks: vec![task("compile")],
+        }],
+        sandboxes: Default::default(),
+    };
+    let layout = GridLayout::default();
+    assert_eq!(
+        to_html(&run_row(&pipeline, &run, &layout, &Callback::noop())),
+        concat!(
+            r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
+            r#"<td class="cell skipped first"></td></tr>"#,
         )
     );
 }
@@ -428,7 +486,7 @@ fn carried_over_tasks_say_where_from() {
         )),
         concat!(
             r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell pass carried first">"#,
-            r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over"></a></td></tr>"#,
+            r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over" draggable="false"></a></td></tr>"#,
         )
     );
     let snapshot = TaskSnapshot {

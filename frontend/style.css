@@ -30,6 +30,7 @@
     --pass: #2ea44f;
     --fail: #e5484d;
     --running: #ff6e00;
+    --fade: 420ms;
     --font: "Archivo", system-ui, sans-serif;
     --mono: "Martian Mono", ui-monospace, monospace;
     color-scheme: dark;
@@ -70,10 +71,13 @@ a {
     text-decoration: none;
 }
 
+/* On a narrow screen it wraps onto more lines rather than widen the page. */
 header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
+    overflow-wrap: anywhere;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     font-size: 19px;
@@ -133,7 +137,6 @@ header .page {
 button {
     --cut: 10px;
     --fill: var(--line);
-    --fade: 420ms;
     position: relative;
     isolation: isolate;
     height: 38px;
@@ -187,19 +190,23 @@ button.small {
 }
 
 button:hover,
-button:focus-visible {
+button:focus-visible,
+.cell a:hover,
+.cell a:focus-visible {
     outline: none;
     background: color-mix(in srgb, var(--fill), #ffffff 22%);
 }
 
 button:active,
-button:active::before {
+button:active::before,
+.cell a:active {
     background: #ffffff;
     color: #000000;
 }
 
 button.released,
-button.released::before {
+button.released::before,
+.cell a.released {
     animation: released var(--fade) ease-out;
 }
 
@@ -224,11 +231,16 @@ main {
     border-left: 3px solid var(--accent);
     background: var(--surface);
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
+/* However many pipelines there are, the tabs wrap rather than scroll sideways, and take at most a
+   quarter of the screen. */
 .tabs {
     display: flex;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    max-height: 25vh;
+    overflow: hidden auto;
     border-top: 1px solid var(--line);
     font-size: 18px;
     font-stretch: 70%;
@@ -271,8 +283,9 @@ main {
     color: var(--muted);
 }
 
-/* Tasks sit 2px apart and stages 10px: padding the cell's color stays out of. A stage too narrow
-   for gaps runs its tasks together into one rectangle. */
+/* Tasks sit 2px apart and stages 10px, or a tenth of a column if that is less, so no number of
+   stages pushes the grid past the screen: padding the cell's color stays out of. A stage too
+   narrow for gaps runs its tasks together into one rectangle. */
 .grid .cell,
 .grid .task {
     padding-left: 2px;
@@ -282,39 +295,48 @@ main {
     padding-left: 0;
 }
 
+/* Hidden, the names still have their size, for measuring, but take no room past their column. */
+.grid .task.dense {
+    overflow: hidden;
+}
+
 .grid .task.dense span {
     visibility: hidden;
 }
 
 .grid .first,
 .grid .stage {
-    padding-left: 10px;
+    padding-left: min(10px, 10% / var(--tasks, 1));
+}
+
+/* A line under each stage, its tasks' width, past the gap before it. */
+.grid .stage {
+    background: linear-gradient(var(--line) 0 0) bottom / 100% 1px no-repeat content-box;
 }
 
 .grid .stage span {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    border-bottom: 1px solid var(--line);
+    padding-bottom: 1px;
     color: var(--text);
     font-weight: 700;
+}
+
+.grid .stage,
+.grid .task {
+    position: relative;
+    white-space: nowrap;
     text-align: center;
 }
 
 .grid .task {
-    position: relative;
     align-self: end;
-    white-space: nowrap;
-    text-align: center;
 }
 
-.grid .task span {
+.grid th span {
     display: inline-block;
 }
 
 /* Tilted names rise to the right from the middle of their column, all at one angle. */
-.grid.tilted .task span {
+.grid .tilted span {
     position: absolute;
     left: calc(50% + 1px);
     bottom: 2px;
@@ -326,7 +348,9 @@ main {
     text-align: right;
 }
 
-.run {
+.run,
+.run a {
+    color: var(--muted);
     font-family: var(--mono);
     font-size: 13px;
     white-space: nowrap;
@@ -353,7 +377,10 @@ button.cancel svg {
     stroke-width: 2;
 }
 
+/* A cell's color is its link's, which lights up and presses like a button. A skipped task has no
+   link, so its cell stays still. */
 .cell {
+    --fill: var(--surface);
     height: 22px;
     background: var(--surface);
     background-clip: content-box;
@@ -362,18 +389,19 @@ button.cancel svg {
 .cell a {
     display: block;
     height: 100%;
+    background: var(--fill);
 }
 
 .cell.pass {
-    background-color: var(--pass);
+    --fill: var(--pass);
 }
 
 .cell.fail {
-    background-color: var(--fail);
+    --fill: var(--fail);
 }
 
 .cell.running {
-    background-color: var(--running);
+    --fill: var(--running);
     animation: pulse 1.2s ease-in-out infinite;
 }
 
@@ -439,6 +467,7 @@ header .runtime {
     gap: 4px 20px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--line);
+    overflow-wrap: anywhere;
 }
 
 .artifacts .size {
@@ -476,6 +505,7 @@ main.follow > * {
 
 .add {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
 }
 
@@ -483,6 +513,7 @@ input {
     height: 38px;
     box-sizing: border-box;
     width: 260px;
+    max-width: 100%;
     padding: 0 10px;
     border: 1px solid var(--line);
     background: var(--background);
@@ -495,10 +526,22 @@ input:focus {
     border-color: var(--highlight);
 }
 
+/* Too wide for a phone, they scroll sideways on their own. Results are on the pipeline page, which
+   never scrolls sideways, so they break their words instead. */
+.workers,
+.users {
+    display: block;
+    overflow-x: auto;
+}
+
 .workers,
 .users,
 .results {
     border-collapse: collapse;
+}
+
+.results {
+    overflow-wrap: anywhere;
 }
 
 .workers th,
@@ -570,8 +613,11 @@ input:focus {
     --cut: 16px;
     position: relative;
     isolation: isolate;
-    width: 560px;
+    box-sizing: border-box;
+    width: 616px;
+    max-width: calc(100% - 32px);
     padding: 28px;
+    overflow-wrap: anywhere;
     background: var(--line);
 }
 
@@ -698,12 +744,9 @@ main > .add {
 /* Phones. "Log In" would wrap onto two lines, so it and the account controls become one person
    icon; New Run and that icon keep a row together, and the nav takes the line below. */
 @media (max-width: 640px) {
-    header {
-        flex-wrap: wrap;
-    }
-
     header .actions {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 10px;
         margin-left: auto;
@@ -774,5 +817,34 @@ main > .add {
 
     .grid {
         row-gap: 10px;
+    }
+}
+
+/* A finger needs 44px to hit what it aims at. The grid's rows stay small: 44px tall, a screen would
+   hold a dozen runs. */
+@media (pointer: coarse) {
+    header a,
+    .tab,
+    .artifacts a,
+    .results a,
+    .workers .tasks a,
+    button:not(.grid button),
+    input,
+    select {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    header a,
+    .tab,
+    .artifacts a,
+    .results a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .results td {
+        vertical-align: middle;
     }
 }

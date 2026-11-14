@@ -43,16 +43,24 @@ pub fn tabs(names: &[String], current: &str) -> Html {
     }
 }
 
-/// How the grid lays out the task names and cells, measured in the browser (see `label_layout`).
+/// How the grid lays out the stage and task names and cells, measured in the browser (see
+/// `label_layout`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GridLayout {
-    // The task names tilt up by this many degrees, all the same. 0 is flat.
-    pub angle: f64,
-    // The height of the row of task names, in px. 0 leaves it to the browser.
-    pub height: f64,
+    pub stages: Tilt,
+    pub tasks: Tilt,
     // By stage: columns too narrow for gaps between them, so the stage's tasks run together into
     // one rectangle.
     pub dense: Vec<bool>,
+}
+
+/// How one row of names lies.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Tilt {
+    // The names tilt up by this many degrees, all the same. 0 is flat.
+    pub angle: f64,
+    // The height of the row, in px. 0 leaves it to the browser.
+    pub height: f64,
 }
 
 /// How wide each stage is, relative to the others. More tasks make a stage wider, but each of
@@ -62,24 +70,34 @@ pub fn stage_weight(tasks: usize) -> f64 {
     (tasks as f64).sqrt()
 }
 
-/// The angle and row height for task names `labels` px long, each centered on a column `columns`
-/// px wide, with lines `line` px tall. Flat when every name fits its column. Otherwise every name
-/// tilts by the one angle that keeps them as flat as possible while neighbours stay a full line
-/// apart across, a clear gap over the letters, so they never run together into one word.
-pub fn label_layout(columns: &[f64], labels: &[f64], line: f64) -> (f64, f64) {
-    // Room on either side of a flat name, so neighbours never touch.
+/// How names `labels` px long lie, each centered on a column `columns` px wide, with lines `line`
+/// px tall; a name a dense stage hides is None. Flat when every name fits its column. Otherwise
+/// every name tilts by the one angle that keeps them as flat as possible while neighbours stay a
+/// full line apart across, a clear gap over the letters, so they never run together into one word,
+/// and none reaches past the grid's right edge.
+pub fn label_layout(columns: &[f64], labels: &[Option<f64>], line: f64) -> Tilt {
+    // Room on either side of a name, so neighbours never touch.
     const MARGIN: f64 = 8.0;
-    let fits = columns.iter().zip(labels).all(|(c, l)| l + MARGIN <= *c);
-    if fits {
-        return (0.0, 0.0);
+    let shown = || (columns.iter().zip(labels)).filter_map(|(c, l)| Some((*c, (*l)?)));
+    if shown().all(|(c, l)| l + MARGIN <= c) {
+        return Tilt::default();
     }
-    let narrowest = columns.iter().copied().fold(f64::INFINITY, f64::min);
+    let narrowest = shown().map(|(c, _)| c).fold(f64::INFINITY, f64::min);
     // Neighbouring names are parallel, one column apart: `narrowest * sin(angle)` apart across.
-    let apart = line;
-    let angle = (apart / narrowest).clamp(0.0, 1.0).asin();
-    let tallest = labels.iter().copied().fold(0.0, f64::max);
+    let mut angle = (line / narrowest).clamp(0.0, 1.0).asin();
+    // A name rises to the right from the middle of its column, `label * cos(angle)` across.
+    let mut room = -MARGIN / 2.0;
+    for (column, label) in columns.iter().zip(labels).rev() {
+        room += column / 2.0;
+        angle = angle.max(label.map_or(0.0, |label| (room / label).clamp(0.0, 1.0).acos()));
+        room += column / 2.0;
+    }
+    let tallest = shown().map(|(_, l)| l).fold(0.0, f64::max);
     let height = tallest * angle.sin() + line * angle.cos() + 4.0;
-    (angle.to_degrees(), height.ceil())
+    Tilt {
+        angle: angle.to_degrees(),
+        height: height.ceil(),
+    }
 }
 
 /// One row per run, newest on top. The columns are the tasks of the pipedef as it is now. A run
@@ -95,27 +113,25 @@ pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
             columns.push_str(&format!(" minmax(0, {each:.4}fr)"));
         }
     }
-    let tilted = layout.angle > 0.0;
-    let names_style = (layout.height > 0.0).then(|| format!("height: {}px", layout.height));
-    let name_style = tilted.then(|| format!("transform: rotate(-{:.2}deg)", layout.angle));
+    let (stages, tasks) = (layout.stages, layout.tasks);
     html! {
-        <table class={classes!("grid", tilted.then_some("tilted"))} style={format!("grid-template-columns: {columns}")}>
+        <table class="grid" style={format!("grid-template-columns: {columns}")}>
             <thead>
-                <tr>
-                    <th></th>
+                <tr class={stages.class()}>
+                    <th style={stages.height()}></th>
                     { for pipeline.stages.iter().map(|stage| html! {
-                        <th class="stage" style={format!("grid-column: span {}", stage.tasks.len())}>
-                            <span>{ &stage.name }</span>
+                        <th class="stage" style={format!("grid-column: span {0}; --tasks: {0}", stage.tasks.len())}>
+                            <span style={stages.rotate()}>{ &stage.name }</span>
                         </th>
                     }) }
                 </tr>
-                <tr>
-                    <th style={names_style.clone()}></th>
+                <tr class={tasks.class()}>
+                    <th style={tasks.height()}></th>
                     { for pipeline.stages.iter().enumerate().flat_map(|(s, stage)| {
                         stage.tasks.iter().enumerate().map(move |(t, task)| (s, t, task))
                     }).map(|(s, t, task)| html! {
-                        <th class={classes!("task", cell_classes(layout, s, t))} style={names_style.clone()}>
-                            <span style={name_style.clone()}>{ &task.name }</span>
+                        <th class={classes!("task", cell_classes(layout, s, t))} style={tasks.height()}>
+                            <span style={tasks.rotate()}>{ &task.name }</span>
                         </th>
                     }) }
                 </tr>
@@ -124,6 +140,20 @@ pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
                 { rows }
             </tbody>
         </table>
+    }
+}
+
+impl Tilt {
+    fn class(&self) -> Option<&'static str> {
+        (self.angle > 0.0).then_some("tilted")
+    }
+
+    fn height(&self) -> Option<String> {
+        (self.height > 0.0).then(|| format!("height: {}px", self.height))
+    }
+
+    fn rotate(&self) -> Option<String> {
+        (self.angle > 0.0).then(|| format!("transform: rotate(-{:.2}deg)", self.angle))
     }
 }
 
@@ -169,9 +199,13 @@ pub fn run_row(
                     if carried {
                         title.push_str(", carried over");
                     }
+                    // A skipped task never ran: it has no page worth opening.
+                    let href = format!("/task/{}", t.id);
+                    let link = (t.state != TaskState::Skipped)
+                        .then(|| html! { <a href={href} title={title} draggable="false"></a> });
                     html! {
                         <td class={classes!("cell", t.state.as_str(), carried.then_some("carried"), place)}>
-                            <a href={format!("/task/{}", t.id)} title={title}></a>
+                            { for link }
                         </td>
                     }
                 }

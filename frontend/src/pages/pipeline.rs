@@ -117,52 +117,48 @@ impl Component for PipelinePage {
         if !std::mem::take(&mut self.measure) || self.run.is_some() {
             return;
         }
-        let elements = |selector: &str| {
-            let mut found = vec![];
-            if let Ok(list) = main.query_selector_all(selector) {
-                for i in 0..list.length() {
-                    if let Some(element) =
-                        list.item(i).and_then(|n| n.dyn_into::<HtmlElement>().ok())
-                    {
-                        found.push(element);
-                    }
-                }
-            }
-            found
-        };
         // Rotation leaves offset sizes alone, so these are the flat sizes whatever the angle.
-        let columns: Vec<f64> = elements(".grid th.task")
-            .iter()
-            .map(|e| e.client_width() as f64)
-            .collect();
-        let names = elements(".grid th.task span");
-        let labels: Vec<f64> = names.iter().map(|e| e.offset_width() as f64).collect();
-        let line = names.first().map_or(0.0, |e| e.offset_height() as f64);
+        let sizes = |selector: &str, size: fn(&HtmlElement) -> i32| -> Vec<f64> {
+            let Ok(list) = main.query_selector_all(selector) else {
+                return vec![];
+            };
+            (0..list.length())
+                .filter_map(|i| list.item(i)?.dyn_into::<HtmlElement>().ok())
+                .map(|e| size(&e) as f64)
+                .collect()
+        };
+        let columns = sizes(".grid th.task", |e| e.client_width());
+        let labels = sizes(".grid th.task span", |e| e.offset_width());
+        let line = sizes(".grid th.task span", |e| e.offset_height());
+        let line = line.first().copied().unwrap_or(0.0);
         // A stage whose columns are narrower than a line cannot show its tasks' names, even
         // upright: its tasks run together and leave their names to the tooltips.
         let mut dense = vec![];
-        let mut shown = (vec![], vec![]);
+        let mut shown = vec![];
         let mut at = 0;
         for stage in &pipeline.stages {
-            let width = columns.get(at).copied().unwrap_or(f64::INFINITY);
-            let packed = width < line;
+            let packed = columns.get(at).is_some_and(|width| *width < line);
             dense.push(packed);
-            if !packed {
-                let end = (at + stage.tasks.len()).min(columns.len());
-                shown.0.extend(columns.get(at..end).unwrap_or_default());
-                shown.1.extend(labels.get(at..end).unwrap_or_default());
-            }
+            let end = (at + stage.tasks.len()).min(labels.len());
+            let names = labels.get(at..end).unwrap_or_default();
+            shown.extend(names.iter().map(|label| (!packed).then_some(*label)));
             at += stage.tasks.len();
         }
-        let (angle, height) = view::label_layout(&shown.0, &shown.1, line);
+        let stage_columns = sizes(".grid th.stage", |e| e.client_width());
+        let stage_labels = sizes(".grid th.stage span", |e| e.offset_width());
+        let stage_labels: Vec<_> = stage_labels.into_iter().map(Some).collect();
         let layout = view::GridLayout {
-            angle,
-            height,
+            // Stage names are as tall as task names.
+            stages: view::label_layout(&stage_columns, &stage_labels, line),
+            tasks: view::label_layout(&columns, &shown, line),
             dense,
         };
         // Only a real change renders again, so this settles after one round.
-        let moved = (layout.angle - self.layout.angle).abs() > 0.5
-            || (layout.height - self.layout.height).abs() > 1.0
+        let moved = |a: view::Tilt, b: view::Tilt| {
+            (a.angle - b.angle).abs() > 0.5 || (a.height - b.height).abs() > 1.0
+        };
+        let moved = moved(layout.stages, self.layout.stages)
+            || moved(layout.tasks, self.layout.tasks)
             || layout.dense != self.layout.dense;
         if moved {
             ctx.link().send_message(PipelineMsg::Layout(layout));

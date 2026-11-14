@@ -329,17 +329,17 @@ fn account() -> Html {
     })
 }
 
-/// A pressed button fades back from white once released (`@keyframes released` in style.css). CSS
-/// cannot tell a release from a hover, so this marks the button the pointer went down on as
-/// released when it comes up again, wherever that is. Taking the mark off at the next press lets the
-/// fade start over.
+/// A pressed button, or grid cell, fades back from white once released (`@keyframes released` in
+/// style.css). CSS cannot tell a release from a hover, so this marks the button the pointer went
+/// down on as released when it comes up again, wherever that is. Taking the mark off at the next
+/// press lets the fade start over.
 fn fade_released_buttons() {
     let document = gloo::utils::document();
     let pressed: Rc<RefCell<Option<Element>>> = Rc::default();
     let down = pressed.clone();
     EventListener::new(&document, "pointerdown", move |event| {
         let target = event.target().and_then(|t| t.dyn_into::<Element>().ok());
-        let button = target.and_then(|e| e.closest("button").ok().flatten());
+        let button = target.and_then(|e| e.closest("button, .cell a").ok().flatten());
         if let Some(button) = &button {
             let _ = button.class_list().remove_1("released");
         }
