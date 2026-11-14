@@ -433,7 +433,7 @@ Open `http://boss-host:7357`. History lives in `/var/tmp/bettertest` and survive
 ./release.sh 0.2.0                           # both archs, every package, into dist/0.2.0/
 target/x86_64-unknown-linux-musl/release/bettertest unified pipedefs   # http://[::1]:7357
 cd frontend && trunk serve                   # :8080, proxies /api/ to :7357, hot reload
-cargo test                                   # core + frontend (exact HTML; the shell in Chromium and WebKit); needs docker
+cargo test                                   # core + frontend (exact HTML; shell and pipeline page in Playwright); needs docker
 python3 frontend/test/narrow.py              # phone widths, against `unified frontend/test/long_names.py`
 ./prettify.sh                                # clippy --fix, fmt, one blank line between fns, ruff, ty
 ```

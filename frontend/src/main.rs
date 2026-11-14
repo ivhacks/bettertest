@@ -452,10 +452,6 @@ fn monotonic() -> f64 {
 #[path = "../test/shell_nav.rs"]
 mod shell_nav;
 
-#[cfg(test)]
-#[path = "../test/pipeline_page.rs"]
-mod pipeline_page;
-
 /// Sends `request` to the boss and returns its reply. Err says why not, for a notice: what the boss
 /// said refusing it, or what went wrong on the way.
 async fn send(request: Result<Request, gloo_net::Error>) -> Result<String, String> {

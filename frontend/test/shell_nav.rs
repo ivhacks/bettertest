@@ -1,9 +1,10 @@
-// Drives the shell in a browser: navigation, history, and the bytes on the wire. The browser runs
-// in Playwright's own image, so beyond trunk, which builds the frontend, this needs nothing from
-// the machine but docker. By hand, from frontend/, once this test has built the image:
+// Drives the frontend in a browser: the shell (navigation, history, the bytes on the wire), and the
+// pipeline page (nothing scrolls sideways, grid cells answer like buttons). The browser runs in
+// Playwright's own image, so beyond trunk, which builds the frontend, this needs nothing from the
+// machine but docker. By hand, from frontend/, once this test has built the image:
 //   python3 test/shell.py build
 //   docker run --rm --init -v "$PWD:/frontend:ro,z" -w /frontend bettertest-test-playwright \
-//     python3 test/shell.py
+//     python3 test/shell.py    (or test/pipeline_page.py)
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -16,6 +17,16 @@ RUN pip install --break-system-packages --no-cache-dir playwright==1.65.1
 
 #[test]
 fn shell_stays_across_navigation() {
+    playwright("test/shell.py");
+}
+
+#[test]
+fn pipeline_page_fits_and_its_cells_answer() {
+    playwright("test/pipeline_page.py");
+}
+
+/// Builds the frontend, then runs `script` in Playwright's image against it.
+fn playwright(script: &str) {
     let root = env!("CARGO_MANIFEST_DIR");
     let built = Command::new("python3")
         .args(["test/shell.py", "build"])
@@ -61,13 +72,10 @@ fn shell_stays_across_navigation() {
             "--workdir",
             "/frontend",
         ])
-        .args(["bettertest-test-playwright", "python3", "test/shell.py"])
+        .args(["bettertest-test-playwright", "python3", script])
         .status()
         .expect("docker run");
-    assert!(
-        status.success(),
-        "playwright shell tests failed (exit {status})"
-    );
+    assert!(status.success(), "{script} failed (exit {status})");
 }
 
 /// Docker is the one thing the tests need from the machine. Without it this fails saying so.

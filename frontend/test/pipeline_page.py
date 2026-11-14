@@ -8,7 +8,8 @@ and a dozen tabs:
   released, like a button (brand guide, "Hover, press, release");
 - run ids are muted text, not link-colored.
 
-The boss is shell.py's stand-in: frontend/dist, plus this pipeline's snapshot.
+The boss is shell.py's stand-in: frontend/dist, plus this pipeline's snapshot. Like shell.py, it
+runs in Playwright's image (see shell_nav.rs, which runs both in cargo test).
 """
 
 import sys
@@ -222,7 +223,11 @@ def cells_answer_like_buttons(browser, base):
 
 
 def main():
-    shell.ensure_dist()
+    # The browser side runs in Playwright's image, which has no trunk.
+    if shell.dist_stale():
+        raise SystemExit(
+            "frontend/dist is missing or stale: run python3 test/shell.py build first"
+        )
     shell.PIPELINES["many_stages"] = shell.snapshot(body())
     server, base = shell.start_server()
     from playwright.sync_api import sync_playwright
@@ -231,7 +236,7 @@ def main():
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
-                channel="chrome", args=["--no-sandbox", "--disable-dev-shm-usage"]
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
             )
             for test in [nothing_scrolls_sideways, cells_answer_like_buttons]:
                 try:
