@@ -143,7 +143,8 @@ pipedefs/               sample pipelines: helloworld (shipped in the .deb), rand
 packaging/              systemd units and sysusers.d entry, shared by both packages
   deb/                  control file and maintainer scripts
   rpm/bettertest.spec   spec file
-build.sh [arch]         trunk release build, then the static binary for this machine's arch or the one given
+frontend/build.sh       the one build of the frontend (trunk release) into frontend/dist
+build.sh [arch]         frontend/build.sh, then the static binary for this machine's arch or the one given
                         (another arch cross-builds with cargo zigbuild)
 deb.sh [arch]           packages build.sh's binary as target/debian/bettertest_<version>_<amd64|arm64>.deb
 rpm.sh [arch]           packages it as target/rpm/bettertest-<version>-1.<x86_64|aarch64>.rpm
@@ -453,14 +454,14 @@ Open `http://boss-host:7357`. History lives in `/var/tmp/bettertest` and survive
 ./deploy.sh root@real-live.bettertest.dev    # after build.sh: back up the db, swap the binary in, restart
 target/x86_64-unknown-linux-musl/release/bettertest unified pipedefs   # http://[::1]:7357
 cd frontend && trunk serve                   # :8080, proxies /api/ to :7357, hot reload
-cargo test                                   # core + frontend (exact HTML; shell and pipeline page in Playwright); needs docker, and tools.sh's build needs
+cargo test                                   # after build.sh, which builds the frontend the tests serve: core + frontend (exact HTML; shell and pipeline page in Playwright); needs docker, and tools.sh's build needs
 python3 frontend/test/narrow.py              # phone widths, against `unified frontend/test/long_names.py`
 ./prettify.sh                                # clippy --fix, fmt, one blank line between fns, ruff, ty
 ```
 
 - **Tests need nothing from the machine but docker** (and the build tools below). A test failure is never "environmental": one that only happens on a fresh machine is a bug to fix. A test that uses docker calls `require_docker()` first, so without it the test fails saying docker is missing. What else a test needs comes in an image or in the binary: the vm test runs the qemu-img, debugfs and e2fsck the binary carries (`tools.rs`), and makes its ext4 fixture with mkfs.ext4 in `bettertest-test-mkfs`; the frontend's shell test drives Chromium and WebKit in `bettertest-test-playwright`, built on Playwright's own image; docker's cache makes both instant after the first build. Cloud agent VMs run `.cursor/install.sh` (docker, rust, its targets, trunk, zig and what tools.sh builds with) once per environment build and `.cursor/start.sh` (dockerd, the socket open to the agent's user) on every boot; `.cursor/environment.json` is what tells them to.
 
-- Core embeds `frontend/dist` at compile time, with gzip copies `core/build.rs` makes: rebuild the frontend (or run `build.sh`) before `cargo run`, or the binary serves a stale UI. Brotli was measured and left out: 13% fewer bytes on a first HTTPS visit, no faster to a usable page on Fast 3G (with or without 4x CPU), never offered by browsers over plain HTTP, and its copies would add ~166 KB to the binary.
+- Core embeds `frontend/dist` at compile time, with gzip copies `core/build.rs` makes: build the frontend (`frontend/build.sh`, which `build.sh` runs) before `cargo run`, or the binary serves a stale UI. Nothing else builds it: the frontend's browser tests serve that same `dist/`, and fail, saying so, when it is missing or older than the source. Brotli was measured and left out: 13% fewer bytes on a first HTTPS visit, no faster to a usable page on Fast 3G (with or without 4x CPU), never offered by browsers over plain HTTP, and its copies would add ~166 KB to the binary.
 - `uv sync` at the repo root installs `pylib` editable so IDEs type-check pipedefs.
 - The dev db is `/var/tmp/bettertest/bettertest.db`. After a change to `schema.sql`, move it aside (never delete someone's db without asking) and let the boss make a new one.
 - Build machine needs: rust with the `<arch>-unknown-linux-musl` (`x86_64` or `aarch64`) and `wasm32-unknown-unknown` targets, trunk, `musl-gcc` (Fedora: `musl-gcc`), the Perl modules OpenSSL's build uses (Fedora: `perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy perl-lib perl-Time-Piece`), `dpkg-deb` for `deb.sh` (Fedora: `dpkg`), and `rpmbuild` plus the systemd rpm macros for `rpm.sh` (Fedora: `rpm-build systemd-rpm-macros`). `tools.sh`, which cargo runs first (`core/build.rs`), so `cargo build` and `cargo test` on a fresh checkout get the tools too, also needs zig (a tarball from ziglang.org, on PATH), python3, ninja, pkg-config, make, curl, bzip2 and zstd. It downloads pinned source tarballs (checked by sha256) of qemu, glib, pixman, libslirp, zlib, pcre2, libffi, e2fsprogs and OpenSSH, cross-compiles them static for musl with `zig cc`, and puts the results, zstd-compressed, in `target/tools/<arch>/`, which the binary embeds. A few minutes the first time; skipped while `target/tools/<arch>.stamp` matches the script.
