@@ -2,8 +2,9 @@
 set -e
 
 # Build the WebAssembly frontend. Trunk runs wasm-bindgen and bundles everything into frontend/dist.
+# trunk 0.21 refuses to start when NO_COLOR is anything but true or false, and some shells set it to 1.
 cd frontend
-trunk build --release
+env -u NO_COLOR trunk build --release
 cd ..
 
 # Build the server binary for this machine's architecture (x86_64 or aarch64): fully static, so it
