@@ -195,7 +195,8 @@ class Install(Stage):
         # Not /tmp: Debian empties it on boot. Check compares it with the boot after Reboot.
         run("cat /proc/sys/kernel/random/boot_id > ~/before")
 
-    @task(vm=DEBIAN_IMAGE)
+    # It passes in about two minutes. Its inner run waits for its end, so a hang fails it here.
+    @task(vm=DEBIAN_IMAGE, timeout=900)
     def intern():
         # The intern test (AGENTS.md): a machine as its distro ships it, an account without sudo
         # that may use kvm, and nothing but the binary and a pipedef whose task runs in a vm.
