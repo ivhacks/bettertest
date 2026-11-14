@@ -1,6 +1,9 @@
 [package]
 name = "bettertest-frontend"
-version = "0.2.0"
+# Not the product's version (core/Cargo.toml's is). wasm-bindgen names the directory of the JS
+# snippets (inline_js) after the crate's name and version, not their code: 0.2.1 moved them off the
+# URL that browsers had kept as immutable while it served two different inline0.js.
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ivhacks/bettertest"
