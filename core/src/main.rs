@@ -98,6 +98,9 @@ enum Command {
         pipedef: PathBuf,
     },
     /// Boss and worker in one process: bettertest on one machine.
+    ///
+    /// Enrolls that worker at http://[::1]:<worker port>, so a pipedef that only names labels has
+    /// this machine to run on.
     Unified {
         /// Pipedef files, directories (every *.py in them), and git repo urls
         /// (http://user:token@host/owner/name.git: every .bettertest/*.py of the default branch).
@@ -159,7 +162,7 @@ async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             if let Some(file) = sources_file {
                 sources.extend(read_sources(&file)?);
             }
-            boss::entry(sources, https.load()?, boss_port).await?;
+            boss::entry(sources, https.load()?, boss_port, None).await?;
         }
         Command::Worker {
             labels,
@@ -180,9 +183,13 @@ async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             https,
         } => {
             let tls = https.load()?;
+            // Plain HTTP even when the boss speaks HTTPS. The worker has no certificate; the boss
+            // connects here, and the task calls the boss back at the address that connection came
+            // from, on --boss-port, over HTTPS when the boss presented one.
+            let local = worker::listen_url(worker_port);
             tokio::try_join!(
                 worker::entry(vec![], 1, worker_port),
-                boss::entry(sources, tls, boss_port)
+                boss::entry(sources, tls, boss_port, Some(&local))
             )?;
         }
     }
