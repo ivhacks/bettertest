@@ -6,7 +6,7 @@
 # machine builds them for either one, without root.
 #
 # ./tools.sh [arch] writes target/tools/<arch>/, each file zstd-compressed, for this machine's
-# architecture (x86_64 or aarch64) or the one given. build.sh runs it; it does nothing when that
+# architecture (x86_64 or aarch64) or the one given. core/build.rs runs it, so cargo does; it does nothing when that
 # directory was made by this version of the script. Needs zig, python3, ninja, pkg-config, make,
 # perl, curl, bzip2 and zstd. qemu brings the meson everything here builds with.
 set -euo pipefail
