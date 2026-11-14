@@ -211,6 +211,13 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// For every accepted connection: send what is written at once. Otherwise a reply written in
+/// pieces, say headers then body, waits about 40ms for the client's delayed ack. A socket that
+/// refuses is only slower.
+pub fn no_delay(stream: &mut tokio::net::TcpStream) {
+    let _ = stream.set_nodelay(true);
+}
+
 #[cfg(test)]
 #[path = "../test/main.rs"]
 mod tests;
