@@ -295,7 +295,7 @@ The first ~14KB on the wire paints the chrome. The same first visit loads Syeve,
 
 The standard is Nathaniel, [Why your website should be under 14kB in size](https://endtimes.dev/why-your-website-should-be-under-14kb-in-size/). A new TCP connection sends about 10 packets first, 10 × 1460 = 14600 bytes of payload after headers, then waits for an ACK. Fitting the compressed first response, headers included, in that burst saves a round trip. 14KB compressed is roughly 50KB uncompressed. When the page cannot fit, the first 14KB still has to render something useful. Some servers start with a larger window, and HTTP/3 still recommends a similar first burst. Treat 14KB as that rule of thumb.
 
-What the burst is for is the HTML document, whichever page the URL names. `index.html` carries a few lines of critical CSS and the word "bettertest", so the frame is on screen before the stylesheet, the wasm, and Syeve. The boss sends a gzip copy made at build time (`core/build.rs`) when that is smaller, and sends `Cache-Control: no-cache`, because the document is what names the hashed shell. Keep that document inside the burst. Leave the wasm, the fonts, and Syeve out of it.
+What the burst is for is the HTML document, whichever page the URL names. `index.html` carries a few lines of critical CSS and nothing to paint: the page stays blank until the app draws it, rather than flashing the wordmark alone. A small inline script stands watch meanwhile: if the app has not started after 20 s, or a script error or unhandled rejection comes first, it writes "bettertest could not start: <why>" on the page and POSTs the same to `/api/startup-error`, which the boss prints to its log with the browser's User-Agent, since a phone's console is out of reach. The boss sends a gzip copy made at build time (`core/build.rs`) when that is smaller, and sends `Cache-Control: no-cache`, because the document is what names the hashed shell. Keep that document inside the burst. Leave the wasm, the fonts, and Syeve out of it.
 
 Syeve loads on that first visit no matter which page it is. It starts in the background once the frame is visible, so the chrome is already up, and it stays part of that visit. A 14KB total is impossible on a first load, and shrinking the visit by skipping Syeve is the wrong fix. Syeve is not in the app yet; #6 and #7 are the work.
 
@@ -324,6 +324,7 @@ Boss :7357 (`--boss-port`)
   PUT  /api/settings                      the same; applies them at once, returns {"logs": n, "artifacts": n}
                                           that it deleted
   GET  /api/me                            {"name", "role", "logged_in"}: who this browser is
+  POST /api/startup-error                 plain text: why this browser could not start the app; the boss logs it
   POST /api/login                         {"name", "password"}: sets the session cookie
   POST /api/logout                        ends the session
   GET  /api/users                         every user, logged out first, with counts of each kind of credential
