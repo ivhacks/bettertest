@@ -887,7 +887,55 @@ fn results_put_failures_first_then_the_slowest() {
         row("pass", "Test", 3, "quick", "2.0s", "1,031,284", "0"),
         "</table>".to_string(),
     ];
-    assert_eq!(to_html(&results(&run)), expected.concat());
+    assert_eq!(to_html(&results(&run, html! {})), expected.concat());
+}
+
+#[test]
+fn views_show_figures_pages_and_what_went_wrong() {
+    let shown = |name: &str, wide, figure, page: Option<&str>, error: Option<&str>| View {
+        name: name.into(),
+        wide,
+        figure,
+        page: page.map(Into::into),
+        error: error.map(Into::into),
+    };
+    let views = [
+        shown(
+            "tests_by_task",
+            false,
+            Some(serde_json::json!({"data": []})),
+            None,
+            None,
+        ),
+        shown(
+            "report",
+            true,
+            None,
+            Some("/api/run/1/artifact/Test/e2e/report.html"),
+            None,
+        ),
+        shown(
+            "broken",
+            false,
+            None,
+            None,
+            Some("Traceback ...\nKeyError: 'x'"),
+        ),
+    ];
+    let figure =
+        |figure: &serde_json::Value| html! { <div class="figure">{ figure.to_string() }</div> };
+    let expected = concat!(
+        r#"<section class="views">"#,
+        r#"<figure class="view"><figcaption>tests by task</figcaption><div class="figure">{"data":[]}</div></figure>"#,
+        r#"<figure class="view wide"><figcaption>report</figcaption>"#,
+        r#"<iframe src="/api/run/1/artifact/Test/e2e/report.html" sandbox="allow-scripts" title="report"></iframe></figure>"#,
+        r#"<figure class="view"><figcaption>broken</figcaption><pre class="notice">Traceback ...
+KeyError: 'x'</pre></figure>"#,
+        "</section>",
+    );
+    assert_eq!(to_html(&super::views(&views, figure)), expected);
+    // A pipedef without views adds nothing to the page.
+    assert_eq!(to_html(&super::views(&[], figure)), "");
 }
 
 #[test]

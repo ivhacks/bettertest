@@ -246,7 +246,7 @@ pub fn run_page_crumbs(run: &Run, cancel: &Callback<String>) -> Html {
 /// What the tasks of a run came to: how many of them passed, failed and so on, and how many tests
 /// they ran, then every task, failures first and the slowest next. A task that failed without
 /// failing a test errored: it crashed, timed out, or never said what its tests did.
-pub fn results(run: &Run) -> Html {
+pub fn results(run: &Run, views: Html) -> Html {
     let outcome = |task: &TaskRun| match (task.state, task.tests) {
         (TaskState::Fail, Some(tests)) if tests.failed > 0 => "fail",
         (TaskState::Fail, _) => "error",
@@ -283,11 +283,48 @@ pub fn results(run: &Run) -> Html {
                 { for totals }
                 <span>{ format!("{} tests, {} failed", count(total), count(failed)) }</span>
             </p>
+            { views }
             <table class="results">
                 <tr><th></th><th>{ "Stage" }</th><th>{ "Task" }</th><th>{ "Took" }</th><th>{ "Tests" }</th><th>{ "Failed" }</th></tr>
                 { for rows }
             </table>
         </>
+    }
+}
+
+/// What one of the pipedef's views shows of a run (views_json in the library): a Plotly figure,
+/// an HTML artifact, or why it could not draw.
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub struct View {
+    pub name: String,
+    pub wide: bool,
+    pub figure: Option<serde_json::Value>,
+    pub page: Option<String>,
+    pub error: Option<String>,
+}
+
+/// The views of a run, above its tasks. Drawing a figure takes a component: `figure` makes one.
+pub fn views(views: &[View], figure: impl Fn(&serde_json::Value) -> Html) -> Html {
+    if views.is_empty() {
+        return html! {};
+    }
+    let shown = |view: &View| match (&view.error, &view.figure, &view.page) {
+        (Some(error), _, _) => html! { <pre class="notice">{ error }</pre> },
+        (None, Some(drawn), _) => figure(drawn),
+        (None, None, Some(page)) => {
+            html! { <iframe src={page.clone()} sandbox="allow-scripts" title={view.name.clone()}></iframe> }
+        }
+        (None, None, None) => html! {},
+    };
+    html! {
+        <section class="views">
+            { for views.iter().map(|view| html! {
+                <figure class={classes!("view", view.wide.then_some("wide"))}>
+                    <figcaption>{ view.name.replace('_', " ") }</figcaption>
+                    { shown(view) }
+                </figure>
+            }) }
+        </section>
     }
 }
 
