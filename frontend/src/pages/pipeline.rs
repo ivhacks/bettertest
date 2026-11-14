@@ -220,7 +220,7 @@ impl Component for PipelinePage {
         };
         html! {
             <>
-                { view::header(crumbs, html! { <>{ start }{ account() }</> }) }
+                { view::header(crumbs, start, account()) }
                 { view::notice(&self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
                 { tabs }

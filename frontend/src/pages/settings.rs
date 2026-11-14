@@ -120,7 +120,7 @@ impl Component for SettingsPage {
         };
         html! {
             <>
-                { view::header(html! { <span>{ "Settings" }</span> }, account()) }
+                { view::header(html! {}, html! {}, account()) }
                 { view::notice(&self.notice) }
                 <main>{ form }{ saved }{ for self.https.as_ref().map(view::https) }</main>
             </>

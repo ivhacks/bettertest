@@ -144,7 +144,7 @@ impl Component for TaskPage {
         };
         html! {
             <>
-                { view::header(crumbs, html! { <>{ right }{ account() }</> }) }
+                { view::header(crumbs, right, account()) }
                 { view::notice(&self.notice) }
                 { carried }
                 { artifacts }

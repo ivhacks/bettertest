@@ -1,6 +1,6 @@
 // The login page: a name and password, or a passkey.
 
-use crate::{passkey, post_json, view};
+use crate::{account, passkey, post_json, view};
 use gloo::utils::window;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
@@ -98,7 +98,7 @@ impl Component for LoginPage {
         });
         html! {
             <>
-                { view::header(html! { <span>{ "Log In" }</span> }, html! {}) }
+                { view::header(html! {}, html! {}, account()) }
                 { view::notice(&self.notice) }
                 <main>
                     <form class="login" {onsubmit}>

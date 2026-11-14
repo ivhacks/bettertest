@@ -71,56 +71,94 @@ a {
     text-decoration: none;
 }
 
-/* On a narrow screen it wraps onto more lines rather than widen the page. */
+/* The same at every width: a row of the mark, the page's own path and buttons, and the account
+   icon at its right end, then a row of links. The mark and the icon stay put however many lines
+   the page's things wrap onto between them. */
 header {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-    overflow-wrap: anywhere;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     font-size: 19px;
     font-stretch: 70%;
 }
 
-/* The mark at its 24px minimum, the name in the hero style beside it, no taller than the mark. */
-header .home {
+header .row {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-right: 6px;
-    color: var(--text);
-    font: 700 28px/1 var(--font);
-    font-stretch: 62%;
-    text-transform: uppercase;
+    align-items: flex-start;
+    gap: 10px;
 }
 
+/* The mark at its 24px minimum, centred on the 44px icon beside it. */
 header .home img {
     display: block;
     height: 30px;
+    margin: 7px 0;
 }
 
-header > :not(.home, .spacer, .state, .actions, .links)::before {
+header .context {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    min-height: 44px;
+    overflow-wrap: anywhere;
+}
+
+header .context > :not(:first-child, .state, .actions)::before {
     content: "/";
     margin-right: 10px;
     color: var(--muted);
 }
 
-/* Wide, these wrappers are no boxes: what they hold sits in the header's own row. */
-header .actions,
-header .links,
-header .menu {
-    display: contents;
+header .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    margin-left: auto;
 }
 
-header button.account,
-header .account svg {
+header .links {
+    display: flex;
+    gap: 10px;
+}
+
+header .account {
+    --fill: transparent;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    color: var(--text);
+}
+
+header .menu {
     display: none;
 }
 
-header .spacer {
-    flex: 1;
+header .menu:popover-open {
+    --cut: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+    border: none;
+    background: var(--surface);
+}
+
+/* The url field gives up its width rather than push the button onto a line of its own. */
+header .add {
+    flex-wrap: nowrap;
+    gap: 10px;
+    min-width: 0;
+}
+
+header .add input {
+    flex: 0 1 16em;
+    min-width: 0;
 }
 
 header .page {
@@ -780,53 +818,8 @@ main > .add {
     margin-left: 6px;
 }
 
-/* Phones. "Log In" would wrap onto two lines, so it and the account controls become one person
-   icon; New Run and that icon keep a row together, and the nav takes the line below. */
+/* Phones. */
 @media (max-width: 640px) {
-    header .actions {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-        margin-left: auto;
-    }
-
-    header .links {
-        display: flex;
-        flex-basis: 100%;
-        gap: 10px;
-    }
-
-    header button.account,
-    header a.account {
-        --fill: transparent;
-        display: grid;
-        place-items: center;
-        width: 44px;
-        height: 44px;
-        padding: 0;
-        color: var(--text);
-    }
-
-    header .account svg {
-        display: block;
-    }
-
-    header a.account span,
-    header .menu {
-        display: none;
-    }
-
-    header .menu:popover-open {
-        --cut: 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        padding: 16px;
-        border: none;
-        background: var(--surface);
-    }
-
     /* The red square stays 18px, drawn by ::before. The clear 44px button around it is what a
        finger hits, in no more room than the square takes. Rows sit further apart so that pad
        stays off the next run's id. */

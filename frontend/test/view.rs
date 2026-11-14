@@ -777,7 +777,7 @@ const PERSON: &str = concat!(
 );
 
 #[test]
-fn account_folds_into_a_person_icon_on_a_phone() {
+fn account_is_a_person_icon() {
     let me = Me {
         name: "iv".into(),
         role: Role::Write,
@@ -801,25 +801,27 @@ fn account_folds_into_a_person_icon_on_a_phone() {
     assert_eq!(
         to_html(&account(&me, Callback::noop(), Callback::noop())),
         [
-            r#"<a href="/login" aria-label="Log In" class="page account">"#,
+            r#"<a href="/login" aria-label="Log In" class="account">"#,
             PERSON,
-            "<span>Log In</span></a>"
+            "</a>"
         ]
         .concat()
     );
 }
 
 #[test]
-fn header_keeps_actions_together_and_links_apart() {
+fn header_keeps_the_account_at_the_end_of_its_row() {
     assert_eq!(
         to_html(&header(
-            html! { <span>{ "Workers" }</span> },
-            html! { <button class="primary">{ "Add" }</button> }
+            html! { <a href="/pipeline/app">{ "app" }</a> },
+            html! { <button class="primary">{ "New Run" }</button> },
+            html! { <button class="account">{ "me" }</button> },
         )),
         concat!(
-            r#"<header><a href="/" class="home"><img src="/assets/mark.v1.svg" alt=""></img>bettertest</a>"#,
-            r#"<span>Workers</span><span class="spacer"></span>"#,
-            r#"<span class="actions"><button class="primary">Add</button></span>"#,
+            r#"<header><div class="row"><a href="/" class="home"><img src="/assets/mark.v1.svg" alt="bettertest"></img></a>"#,
+            r#"<span class="context"><a href="/pipeline/app">app</a>"#,
+            r#"<span class="actions"><button class="primary">New Run</button></span></span>"#,
+            r#"<span class="you"><button class="account">me</button></span></div>"#,
             r#"<nav class="links"><a href="/workers" class="page">Workers</a>"#,
             r#"<a href="/settings" class="page">Settings</a><a href="/users" class="page">Users</a></nav></header>"#,
         )

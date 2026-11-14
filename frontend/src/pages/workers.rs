@@ -135,7 +135,7 @@ impl Component for WorkersPage {
         };
         html! {
             <>
-                { view::header(html! { <span>{ "Workers" }</span> }, html! { <>{ add }{ account() }</> }) }
+                { view::header(html! {}, add, account()) }
                 { view::notice(&self.notice) }
                 <main>{ body }</main>
                 { window }
