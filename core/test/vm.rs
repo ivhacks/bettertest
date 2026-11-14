@@ -11,66 +11,7 @@ use std::{
     os::unix::fs::MetadataExt,
     path::Path,
     process::{Command, Stdio},
-    sync::OnceLock,
 };
-
-/// The container that runs the disk image tools for these tests (see `command` in vm.rs).
-static TOOLS: OnceLock<String> = OnceLock::new();
-
-/// `program` in the tools container. vm.rs runs its disk image tools through this in tests.
-pub fn command(program: &str) -> Command {
-    let container = TOOLS
-        .get()
-        .expect("no tools container: call with_tools first");
-    let mut command = Command::new("docker");
-    command.args(["exec", "-i", container, program]);
-    command
-}
-
-/// Starts a container with qemu-img and e2fsprogs that sees `dir` at the same path, as the user
-/// who owns `dir`, so a file either side writes the other can change. Removed when dropped.
-fn with_tools(dir: &Path) -> RemoveContainer {
-    crate::tests::require_docker();
-    let image = "bettertest-test-disk-tools";
-    let mut build = Command::new("docker")
-        .args(["build", "--quiet", "--tag", image, "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let dockerfile = b"FROM debian:trixie\n\
-        RUN apt-get update && apt-get install -y --no-install-recommends e2fsprogs qemu-utils\n";
-    build.stdin.take().unwrap().write_all(dockerfile).unwrap();
-    assert!(build.wait().unwrap().success(), "could not build {image}");
-    let owner = fs::metadata(dir).unwrap();
-    let user = format!("{}:{}", owner.uid(), owner.gid());
-    let mount = format!("{0}:{0}:z", dir.display());
-    let run = Command::new("docker")
-        .args([
-            "run", "--detach", "--rm", "--init", "--user", &user, "--volume", &mount,
-        ])
-        .args([image, "sleep", "infinity"])
-        .output()
-        .unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    let id = String::from_utf8(run.stdout).unwrap().trim().to_string();
-    TOOLS.set(id.clone()).unwrap();
-    RemoveContainer(id)
-}
-
-struct RemoveContainer(String);
-
-impl Drop for RemoveContainer {
-    fn drop(&mut self) {
-        let _ = Command::new("docker")
-            .args(["rm", "--force", &self.0])
-            .output();
-    }
-}
 
 #[test]
 fn linux_command_gains_the_emulated_timeout_once() {
@@ -118,47 +59,52 @@ fn largest_partition_is_the_root_not_the_efi_one() {
     assert!(err.contains("no GPT"), "{err}");
 }
 
-/// debugfs rewrite of a real grub.cfg inside a qcow2, the same path a worker takes. The disk tools
-/// run in a container, so all this needs from the machine is docker.
+/// debugfs rewrite of a real grub.cfg inside a qcow2, the same path a worker takes.
 #[test]
 fn emulated_cmdline_is_written_into_the_image() {
     let dir = Path::new("/var/tmp/bettertest/vm-cmdline-test");
     let _ = fs::remove_dir_all(dir);
     fs::create_dir_all(dir).unwrap();
-    let _tools = with_tools(dir);
     let disk = dir.join("disk.raw");
     let root = dir.join("root.img");
     let grub = dir.join("grub.cfg");
     let qcow = dir.join("image.qcow2");
-    fs::write(&disk, vec![0u8; 48 * 1024 * 1024]).unwrap();
+    // mkfs.ext4 only makes the fixture, so it runs in a container: the tests need nothing from the
+    // machine but docker. As the directory's owner, so the file is this test's to read.
+    crate::tests::require_docker();
+    let image = "bettertest-test-mkfs";
+    let mut build = Command::new("docker")
+        .args(["build", "--quiet", "--tag", image, "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let dockerfile = b"FROM debian:trixie\n\
+        RUN apt-get update && apt-get install -y --no-install-recommends e2fsprogs\n";
+    build.stdin.take().unwrap().write_all(dockerfile).unwrap();
+    assert!(build.wait().unwrap().success(), "could not build {image}");
+    let owner = fs::metadata(dir).unwrap();
+    let user = format!("{}:{}", owner.uid(), owner.gid());
+    let mount = format!("{0}:{0}:z", dir.display());
+    let root_path = root.display().to_string();
+    let mkfs = Command::new("docker")
+        .args(["run", "--rm", "--user", &user, "--volume", &mount, image])
+        .args(["mkfs.ext4", "-q", "-F", "-L", "rootfs", &root_path, "32M"])
+        .output()
+        .unwrap();
+    assert!(
+        mkfs.status.success(),
+        "{}",
+        String::from_utf8_lossy(&mkfs.stderr)
+    );
     // The small partition stands in for the EFI system partition. The root is the 32 MiB one at
-    // 1 MiB, which is where the ext4 image is written.
+    // 1 MiB, which is where the ext4 image goes.
+    let mut disk_bytes = vec![0u8; 48 * 1024 * 1024];
     let table = gpt(&[(34, 2047), (2048, 2048 + 65536 - 1)]);
-    let mut disk_bytes = fs::read(&disk).unwrap();
     disk_bytes[..table.len()].copy_from_slice(&table);
+    let root_bytes = fs::read(&root).unwrap();
+    disk_bytes[1024 * 1024..1024 * 1024 + root_bytes.len()].copy_from_slice(&root_bytes);
     fs::write(&disk, disk_bytes).unwrap();
-    assert!(
-        command("mkfs.ext4")
-            .args(["-q", "-F", "-L", "rootfs"])
-            .arg(&root)
-            .arg("32M")
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        command("dd")
-            .args([
-                &format!("if={}", root.display()),
-                &format!("of={}", disk.display()),
-                "bs=1M",
-                "seek=1",
-                "conv=notrunc",
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
     fs::write(
         &grub,
         "menuentry 'Debian' {\n\tlinux\t/boot/vmlinuz root=PARTUUID=abc ro\n\tinitrd\t/boot/initrd.img\n}\n",
@@ -166,11 +112,11 @@ fn emulated_cmdline_is_written_into_the_image() {
     .unwrap();
     let spec = format!("{}?offset={}", disk.display(), 2048 * 512);
     for request in ["mkdir /boot", "mkdir /boot/grub"] {
-        let _ = command("debugfs")
+        let _ = Command::new(tool("debugfs"))
             .args(["-w", "-R", request, &spec])
             .status();
     }
-    let planted = command("debugfs")
+    let planted = Command::new(tool("debugfs"))
         .args([
             "-w",
             "-R",
@@ -186,7 +132,7 @@ fn emulated_cmdline_is_written_into_the_image() {
     );
     // The failure seen on a real image: link the file onto itself the way debugfs ln does, so
     // grub.cfg names a deleted inode. Rewriting has to give it a new one, not only the same bytes.
-    let linked = command("debugfs")
+    let linked = Command::new(tool("debugfs"))
         .args([
             "-w",
             "-R",
@@ -200,7 +146,7 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&linked.stderr)
     );
-    let removed = command("debugfs")
+    let removed = Command::new(tool("debugfs"))
         .args(["-w", "-R", "rm /boot/grub/grub.cfg.linked", &spec])
         .output()
         .unwrap();
@@ -209,10 +155,13 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&removed.stderr)
     );
-    let broken = command("e2fsck").args(["-fn", &spec]).output().unwrap();
+    let broken = Command::new(tool("e2fsck"))
+        .args(["-fn", &spec])
+        .output()
+        .unwrap();
     assert!(!broken.status.success(), "the fixture should start corrupt");
     assert!(
-        command("qemu-img")
+        Command::new(tool("qemu-img"))
             .args([
                 "convert",
                 "-f",
@@ -230,7 +179,7 @@ fn emulated_cmdline_is_written_into_the_image() {
     ensure_emulated_cmdline(&qcow).unwrap();
     let patched = dir.join("patched.raw");
     assert!(
-        command("qemu-img")
+        Command::new(tool("qemu-img"))
             .args([
                 "convert",
                 "-f",
@@ -245,7 +194,7 @@ fn emulated_cmdline_is_written_into_the_image() {
             .success()
     );
     let spec = format!("{}?offset={}", patched.display(), 2048 * 512);
-    let read = command("debugfs")
+    let read = Command::new(tool("debugfs"))
         .args(["-R", "cat /boot/grub/grub.cfg", &spec])
         .output()
         .unwrap();
@@ -259,7 +208,7 @@ fn emulated_cmdline_is_written_into_the_image() {
     // A new file must not be handed grub.cfg's inode. That is what made reboot stop at grub>.
     let extra = dir.join("extra.txt");
     fs::write(&extra, "not grub\n").unwrap();
-    let wrote = command("debugfs")
+    let wrote = Command::new(tool("debugfs"))
         .args([
             "-w",
             "-R",
@@ -273,14 +222,17 @@ fn emulated_cmdline_is_written_into_the_image() {
         "{}",
         String::from_utf8_lossy(&wrote.stderr)
     );
-    let check = command("e2fsck").args(["-fn", &spec]).output().unwrap();
+    let check = Command::new(tool("e2fsck"))
+        .args(["-fn", &spec])
+        .output()
+        .unwrap();
     assert!(
         check.status.success(),
         "stdout {}\nstderr {}",
         String::from_utf8_lossy(&check.stdout),
         String::from_utf8_lossy(&check.stderr)
     );
-    let read = command("debugfs")
+    let read = Command::new(tool("debugfs"))
         .args(["-R", "cat /boot/grub/grub.cfg", &spec])
         .output()
         .unwrap();
@@ -291,6 +243,11 @@ fn emulated_cmdline_is_written_into_the_image() {
     ensure_emulated_cmdline(&qcow).unwrap();
     assert_eq!(fs::metadata(&qcow).unwrap().modified().unwrap(), before);
     let _ = fs::remove_dir_all(dir);
+}
+
+/// One of the tools this binary carries, as the worker runs it.
+fn tool(name: &str) -> std::path::PathBuf {
+    crate::tools::path(name).unwrap()
 }
 
 fn gpt(parts: &[(u64, u64)]) -> Vec<u8> {

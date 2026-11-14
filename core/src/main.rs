@@ -16,6 +16,7 @@ mod passkey;
 mod pipedef;
 mod repo;
 mod tls;
+mod tools;
 mod vm;
 mod workdir;
 mod worker;
