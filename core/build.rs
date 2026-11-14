@@ -3,12 +3,16 @@
 // on every request. A copy that saves little (woff2 and png are compressed already) is left out, so
 // the original is what gets sent. So is an SVG's: Chrome fetches a compressed SVG image again on
 // the next load, and the marks are a few hundred bytes anyway.
+//
+// Builds the vm tools the binary carries too (tools.sh), so every build of it has them; tools.sh
+// does nothing while target/tools/<arch>/ is from this version of it.
 
 use std::{
     error::Error,
     fs,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -22,6 +26,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     // A checkout that has not built the frontend yet still builds; its boss serves no UI.
     if dist.is_dir() {
         copy(dist, &web)?;
+    }
+
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH")?;
+    println!("cargo:rerun-if-changed=../tools.sh");
+    println!("cargo:rerun-if-changed=../target/tools/{arch}.stamp");
+    // Its progress to stderr: cargo reads a build script's stdout as instructions.
+    let tools = Command::new("../tools.sh")
+        .arg(&arch)
+        .stdout(io::stderr())
+        .status()?;
+    if !tools.success() {
+        return Err(format!("tools.sh {arch} failed").into());
     }
     Ok(())
 }
