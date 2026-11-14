@@ -230,7 +230,8 @@ pub(super) async fn get_pipeline_artifact(
 }
 
 /// Streams the file at `path`, artifact `name`. With a `disposition`, browsers save it rather than
-/// show it.
+/// show it. An HTML page shows (a test report, in a view), but sandboxed in an origin of its own:
+/// what a task made must not act as whoever looks at it.
 pub(super) async fn file_response(
     path: &std::path::Path,
     name: &str,
@@ -244,10 +245,18 @@ pub(super) async fn file_response(
         Err(e) => return Err(internal(e)),
     };
     let length = file.metadata().await.map_err(internal)?.len();
+    let kind = match name.ends_with(".html") {
+        true => "text/html; charset=utf-8",
+        false => "application/octet-stream",
+    };
     let mut response = (
         [
-            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_TYPE, kind.to_string()),
             (header::CONTENT_LENGTH, length.to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "sandbox allow-scripts".into(),
+            ),
         ],
         Body::from_stream(ReaderStream::new(file)),
     )
