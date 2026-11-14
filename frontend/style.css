@@ -30,6 +30,7 @@
     --pass: #2ea44f;
     --fail: #e5484d;
     --running: #ff6e00;
+    --fade: 420ms;
     --font: "Archivo", system-ui, sans-serif;
     --mono: "Martian Mono", ui-monospace, monospace;
     color-scheme: dark;
@@ -136,7 +137,6 @@ header .page {
 button {
     --cut: 10px;
     --fill: var(--line);
-    --fade: 420ms;
     position: relative;
     isolation: isolate;
     height: 38px;
@@ -190,19 +190,23 @@ button.small {
 }
 
 button:hover,
-button:focus-visible {
+button:focus-visible,
+.cell a:hover,
+.cell a:focus-visible {
     outline: none;
     background: color-mix(in srgb, var(--fill), #ffffff 22%);
 }
 
 button:active,
-button:active::before {
+button:active::before,
+.cell a:active {
     background: #ffffff;
     color: #000000;
 }
 
 button.released,
-button.released::before {
+button.released::before,
+.cell a.released {
     animation: released var(--fade) ease-out;
 }
 
@@ -230,9 +234,13 @@ main {
     overflow-wrap: anywhere;
 }
 
+/* However many pipelines there are, the tabs wrap rather than scroll sideways, and take at most a
+   quarter of the screen. */
 .tabs {
     display: flex;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    max-height: 25vh;
+    overflow: hidden auto;
     border-top: 1px solid var(--line);
     font-size: 18px;
     font-stretch: 70%;
@@ -275,8 +283,9 @@ main {
     color: var(--muted);
 }
 
-/* Tasks sit 2px apart and stages 10px: padding the cell's color stays out of. A stage too narrow
-   for gaps runs its tasks together into one rectangle. */
+/* Tasks sit 2px apart and stages 10px, or a tenth of a column if that is less, so no number of
+   stages pushes the grid past the screen: padding the cell's color stays out of. A stage too
+   narrow for gaps runs its tasks together into one rectangle. */
 .grid .cell,
 .grid .task {
     padding-left: 2px;
@@ -297,7 +306,7 @@ main {
 
 .grid .first,
 .grid .stage {
-    padding-left: 10px;
+    padding-left: min(10px, 10% / var(--tasks, 1));
 }
 
 /* A line under each stage, its tasks' width, past the gap before it. */
@@ -339,7 +348,9 @@ main {
     text-align: right;
 }
 
-.run {
+.run,
+.run a {
+    color: var(--muted);
     font-family: var(--mono);
     font-size: 13px;
     white-space: nowrap;
@@ -366,7 +377,10 @@ button.cancel svg {
     stroke-width: 2;
 }
 
+/* A cell's color is its link's, which lights up and presses like a button. A skipped task has no
+   link, so its cell stays still. */
 .cell {
+    --fill: var(--surface);
     height: 22px;
     background: var(--surface);
     background-clip: content-box;
@@ -375,18 +389,19 @@ button.cancel svg {
 .cell a {
     display: block;
     height: 100%;
+    background: var(--fill);
 }
 
 .cell.pass {
-    background-color: var(--pass);
+    --fill: var(--pass);
 }
 
 .cell.fail {
-    background-color: var(--fail);
+    --fill: var(--fail);
 }
 
 .cell.running {
-    background-color: var(--running);
+    --fill: var(--running);
     animation: pulse 1.2s ease-in-out infinite;
 }
 
@@ -511,13 +526,22 @@ input:focus {
     border-color: var(--highlight);
 }
 
-/* Too wide for a phone, they scroll sideways on their own. */
+/* Too wide for a phone, they scroll sideways on their own. Results are on the pipeline page, which
+   never scrolls sideways, so they break their words instead. */
+.workers,
+.users {
+    display: block;
+    overflow-x: auto;
+}
+
 .workers,
 .users,
 .results {
-    display: block;
-    overflow-x: auto;
     border-collapse: collapse;
+}
+
+.results {
+    overflow-wrap: anywhere;
 }
 
 .workers th,

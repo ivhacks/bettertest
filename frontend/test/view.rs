@@ -113,14 +113,14 @@ fn grid_matches_tasks_by_name() {
         })),
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
-            r#"<tr><th></th><th style="grid-column: span 1" class="stage"><span>Build</span></th>"#,
-            r#"<th style="grid-column: span 2" class="stage"><span>Test</span></th></tr>"#,
+            r#"<tr><th></th><th style="grid-column: span 1; --tasks: 1" class="stage"><span>Build</span></th>"#,
+            r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span>Test</span></th></tr>"#,
             r#"<tr><th></th><th class="task first"><span>compile</span></th><th class="task first"><span>unit</span></th>"#,
             r#"<th class="task"><span>e2e</span></th></tr></thead>"#,
             r#"<tbody><tr><th class="run running"><button title="Cancel this run: every task, now" aria-label="Cancel run" class="cancel">"#,
             r#"<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"></path></svg></button><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
-            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass"></a></td>"#,
-            r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running"></a></td>"#,
+            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass" draggable="false"></a></td>"#,
+            r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running" draggable="false"></a></td>"#,
             r#"<td class="cell"></td>"#,
             r#"</tr></tbody></table>"#,
         )
@@ -145,8 +145,8 @@ fn tilted_names_and_dense_stages() {
         concat!(
             r#"<table style="grid-template-columns: 88px minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
             r#"<tr class="tilted"><th style="height: 50px"></th>"#,
-            r#"<th style="grid-column: span 1" class="stage"><span style="transform: rotate(-90.00deg)">Build</span></th>"#,
-            r#"<th style="grid-column: span 2" class="stage"><span style="transform: rotate(-90.00deg)">Test</span></th></tr>"#,
+            r#"<th style="grid-column: span 1; --tasks: 1" class="stage"><span style="transform: rotate(-90.00deg)">Build</span></th>"#,
+            r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span style="transform: rotate(-90.00deg)">Test</span></th></tr>"#,
             r#"<tr class="tilted"><th style="height: 84px"></th>"#,
             r#"<th style="height: 84px" class="task first"><span style="transform: rotate(-37.50deg)">compile</span></th>"#,
             r#"<th style="height: 84px" class="task first dense"><span style="transform: rotate(-37.50deg)">unit</span></th>"#,
@@ -178,7 +178,7 @@ fn tilted_names_and_dense_stages() {
         to_html(&run_row(&pipeline(), &run, &layout, &Callback::noop())),
         concat!(
             r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell first"></td>"#,
-            r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass"></a></td>"#,
+            r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass" draggable="false"></a></td>"#,
             r#"<td class="cell dense"></td></tr>"#,
         )
     );
@@ -350,7 +350,47 @@ fn finished_tasks_keep_their_runtime() {
         )),
         concat!(
             r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell fail first">"#,
-            r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s"></a></td></tr>"#,
+            r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s" draggable="false"></a></td></tr>"#,
+        )
+    );
+}
+
+#[test]
+fn skipped_tasks_are_no_link() {
+    let compile = TaskRun {
+        id: id(2),
+        name: "compile".into(),
+        state: TaskState::Skipped,
+        worker: None,
+        started: None,
+        ended: None,
+        carried_from: None,
+        tests: None,
+    };
+    let run = Run {
+        id: id(1),
+        pipeline: "app".into(),
+        state: RunState::Fail,
+        stages: vec![StageRun {
+            name: "Build".into(),
+            tasks: vec![compile],
+        }],
+        commit: None,
+    };
+    let pipeline = Pipeline {
+        stages: vec![Stage {
+            name: "Build".into(),
+            sandbox: None,
+            tasks: vec![task("compile")],
+        }],
+        sandboxes: Default::default(),
+    };
+    let layout = GridLayout::default();
+    assert_eq!(
+        to_html(&run_row(&pipeline, &run, &layout, &Callback::noop())),
+        concat!(
+            r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
+            r#"<td class="cell skipped first"></td></tr>"#,
         )
     );
 }
@@ -446,7 +486,7 @@ fn carried_over_tasks_say_where_from() {
         )),
         concat!(
             r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell pass carried first">"#,
-            r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over"></a></td></tr>"#,
+            r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over" draggable="false"></a></td></tr>"#,
         )
     );
     let snapshot = TaskSnapshot {

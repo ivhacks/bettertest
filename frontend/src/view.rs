@@ -120,7 +120,7 @@ pub fn grid(pipeline: &Pipeline, layout: &GridLayout, rows: Html) -> Html {
                 <tr class={stages.class()}>
                     <th style={stages.height()}></th>
                     { for pipeline.stages.iter().map(|stage| html! {
-                        <th class="stage" style={format!("grid-column: span {}", stage.tasks.len())}>
+                        <th class="stage" style={format!("grid-column: span {0}; --tasks: {0}", stage.tasks.len())}>
                             <span style={stages.rotate()}>{ &stage.name }</span>
                         </th>
                     }) }
@@ -199,9 +199,13 @@ pub fn run_row(
                     if carried {
                         title.push_str(", carried over");
                     }
+                    // A skipped task never ran: it has no page worth opening.
+                    let href = format!("/task/{}", t.id);
+                    let link = (t.state != TaskState::Skipped)
+                        .then(|| html! { <a href={href} title={title} draggable="false"></a> });
                     html! {
                         <td class={classes!("cell", t.state.as_str(), carried.then_some("carried"), place)}>
-                            <a href={format!("/task/{}", t.id)} title={title}></a>
+                            { for link }
                         </td>
                     }
                 }
