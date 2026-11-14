@@ -70,8 +70,10 @@ a {
     text-decoration: none;
 }
 
+/* On a narrow screen it wraps onto more lines rather than widen the page. */
 header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     overflow-wrap: anywhere;
@@ -718,10 +720,6 @@ main > .add {
 /* Phones. "Log In" would wrap onto two lines, so it and the account controls become one person
    icon; New Run and that icon keep a row together, and the nav takes the line below. */
 @media (max-width: 640px) {
-    header {
-        flex-wrap: wrap;
-    }
-
     header .actions {
         display: flex;
         flex-wrap: wrap;
