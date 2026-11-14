@@ -1,6 +1,7 @@
 # Python's half of the language boundary. The binary spawns this with the library, then the
-# pipedef, on stdin (nothing is importable from disk), to parse the pipedef or call one of its
-# tasks. A pipedef's `from bettertest import ...` works because the library is planted first.
+# pipedef, on stdin (nothing is importable from disk), to parse the pipedef, call one of its
+# tasks, or draw its views. A pipedef's `from bettertest import ...` works because the library is
+# planted first.
 import json
 import os
 import sys
@@ -12,21 +13,31 @@ library = types.ModuleType("bettertest")
 exec(json.loads(sys.stdin.readline()), library.__dict__)
 sys.modules["bettertest"] = library
 
-payload = json.loads(sys.stdin.read())
+# One line too, because views go on reading stdin: the boss's answers to log().
+payload = json.loads(sys.stdin.readline())
 if payload["cwd"]:
     os.chdir(payload["cwd"])
 library._target = payload["target"]
 library._files = payload["files"]
 
+command = sys.argv[1]
+if command == "views":
+    # Stdout carries the questions for the boss and then the answer, so a view's prints go to
+    # stderr. Set before the pipedef runs: its top level may print too.
+    library._run = payload["run"]
+    library._boss = (sys.stdout, sys.stdin)
+    sys.stdout = sys.stderr
+
 pipedef = types.ModuleType("pipedef")
 # Compiling under a file name makes tracebacks point at the pipedef rather than at this script.
 exec(compile(payload["pipedef"], "pipedef.py", "exec"), pipedef.__dict__)
 
-command = sys.argv[1]
 if command == "parse":
     print(library.dump_json(pipedef.__dict__))
 elif command == "start":
     stage, task = payload["task"]
     getattr(getattr(pipedef, stage), task)()
+elif command == "views":
+    print(library.views_json(pipedef.__dict__), file=library._boss[0])
 else:
     raise SystemExit(f"unknown command: {command}")

@@ -21,23 +21,33 @@ pub(super) async fn load_pipeline(
     name: &str,
     commit: Option<&Commit>,
 ) -> Result<(String, Result<Pipeline, String>), Failure> {
-    let pipedef = boss
-        .pipedef(name)
-        .ok_or_else(|| not_found(format!("pipeline {name}")))?;
-    let source = match &pipedef {
-        Pipedef::File(path) => tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| internal(format!("could not read {}: {e}", path.display())))?,
-        Pipedef::Repo { repo, path } => {
-            let at = commit.map_or("HEAD", |commit| commit.sha.as_str());
-            match boss.repo(*repo)?.show(at, path).await {
-                Ok(source) => source,
-                Err(e) => return Ok((String::new(), Err(e))),
-            }
-        }
+    let source = match load_source(boss, name, commit).await? {
+        Ok(source) => source,
+        Err(e) => return Ok((String::new(), Err(e))),
     };
     let pipeline = pipedef::parse(&source).await;
     Ok((source, pipeline))
+}
+
+/// The pipedef's source, read as load_pipeline reads it. Err is why git could not show it.
+async fn load_source(
+    boss: &Boss,
+    name: &str,
+    commit: Option<&Commit>,
+) -> Result<Result<String, String>, Failure> {
+    let pipedef = boss
+        .pipedef(name)
+        .ok_or_else(|| not_found(format!("pipeline {name}")))?;
+    match &pipedef {
+        Pipedef::File(path) => match tokio::fs::read_to_string(path).await {
+            Ok(source) => Ok(Ok(source)),
+            Err(e) => Err(internal(format!("could not read {}: {e}", path.display()))),
+        },
+        Pipedef::Repo { repo, path } => {
+            let at = commit.map_or("HEAD", |commit| commit.sha.as_str());
+            Ok(boss.repo(*repo)?.show(at, path).await)
+        }
+    }
 }
 
 pub(super) async fn get_pipelines(State(boss): State<Shared>) -> Json<Vec<String>> {
@@ -988,6 +998,27 @@ pub(super) async fn get_run(
     run.map(Json).ok_or_else(|| not_found(format!("run {id}")))
 }
 
+/// What the views of run `id` show of it, drawn now, with the pipedef as the run's commit has it:
+/// JSON for the results page. 422 when the pipedef does not get that far.
+pub(super) async fn get_views(
+    State(boss): State<Shared>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Response, Failure> {
+    let id = parse_id(&id)?;
+    let run = boss.db().run(id).map_err(internal)?;
+    let run = run.ok_or_else(|| not_found(format!("run {id}")))?;
+    let broken = |e| (StatusCode::UNPROCESSABLE_ENTITY, e);
+    let source = load_source(&boss, &run.pipeline, run.commit.as_ref()).await?;
+    let log = |task| boss.db().log(task).map(log_text).map_err(|e| e.to_string());
+    let views = pipedef::views(&source.map_err(broken)?, &run, log).await;
+    let headers = [(header::CONTENT_TYPE, "application/json")];
+    Ok((headers, views.map_err(broken)?).into_response())
+}
+
+fn log_text(lines: Vec<LogLine>) -> String {
+    lines.into_iter().map(|l| l.line + "\n").collect()
+}
+
 pub(super) async fn run_events(
     State(boss): State<Shared>,
     AxumPath(id): AxumPath<String>,
@@ -1043,8 +1074,7 @@ pub(super) async fn get_task_log(
     if db.task(id).map_err(internal)?.is_none() {
         return Err(not_found(format!("task {id}")));
     }
-    let lines = db.log(id).map_err(internal)?;
-    Ok(lines.into_iter().map(|l| l.line + "\n").collect())
+    db.log(id).map(log_text).map_err(internal)
 }
 
 pub(super) async fn task_events(
