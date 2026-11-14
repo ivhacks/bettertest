@@ -134,6 +134,7 @@ build.sh [arch]         trunk release build, then the static binary for this mac
 deb.sh [arch]           packages build.sh's binary as target/debian/bettertest_<version>_<amd64|arm64>.deb
 rpm.sh [arch]           packages it as target/rpm/bettertest-<version>-1.<x86_64|aarch64>.rpm
 release.sh [version]    everything a release ships, both archs, into dist/<version>/ (see Releases)
+deploy.sh <root@host>   puts build.sh's binary on a machine running the packages' services (see Development)
 prettify.sh             clippy --fix, fmt, ruff, ty
 ```
 
@@ -432,6 +433,7 @@ Open `http://boss-host:7357`. History lives in `/var/tmp/bettertest` and survive
 ./deb.sh                                     # after build.sh: target/debian/bettertest_<version>_<arch>.deb
 ./rpm.sh                                     # after build.sh: target/rpm/bettertest-<version>-1.<arch>.rpm
 ./release.sh 0.2.0                           # both archs, every package, into dist/0.2.0/
+./deploy.sh root@real-live.bettertest.dev    # after build.sh: back up the db, swap the binary in, restart
 target/x86_64-unknown-linux-musl/release/bettertest unified pipedefs   # http://[::1]:7357
 cd frontend && trunk serve                   # :8080, proxies /api/ to :7357, hot reload
 cargo test                                   # core + frontend (exact HTML; shell and pipeline page in Playwright); needs docker
