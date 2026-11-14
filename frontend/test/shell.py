@@ -867,7 +867,9 @@ def test_views_draw_and_only_they_load_plotly(browser, base):
 
         # Each log scrolls by itself.
         assert first_visible_cells(page) == ["unit line 0", "e2e line 0"]
-        box = page.page.locator("figure.view.wide .figure").first.bounding_box()
+        logs = page.page.locator("figure.view.wide .figure").first
+        logs.scroll_into_view_if_needed()
+        box = logs.bounding_box()
         page.page.mouse.move(box["x"] + box["width"] / 4, box["y"] + box["height"] / 2)
         page.page.mouse.wheel(0, 400)
         page.page.wait_for_timeout(300)

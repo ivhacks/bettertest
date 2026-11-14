@@ -287,7 +287,7 @@ impl Component for UsersPage {
         let table = view::users(&self.users, &actions);
         html! {
             <>
-                { view::header(html! { <span>{ "Users" }</span> }, account()) }
+                { view::header(html! {}, html! {}, account()) }
                 { view::notice(&self.notice) }
                 <main>
                     { add }

@@ -5,13 +5,16 @@ use bettertest_shared::*;
 use std::collections::HashMap;
 use yew::prelude::*;
 
-pub fn header(crumbs: Html, right: Html) -> Html {
+/// The top of every page, laid out the same everywhere: a row of the mark, what this page is about
+/// and can do, and the account at its right end, then the links to the other pages.
+pub fn header(crumbs: Html, actions: Html, account: Html) -> Html {
     html! {
         <header>
-            <a class="home" href="/"><img src="/assets/mark.v1.svg" alt="" />{ "bettertest" }</a>
-            { crumbs }
-            <span class="spacer"></span>
-            <span class="actions">{ right }</span>
+            <div class="row">
+                <a class="home" href="/"><img src="/assets/mark.v1.svg" alt="bettertest" /></a>
+                <span class="context">{ crumbs }<span class="actions">{ actions }</span></span>
+                <span class="you">{ account }</span>
+            </div>
             <nav class="links">
                 <a class="page" href="/workers">{ "Workers" }</a>
                 <a class="page" href="/settings">{ "Settings" }</a>
@@ -498,7 +501,7 @@ pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEve
         }
     } else {
         html! {
-            <a class="page account" href="/login" aria-label="Log In">{ person() }<span>{ "Log In" }</span></a>
+            <a class="account" href="/login" aria-label="Log In">{ person() }</a>
         }
     }
 }
