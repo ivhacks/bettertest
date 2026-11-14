@@ -53,10 +53,10 @@ fn main() {
         if me.as_ref().is_some_and(|me| me.role == Role::None) && path != "/login" {
             write_history(&format!("/login?next={path}"), true);
         }
-        // The words already in the body are the first paint, before this wasm ran; the app takes
-        // their place.
+        // index.html's watchdog stands down once this is set, and anything it wrote goes.
         if let Some(body) = gloo::utils::document().body() {
             body.set_text_content(None);
+            let _ = body.set_attribute("data-started", "");
             yew::Renderer::<App>::with_root(body.into()).render();
         }
     });

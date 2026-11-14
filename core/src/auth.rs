@@ -23,6 +23,8 @@ pub fn needed(method: &str, path: &str) -> Option<Role> {
         "/api/login",
         "/api/logout",
         "/api/me",
+        // A browser that cannot start the ui cannot have logged in.
+        "/api/startup-error",
         "/api/passkey-login-options",
         "/api/passkey-login",
         "/api/new-passkey-options",
