@@ -20,6 +20,9 @@ pub struct PipelinePage {
     layout: view::GridLayout,
     // A live event moves no column, so only a render after anything else measures again.
     measure: bool,
+    // Whether the names have been measured once. Until then the grid is only its header: the rows
+    // go in after, laid out once, rather than laid out and then restyled for the measured layout.
+    measured: bool,
     main: NodeRef,
     // Made once: a new callback would differ from the old one, and render every row again.
     cancel: Callback<String>,
@@ -68,6 +71,7 @@ impl Component for PipelinePage {
             views: vec![],
             layout: view::GridLayout::default(),
             measure: true,
+            measured: false,
             main: NodeRef::default(),
             cancel: link.callback(PipelineMsg::Cancel),
             run,
@@ -100,7 +104,10 @@ impl Component for PipelinePage {
             }
             PipelineMsg::Notice(text) => self.notice = Some(text),
             PipelineMsg::Views(views) => self.views = views,
-            PipelineMsg::Layout(layout) => self.layout = layout,
+            PipelineMsg::Layout(layout) => {
+                self.layout = layout;
+                self.measured = true;
+            }
             PipelineMsg::Resized => {}
             PipelineMsg::Cancel(run) => {
                 cancel_run(run, ctx.link().callback(PipelineMsg::Notice));
@@ -177,7 +184,7 @@ impl Component for PipelinePage {
         let moved = moved(layout.stages, self.layout.stages)
             || moved(layout.tasks, self.layout.tasks)
             || layout.dense != self.layout.dense;
-        if moved {
+        if moved || !self.measured {
             ctx.link().send_message(PipelineMsg::Layout(layout));
         }
     }
@@ -207,10 +214,10 @@ impl Component for PipelinePage {
             }
             (Some(snapshot), None) => match &snapshot.pipeline {
                 Ok(pipeline) => {
-                    let rows = snapshot.runs.iter().map(|run| {
+                    let measured = self.measured.then_some(&snapshot.runs);
+                    let rows = measured.into_iter().flatten().map(|run| {
                         html! {
-                            <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()}
-                                layout={self.layout.clone()} />
+                            <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()} />
                         }
                     });
                     view::grid(pipeline, &self.layout, html! { { for rows } })
@@ -333,22 +340,22 @@ impl Component for Figure {
 }
 
 /// One run's row of the grid. A live event changes one run, so only its row renders again: with
-/// thousands of tasks, rendering every row for every event kept the browser busy.
-struct RunRow;
+/// thousands of tasks, rendering every row for every event kept the browser busy. Its cells are
+/// HTML that run_row builds, set in one go once the row is in the page.
+struct RunRow {
+    row: NodeRef,
+}
 
 #[derive(Properties)]
 struct RunRowProps {
     pipeline: Arc<Pipeline>,
     run: Arc<Run>,
-    layout: view::GridLayout,
 }
 
 impl PartialEq for RunRowProps {
     fn eq(&self, other: &Self) -> bool {
         // The snapshot replaces a run that changes, so the pointer says whether it did.
-        Arc::ptr_eq(&self.pipeline, &other.pipeline)
-            && Arc::ptr_eq(&self.run, &other.run)
-            && self.layout == other.layout
+        Arc::ptr_eq(&self.pipeline, &other.pipeline) && Arc::ptr_eq(&self.run, &other.run)
     }
 }
 
@@ -357,11 +364,20 @@ impl Component for RunRow {
     type Properties = RunRowProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
-        Self
+        Self {
+            row: NodeRef::default(),
+        }
     }
 
-    fn view(&self, ctx: &Context<Self>) -> Html {
-        let props = ctx.props();
-        view::run_row(&props.pipeline, &props.run, &props.layout)
+    fn view(&self, _ctx: &Context<Self>) -> Html {
+        html! { <tr ref={self.row.clone()}></tr> }
+    }
+
+    /// Only after a render, which only a changed run causes: the row's cells are this run's now.
+    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        if let Some(row) = self.row.cast::<Element>() {
+            let props = ctx.props();
+            row.set_inner_html(&view::run_row(&props.pipeline, &props.run));
+        }
     }
 }

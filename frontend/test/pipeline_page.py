@@ -6,7 +6,9 @@ and a dozen tabs:
 - a skipped task's cell is no link and does not answer the pointer;
 - every other run cell lights up when hovered, turns white when pressed and fades back once
   released, like a button (brand guide, "Hover, press, release");
-- run ids are muted text, not link-colored.
+- run ids are muted text, not link-colored;
+- switching to a big-ish pipeline (5 stages of 10 tasks, 50 runs: 2 500 cells) draws all its runs
+  within SWITCH_MS of the tab's click.
 
 The boss is shell.py's stand-in: frontend/dist, plus this pipeline's snapshot. Like shell.py, it
 runs in Playwright's image (see shell_nav.rs, which runs both in cargo test).
@@ -102,7 +104,7 @@ def body():
     ]
     return {
         "name": "many_stages",
-        "pipelines": ["many_stages"] + [f"another_pipeline_{n}" for n in range(11)],
+        "pipelines": ["many_stages", "big_ish"] + [f"another_pipeline_{n}" for n in range(10)],
         "pipeline": {"Ok": {"stages": stages, "sandboxes": {}}},
         "runs": [
             run(3, "running", running),
@@ -139,6 +141,80 @@ SIDEWAYS = """() => {
     }
     return problems;
 }"""
+
+
+# From the tab's click to every run's row painted: the page's work once the snapshot is in (the
+# stand-in boss answers at once). The quickest of a few, so a busy machine cannot fail it.
+SWITCH_MS = 200
+BIG_STAGES, BIG_TASKS, BIG_RUNS = 5, 10, 50
+
+
+def big_ish():
+    task = {"worker": None, "labels": ["x86"], "image": None, "vm": None, "arch": None,
+            "timeout": None, "sandbox": None}
+    stages = [
+        {"name": f"Step{s}", "sandbox": None,
+         "tasks": [{"name": f"job_{s}_{t}", **task} for t in range(BIG_TASKS)]}
+        for s in range(BIG_STAGES)
+    ]
+    runs = [
+        {
+            "id": f"{r:08x}-1111-4000-8000-000000000000",
+            "pipeline": "big_ish",
+            "state": "pass",
+            "commit": None,
+            "stages": [
+                {"name": f"Step{s}",
+                 "tasks": [{"id": f"{r:08x}-0000-4000-8{s:03x}-{t:012x}", "name": f"job_{s}_{t}",
+                            "state": "fail" if (r + t) % 7 == 0 else "pass",
+                            "worker": "http://worker:7358", "started": 1_000 + r,
+                            "ended": 2_500 + r * t} for t in range(BIG_TASKS)]}
+                for s in range(BIG_STAGES)
+            ],
+        }
+        for r in range(BIG_RUNS)
+    ]
+    return {
+        "name": "big_ish",
+        "pipelines": ["many_stages", "big_ish"] + [f"another_pipeline_{n}" for n in range(10)],
+        "pipeline": {"Ok": {"stages": stages, "sandboxes": {}}},
+        "runs": runs,
+    }
+
+
+SWITCH = """(name) => new Promise(done => {
+    const start = performance.now();
+    [...document.querySelectorAll('.tab')].find(a => a.textContent === name).click();
+    const drawn = () => {
+        const rows = document.querySelectorAll('.grid tbody tr');
+        const cells = document.querySelectorAll('.grid tbody td');
+        if (rows.length === %d && cells.length === %d) {
+            requestAnimationFrame(() => done(performance.now() - start));
+        } else if (performance.now() - start > 5000) {
+            done(`not drawn after 5s: ${rows.length} rows, ${cells.length} cells`);
+        } else {
+            requestAnimationFrame(drawn);
+        }
+    };
+    drawn();
+})""" % (BIG_RUNS, BIG_RUNS * BIG_STAGES * BIG_TASKS)
+
+
+def switching_pipelines_draws_at_once(browser, base):
+    page = browser.new_page(viewport={"width": 1440, "height": 900})
+    try:
+        page.goto(f"{base}/pipeline/many_stages")
+        page.wait_for_selector(".grid tbody td")
+        took = []
+        for _ in range(5):
+            took.append(page.evaluate(SWITCH, "big_ish"))
+            assert not isinstance(took[-1], str), took[-1]
+            page.locator(".tab", has_text="many_stages").click()
+            page.wait_for_selector(".grid th.stage >> text=VerifyEverythingInStep00")
+        print(f"switching to big_ish took {[round(t) for t in took]} ms")
+        assert min(took) < SWITCH_MS, f"switching to big_ish took {min(took):.0f} ms at best"
+    finally:
+        page.close()
 
 
 def settle(page, url, ready):
@@ -229,6 +305,7 @@ def main():
             "frontend/dist is missing or older than frontend/: run ./build.sh (or frontend/build.sh) first"
         )
     shell.PIPELINES["many_stages"] = shell.snapshot(body())
+    shell.PIPELINES["big_ish"] = shell.snapshot(big_ish())
     server, base = shell.start_server()
     from playwright.sync_api import sync_playwright
 
@@ -238,7 +315,8 @@ def main():
             browser = playwright.chromium.launch(
                 args=["--no-sandbox", "--disable-dev-shm-usage"]
             )
-            for test in [nothing_scrolls_sideways, cells_answer_like_buttons]:
+            tests = [nothing_scrolls_sideways, cells_answer_like_buttons, switching_pipelines_draws_at_once]
+            for test in tests:
                 try:
                     test(browser, base)
                     print(f"PASS {test.__name__}")

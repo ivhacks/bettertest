@@ -515,7 +515,7 @@
   #block(width: 100%, fill: card, stroke: 0.4pt + rgb("#2a2a2a"), inset: (x: 20pt, y: 20pt), {
     button([New run])
     h(10pt)
-    button([Rerun from stage], kind: "outlined")
+    button([Restart Stage], kind: "outlined")
     h(10pt)
     button([forget], kind: "small")
     h(1fr)
@@ -576,9 +576,9 @@
       state-button([New Run], lit(red), white),
       state-button([New Run], white, black),
       head[Outlined],
-      state-button([Rerun Stage], black, white, stroke: 0.6pt + rgb("#555555")),
-      state-button([Rerun Stage], black, white, stroke: 0.6pt + lit(rgb("#555555"))),
-      state-button([Rerun Stage], white, black, stroke: 0.6pt + white),
+      state-button([Restart Stage], black, white, stroke: 0.6pt + rgb("#555555")),
+      state-button([Restart Stage], black, white, stroke: 0.6pt + lit(rgb("#555555"))),
+      state-button([Restart Stage], white, black, stroke: 0.6pt + white),
       head[Small],
       state-button([Forget], orange, black, small: true),
       state-button([Forget], lit(orange), black, small: true),

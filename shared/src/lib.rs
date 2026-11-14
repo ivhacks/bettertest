@@ -98,7 +98,7 @@ pub struct TaskRun {
     // When it started and ended, in milliseconds since 1970 by the boss's clock.
     pub started: Option<u64>,
     pub ended: Option<u64>,
-    // In a rerun, a task it did not run again: the task run whose result it carries over.
+    // In a restart, a task it did not start again: the task run whose result it carries over.
     pub carried_from: Option<Uuid>,
     // What the task said of its tests with tests(). None if it said nothing.
     pub tests: Option<Tests>,
@@ -241,7 +241,7 @@ pub struct TaskSnapshot {
     // The boss's clock when it took the snapshot, to tell how long a running task has been at it.
     pub now: u64,
     pub run: Run,
-    // For a task a rerun carried over: the run that really ran it. The log and artifacts are that
+    // For a task a restart carried over: the run that really ran it. The log and artifacts are that
     // run's.
     pub carried_from: Option<Uuid>,
     // When retention deleted the task's log and its artifacts, if it has.
@@ -268,7 +268,7 @@ pub enum Role {
     // Nothing at all: not even look.
     None,
     Read,
-    // Start and rerun runs, add workers, upload artifacts.
+    // Start and restart runs, add workers, upload artifacts.
     Write,
     // Settings and users too.
     Admin,
@@ -486,7 +486,7 @@ impl Run {
     }
 
     /// Whether every task of every stage before `stage` passed. Only then did `stage` run, and only
-    /// then can a rerun start from it.
+    /// then can a restart start from it.
     pub fn passed_before(&self, stage: &str) -> bool {
         self.stages
             .iter()

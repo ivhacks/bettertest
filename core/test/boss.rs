@@ -563,6 +563,8 @@ fn boss(up: BTreeMap<String, Watched>) -> Shared {
     let db = db::prepare(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
     Arc::new(Boss {
         pipedefs: Mutex::new(BTreeMap::new()),
+        parsed: Mutex::new(HashMap::new()),
+        shown: Mutex::new(HashMap::new()),
         repos: vec![],
         going: Mutex::new(HashMap::new()),
         db: Mutex::new(db),
@@ -768,4 +770,119 @@ async fn an_html_artifact_shows_sandboxed_and_the_rest_downloads() {
         )
     );
     std::fs::remove_dir_all(&dir).expect("clean up");
+}
+
+/// A pipedef of `stages` stages of `tasks` tasks each.
+fn big_pipedef(stages: usize, tasks: usize) -> String {
+    let mut source = String::from(
+        "from bettertest import Labels, Stage, task\n\n\nclass Label(Labels):\n    x86 = \"x86\"\n",
+    );
+    for s in 0..stages {
+        source.push_str(&format!(
+            "\n\nclass Stage{s}(Stage):\n    labels = (Label.x86,)\n"
+        ));
+        for t in 0..tasks {
+            source.push_str(&format!(
+                "\n    @task()\n    def task_{s}_{t}():\n        pass\n"
+            ));
+        }
+    }
+    source
+}
+
+/// What a browser waits for before it can draw a pipeline page: its stream's first message, the
+/// snapshot. Times `boss` answering for pipeline `name`, as a browser asks (taking gzip), up to
+/// that message, and returns it with how many bytes it took on the wire.
+async fn first_snapshot(boss: &Shared, name: &str) -> (Duration, usize, PipelineSnapshot) {
+    use std::io::Write;
+    use tokio_stream::StreamExt;
+    let started = std::time::Instant::now();
+    let headers = HeaderMap::from_iter([(
+        header::ACCEPT_ENCODING,
+        "gzip, deflate, br".parse().unwrap(),
+    )]);
+    let response = runs::pipeline_events(State(boss.clone()), headers, AxumPath(name.to_string()))
+        .await
+        .expect("events");
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+    let mut body = response.into_body().into_data_stream();
+    let (mut wire, mut gunzip) = (0, flate2::write::GzDecoder::new(vec![]));
+    while !gunzip.get_ref().ends_with(b"\n\n") {
+        let bytes = body.next().await.expect("a message").expect("bytes");
+        wire += bytes.len();
+        gunzip.write_all(&bytes).expect("gzip");
+        gunzip.flush().expect("gzip");
+    }
+    let took = started.elapsed();
+    let text = String::from_utf8(gunzip.get_ref().clone()).expect("utf-8");
+    let data = text.trim().strip_prefix("data: ").expect("data");
+    match serde_json::from_str(data).expect("json") {
+        Live::Snapshot(snapshot) => (took, wire, snapshot),
+        Live::Event(event) => panic!("expected a snapshot first, got {event:?}"),
+    }
+}
+
+/// A page load of a big pipeline (10 stages of 20 tasks) with a long history (300 runs) answers
+/// within 100 ms, in under 400 KB (its JSON is 1.4 MB): only the newest RECENT_RUNS runs come out of the db, in three
+/// queries; the pipedef, parsed once already as the boss does at startup, is not parsed again; and
+/// the 10 000 task runs of the snapshot go gzipped.
+#[tokio::test]
+async fn a_big_pipeline_with_a_long_history_loads_at_once() {
+    let source = big_pipedef(10, 20);
+    let file = std::env::temp_dir().join(format!("big-{}.py", Uuid::new_v4()));
+    std::fs::write(&file, &source).expect("write pipedef");
+    let boss = boss(BTreeMap::new());
+    lock(&boss.pipedefs).insert("big".into(), Pipedef::File(file.clone()));
+    // What the boss does at startup.
+    let (_, pipeline) = runs::load_pipeline(&boss, "big", None).await.expect("load");
+    let pipeline = pipeline.expect("parses");
+    let mut newest = vec![];
+    for i in 0..300 {
+        let mut db = boss.db();
+        let run = db
+            .insert_run("big", &pipeline, None, &BTreeMap::new())
+            .expect("run");
+        for task in run.stages.iter().flat_map(|stage| &stage.tasks) {
+            db.start_task(task.id, "http://worker:7358", i)
+                .expect("start");
+            db.set_task_state(task.id, TaskState::Pass, i + 1)
+                .expect("pass");
+        }
+        db.set_run_state(run.id, RunState::Pass).expect("state");
+        newest.insert(0, run.id);
+    }
+    // The quickest of a few, so a test running alongside cannot make it fail.
+    let mut quickest = Duration::MAX;
+    for _ in 0..5 {
+        let (took, wire, snapshot) = first_snapshot(&boss, "big").await;
+        quickest = quickest.min(took);
+        assert!(wire < 400_000, "the snapshot took {wire} bytes on the wire");
+        let ids: Vec<Uuid> = snapshot.runs.iter().map(|run| run.id).collect();
+        assert_eq!(ids, newest[..RECENT_RUNS], "the newest runs, newest first");
+        assert!(snapshot.runs.iter().all(|run| run.stages.len() == 10
+            && run.stages.iter().all(|stage| stage.tasks.len() == 20
+                && stage.tasks.iter().all(|task| task.state == TaskState::Pass))));
+    }
+    std::fs::remove_file(&file).expect("remove pipedef");
+    assert!(
+        quickest < Duration::from_millis(100),
+        "the snapshot took {quickest:?}"
+    );
+}
+
+/// A pipeline page shows the pipeline from memory, and a pipedef file that changed since, as it is
+/// now.
+#[tokio::test]
+async fn an_edited_pipedef_shows_up_on_its_page() {
+    let file = std::env::temp_dir().join(format!("edited-{}.py", Uuid::new_v4()));
+    std::fs::write(&file, big_pipedef(1, 1)).expect("write pipedef");
+    let boss = boss(BTreeMap::new());
+    lock(&boss.pipedefs).insert("edited".into(), Pipedef::File(file.clone()));
+    let tasks = |pipeline: Pipeline| pipeline.stages.iter().map(|s| s.tasks.len()).sum::<usize>();
+    let shown = runs::shown_pipeline(&boss, "edited").await.expect("shown");
+    assert_eq!(tasks(shown.expect("parses")), 1);
+    std::fs::write(&file, big_pipedef(2, 3)).expect("edit pipedef");
+    let shown = runs::shown_pipeline(&boss, "edited").await.expect("shown");
+    assert_eq!(tasks(shown.expect("parses")), 6);
+    std::fs::remove_file(&file).expect("remove pipedef");
 }

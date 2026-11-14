@@ -8,3 +8,8 @@ lto = true
 panic = "abort"
 opt-level = "z"
 codegen-units = 1
+
+# Tests time real work (a page load must be quick), so test builds are optimized enough for the
+# time to mean what it will in a release.
+[profile.test]
+opt-level = 1

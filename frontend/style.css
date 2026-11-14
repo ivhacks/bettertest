@@ -363,7 +363,9 @@ main {
     transform-origin: 0 100%;
 }
 
+/* As wide as a run's id whether or not any rows are in yet, so they move no column. */
 .grid .run {
+    min-width: 6ch;
     padding-right: 8px;
     text-align: right;
 }

@@ -404,7 +404,10 @@ pub(super) async fn get_workers(State(boss): State<Shared>) -> Json<Vec<Worker>>
     Json(boss.worker_list())
 }
 
-pub(super) async fn workers_events(State(boss): State<Shared>) -> Result<Response, Failure> {
+pub(super) async fn workers_events(
+    State(boss): State<Shared>,
+    headers: HeaderMap,
+) -> Result<Response, Failure> {
     let workers = boss.clone();
     let snapshot = move |_: &Db| {
         Ok(Some(WorkersSnapshot {
@@ -415,7 +418,7 @@ pub(super) async fn workers_events(State(boss): State<Shared>) -> Result<Respons
     let wanted = |_: &WorkersSnapshot, event: &Event| {
         matches!(event, Event::Worker(_) | Event::WorkerForgotten { .. })
     };
-    live(boss, snapshot, wanted)
+    live(boss, &headers, snapshot, wanted)
 }
 
 #[derive(Deserialize)]

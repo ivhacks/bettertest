@@ -104,22 +104,27 @@ fn grid_matches_tasks_by_name() {
         commit: None,
     }];
     assert_eq!(
-        to_html(&grid(&pipeline(), &GridLayout::default(), {
-            let layout = GridLayout::default();
-            let rows = runs.iter().map(|run| run_row(&pipeline(), run, &layout));
-            html! { { for rows } }
-        })),
+        to_html(&grid(
+            &pipeline(),
+            &GridLayout::default(),
+            html! { <tr></tr> }
+        )),
         concat!(
-            r#"<table style="grid-template-columns: max-content minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
-            r#"<tr><th></th><th style="grid-column: span 1; --tasks: 1" class="stage"><span>Build</span></th>"#,
+            r#"<table style="grid-template-columns: max-content minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><style></style><thead>"#,
+            r#"<tr><th class="run"></th><th style="grid-column: span 1; --tasks: 1" class="stage"><span>Build</span></th>"#,
             r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span>Test</span></th></tr>"#,
             r#"<tr><th></th><th class="task first"><span>compile</span></th><th class="task first"><span>unit</span></th>"#,
             r#"<th class="task"><span>e2e</span></th></tr></thead>"#,
-            r#"<tbody><tr><th class="run running"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
-            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="pass" draggable="false"></a></td>"#,
-            r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="running" draggable="false"></a></td>"#,
+            r#"<tbody><tr></tr></tbody></table>"#,
+        )
+    );
+    assert_eq!(
+        run_row(&pipeline(), &runs[0]),
+        concat!(
+            r#"<th class="run running"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
+            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000002" title="compile: pass" draggable="false"></a></td>"#,
+            r#"<td class="cell running first"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: running" draggable="false"></a></td>"#,
             r#"<td class="cell"></td>"#,
-            r#"</tr></tbody></table>"#,
         )
     );
 }
@@ -140,8 +145,9 @@ fn tilted_names_and_dense_stages() {
     assert_eq!(
         to_html(&grid(&pipeline(), &layout, html! {})),
         concat!(
-            r#"<table style="grid-template-columns: max-content minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid"><thead>"#,
-            r#"<tr class="tilted"><th style="height: 50px"></th>"#,
+            r#"<table style="grid-template-columns: max-content minmax(0, 1.0000fr) minmax(0, 0.7071fr) minmax(0, 0.7071fr)" class="grid">"#,
+            r#"<style>.grid tbody td:nth-child(n+4):nth-child(-n+4) { padding-left: 0 }</style><thead>"#,
+            r#"<tr class="tilted"><th style="height: 50px" class="run"></th>"#,
             r#"<th style="grid-column: span 1; --tasks: 1" class="stage"><span style="transform: rotate(-90.00deg)">Build</span></th>"#,
             r#"<th style="grid-column: span 2; --tasks: 2" class="stage"><span style="transform: rotate(-90.00deg)">Test</span></th></tr>"#,
             r#"<tr class="tilted"><th style="height: 84px"></th>"#,
@@ -151,7 +157,8 @@ fn tilted_names_and_dense_stages() {
             r#"</tr></thead><tbody></tbody></table>"#,
         )
     );
-    // The dense stage's cells name their task, since the header no longer shows it.
+    // Every cell names its task, which a dense stage's header no longer shows. The rows are the
+    // same whatever the layout: the style above packs the dense stage's cells.
     let run = Run {
         id: id(1),
         pipeline: "app".into(),
@@ -172,11 +179,11 @@ fn tilted_names_and_dense_stages() {
         commit: None,
     };
     assert_eq!(
-        to_html(&run_row(&pipeline(), &run, &layout)),
+        run_row(&pipeline(), &run),
         concat!(
-            r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell first"></td>"#,
-            r#"<td class="cell pass first dense"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass" draggable="false"></a></td>"#,
-            r#"<td class="cell dense"></td></tr>"#,
+            r#"<th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell first"></td>"#,
+            r#"<td class="cell pass first"><a href="/task/00000000-0000-0000-0000-000000000003" title="unit: pass" draggable="false"></a></td>"#,
+            r#"<td class="cell"></td>"#,
         )
     );
 }
@@ -237,8 +244,20 @@ fn runs_show_their_commit() {
         sandboxes: Default::default(),
     };
     assert_eq!(
-        to_html(&run_row(&pipeline, &run, &GridLayout::default())),
-        r#"<tr><th title="main @ 3fe66e3" class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th></tr>"#
+        run_row(&pipeline, &run),
+        r#"<th class="run pass" title="main @ 3fe66e3"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#
+    );
+    // A branch name is anyone's: the row's HTML holds it as text.
+    let branch = Run {
+        commit: Some(Commit {
+            sha: "3fe66e3c0ffee".into(),
+            branch: r#"x"><script>&"#.into(),
+        }),
+        ..run.clone()
+    };
+    assert_eq!(
+        run_row(&pipeline, &branch),
+        r#"<th class="run pass" title="x&quot;&gt;&lt;script&gt;&amp; @ 3fe66e3"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#
     );
     let snapshot = TaskSnapshot {
         now: 0,
@@ -334,10 +353,10 @@ fn finished_tasks_keep_their_runtime() {
         sandboxes: Default::default(),
     };
     assert_eq!(
-        to_html(&run_row(&pipeline, &run, &GridLayout::default())),
+        run_row(&pipeline, &run),
         concat!(
-            r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell fail first">"#,
-            r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="fail in 1m 23s" draggable="false"></a></td></tr>"#,
+            r#"<th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell fail first">"#,
+            r#"<a href="/task/00000000-0000-0000-0000-000000000002" title="compile: fail in 1m 23s" draggable="false"></a></td>"#,
         )
     );
 }
@@ -372,12 +391,11 @@ fn skipped_tasks_are_no_link() {
         }],
         sandboxes: Default::default(),
     };
-    let layout = GridLayout::default();
     assert_eq!(
-        to_html(&run_row(&pipeline, &run, &layout)),
+        run_row(&pipeline, &run),
         concat!(
-            r#"<tr><th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
-            r#"<td class="cell skipped first"></td></tr>"#,
+            r#"<th class="run fail"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th>"#,
+            r#"<td class="cell skipped first"></td>"#,
         )
     );
 }
@@ -466,10 +484,10 @@ fn carried_over_tasks_say_where_from() {
         sandboxes: Default::default(),
     };
     assert_eq!(
-        to_html(&run_row(&pipeline, &run, &GridLayout::default())),
+        run_row(&pipeline, &run),
         concat!(
-            r#"<tr><th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell pass carried first">"#,
-            r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="pass, carried over" draggable="false"></a></td></tr>"#,
+            r#"<th class="run pass"><a href="/pipeline/app?run=00000000-0000-0000-0000-000000000001">000000</a></th><td class="cell pass carried first">"#,
+            r#"<a href="/task/00000000-0000-0000-0000-000000000005" title="unit: pass, carried over" draggable="false"></a></td>"#,
         )
     );
     let snapshot = TaskSnapshot {

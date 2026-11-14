@@ -13,9 +13,9 @@ pub(super) struct Going {
 /// Says why, once a run is cancelled.
 pub(super) type Cancelled = watch::Receiver<Option<String>>;
 
-/// Reads and parses the pipedef fresh every time, so edits show up without restarting the boss. A
-/// pipedef in a repo is read at `commit`, or else from the default branch as of the last fetch. A
-/// pipedef file has no history: it is read as it is now.
+/// Reads the pipedef fresh every time, so edits show up without restarting the boss, and parses it
+/// when it is not what was parsed last time. A pipedef in a repo is read at `commit`, or else from
+/// the default branch as of the last fetch. A pipedef file has no history: it is read as it is now.
 pub(super) async fn load_pipeline(
     boss: &Boss,
     name: &str,
@@ -25,8 +25,59 @@ pub(super) async fn load_pipeline(
         Ok(source) => source,
         Err(e) => return Ok((String::new(), Err(e))),
     };
+    if let Some((parsed, pipeline)) = lock(&boss.parsed).get(name)
+        && *parsed == source
+    {
+        return Ok((source, Ok(pipeline.clone())));
+    }
+    // One that does not parse is parsed again next time: python's complaint may be passing.
     let pipeline = pipedef::parse(&source).await;
+    if let Ok(pipeline) = &pipeline {
+        lock(&boss.parsed).insert(name.to_string(), (source.clone(), pipeline.clone()));
+    }
     Ok((source, pipeline))
+}
+
+/// The pipeline as its page shows it, from memory (see Shown). Only a pipedef file that changed
+/// since is read and parsed again.
+pub(super) async fn shown_pipeline(
+    boss: &Boss,
+    name: &str,
+) -> Result<Result<Pipeline, String>, Failure> {
+    let pipedef = boss
+        .pipedef(name)
+        .ok_or_else(|| not_found(format!("pipeline {name}")))?;
+    let stamp = match &pipedef {
+        Pipedef::File(path) => file_stamp(path).await,
+        Pipedef::Repo { .. } => None,
+    };
+    if let Some(shown) = lock(&boss.shown).get(name)
+        && shown.stamp == stamp
+    {
+        return Ok(shown.pipeline.clone());
+    }
+    refresh_shown(boss, name, stamp).await
+}
+
+/// Parses pipeline `name` as its page shows it, and keeps it (see Shown), with the file's `stamp`.
+pub(super) async fn refresh_shown(
+    boss: &Boss,
+    name: &str,
+    stamp: Option<(SystemTime, u64)>,
+) -> Result<Result<Pipeline, String>, Failure> {
+    let (_, pipeline) = load_pipeline(boss, name, None).await?;
+    let shown = Shown {
+        stamp,
+        pipeline: pipeline.clone(),
+    };
+    lock(&boss.shown).insert(name.to_string(), shown);
+    Ok(pipeline)
+}
+
+/// When a file was modified, and its size. None if the file system will not say.
+async fn file_stamp(path: &std::path::Path) -> Option<(SystemTime, u64)> {
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 /// The pipedef's source, read as load_pipeline reads it. Err is why git could not show it.
@@ -58,7 +109,7 @@ pub(super) async fn get_pipeline(
     State(boss): State<Shared>,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<Pipeline>, Failure> {
-    let (_, pipeline) = load_pipeline(&boss, &name, None).await?;
+    let pipeline = shown_pipeline(&boss, &name).await?;
     pipeline
         .map(Json)
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))
@@ -66,9 +117,10 @@ pub(super) async fn get_pipeline(
 
 pub(super) async fn pipeline_events(
     State(boss): State<Shared>,
+    headers: HeaderMap,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, Failure> {
-    let (_, pipeline) = load_pipeline(&boss, &name, None).await?;
+    let pipeline = shown_pipeline(&boss, &name).await?;
     if let Ok(pipeline) = &pipeline {
         for url in pipeline.workers() {
             boss.enroll(url);
@@ -92,7 +144,7 @@ pub(super) async fn pipeline_events(
             .run()
             .is_some_and(|(pipeline, _)| pipeline == snapshot.name)
     };
-    live(boss, snapshot, wanted)
+    live(boss, &headers, snapshot, wanted)
 }
 
 /// Starts a run of `name`. A pipeline in a repo runs at the newest commit of the default branch.
@@ -1021,12 +1073,13 @@ fn log_text(lines: Vec<LogLine>) -> String {
 
 pub(super) async fn run_events(
     State(boss): State<Shared>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, Failure> {
     let id = parse_id(&id)?;
     let snapshot = move |db: &Db| db.run(id);
     let wanted = |run: &Run, event: &Event| event.run().is_some_and(|(_, id)| id == run.id);
-    live(boss, snapshot, wanted)
+    live(boss, &headers, snapshot, wanted)
 }
 
 /// The files of the commit run `id` tests, as a tar stream, for its tasks to run in.
@@ -1079,6 +1132,7 @@ pub(super) async fn get_task_log(
 
 pub(super) async fn task_events(
     State(boss): State<Shared>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, Failure> {
     let id = parse_id(&id)?;
@@ -1125,5 +1179,5 @@ pub(super) async fn task_events(
         Event::RunFinished { run, .. } => *run == snapshot.run.id,
         Event::RunStarted(_) | Event::Worker(_) | Event::WorkerForgotten { .. } => false,
     };
-    live(boss, snapshot, wanted)
+    live(boss, &headers, snapshot, wanted)
 }
