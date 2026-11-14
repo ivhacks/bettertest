@@ -3,6 +3,7 @@
 
 use super::*;
 use clap::Parser;
+use std::path::Path;
 
 /// Docker is the one thing bettertest's tests need from the machine. A test that uses it calls
 /// this first, so that without it the test fails saying so, not on whatever came back instead.
@@ -95,6 +96,29 @@ fn unified_takes_both_ports() {
     };
     assert_eq!(boss_port, 8000);
     assert_eq!(worker_port, 8001);
+}
+
+#[test]
+fn workdir_flag() {
+    let Command::Boss { workdir, .. } =
+        parse(&["bettertest", "boss", "--workdir", "/tmp/bt", "app.py"])
+    else {
+        panic!("expected boss");
+    };
+    assert_eq!(workdir.workdir.as_deref(), Some(Path::new("/tmp/bt")));
+
+    let Command::Worker { workdir, .. } = parse(&["bettertest", "worker", "--workdir", "/tmp/btw"])
+    else {
+        panic!("expected worker");
+    };
+    assert_eq!(workdir.workdir.as_deref(), Some(Path::new("/tmp/btw")));
+
+    let Command::Unified { workdir, .. } =
+        parse(&["bettertest", "unified", "--workdir", "/tmp/btu", "app.py"])
+    else {
+        panic!("expected unified");
+    };
+    assert_eq!(workdir.workdir.as_deref(), Some(Path::new("/tmp/btu")));
 }
 
 #[test]

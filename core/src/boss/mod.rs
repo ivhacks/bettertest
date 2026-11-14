@@ -105,11 +105,13 @@ type Shared = Arc<Boss>;
 /// carry credentials, `http://user:token@host/owner/name.git`, for fetching and for reporting
 /// commit statuses.
 /// With `tls`, the boss speaks HTTPS only. `port` is where it listens (`--boss-port`, 7357 unless
-/// told otherwise).
+/// told otherwise). `local_worker`, when `unified` started a worker in this process, is that
+/// worker's url; it is enrolled with the others.
 pub async fn entry(
     sources: Vec<String>,
     tls: Option<tls::Tls>,
     port: u16,
+    local_worker: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let mut pipedefs = vec![];
     let mut repos = vec![];
@@ -175,6 +177,11 @@ pub async fn entry(
     });
     for url in enrolled {
         boss.enroll(&url);
+    }
+    // Unified's own worker. enroll does nothing when this url is already known, so a restart, or
+    // adding the same url on the workers page, leaves one row.
+    if let Some(url) = local_worker {
+        boss.enroll(url);
     }
     spawn(sweep_hourly(boss.clone()));
     spawn(heartbeat(boss.clone()));
