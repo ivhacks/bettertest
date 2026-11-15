@@ -10,11 +10,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-/// Playwright's image holds its browsers but not its Python package; both at one version.
-const PLAYWRIGHT: &str = "\
-FROM mcr.microsoft.com/playwright/python:v1.65.1-noble
-RUN pip install --break-system-packages --no-cache-dir playwright==1.65.1
-";
+const PLAYWRIGHT: &str = include_str!("../../.bettertest/playwright.Dockerfile");
 
 #[test]
 fn shell_stays_across_navigation() {
