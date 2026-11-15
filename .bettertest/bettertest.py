@@ -26,6 +26,7 @@ deleted inode, and the guest's journal takes it, so the next boot stops at the G
 """
 
 import os
+import re
 import subprocess
 import tempfile
 
@@ -39,9 +40,12 @@ from bettertest import (
     copy,
     get_artifact,
     get_artifact_this_run,
+    log,
     reboot,
     run,
     task,
+    tests,
+    view,
 )
 
 
@@ -53,6 +57,11 @@ class Label(Labels):
 IMAGE = "debian:trixie"
 # Built by the Prepare stage from .bettertest/build.Dockerfile.
 BUILD_IMAGE = "bettertest-build"
+# Built by the Prepare stage from .bettertest/playwright.Dockerfile.
+PLAYWRIGHT_IMAGE = "bettertest-playwright"
+# Chromium timing the pages. One container, so its measurements take turns rather than slow each
+# other down, against one boss that frontend/test/speed.py starts there.
+PAGES = Sandbox(labels=[Label.x86], image=PLAYWRIGHT_IMAGE)
 
 DEBIAN_IMAGE = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 DEBIAN = Sandbox(labels=[Label.x86], vm=DEBIAN_IMAGE)
@@ -100,6 +109,21 @@ class Prepare(Stage):
                 "-f",
                 ".bettertest/build.Dockerfile",
                 ".",
+            ],
+            check=True,
+        )
+
+    @task()
+    def playwright_image():
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                "-t",
+                PLAYWRIGHT_IMAGE,
+                "-f",
+                ".bettertest/playwright.Dockerfile",
+                ".bettertest",
             ],
             check=True,
         )
@@ -486,3 +510,90 @@ class Check(Stage):
         run(
             'test -s ~/before && test "$(cat ~/before)" != "$(cat /proc/sys/kernel/random/boot_id)"'
         )
+
+    @task(sandbox=PAGES)
+    def cold_loads():
+        page_timings("cold")
+
+    @task(sandbox=PAGES)
+    def tab_switch():
+        page_timings("tabs")
+
+    @task(sandbox=PAGES)
+    def navigation():
+        page_timings("navigation")
+
+
+# frontend/test/speed.py prints one of these per timing.
+TIMING = re.compile(r"^(.+): (\d+) ms, limit (\d+) ms$", re.MULTILINE)
+
+
+def page_timings(mode: str) -> None:
+    """Times the pages in Chromium against this run's binary; any time over its limit fails."""
+    copy(get_artifact_this_run(Build.packages, name="bettertest"), "/bettertest")
+    copy("frontend/test/speed.py", "/speed.py")
+    # Over a limit, it still prints every time, which the counts below come from.
+    out = run(f"chmod +x /bettertest && python3 /speed.py /bettertest {mode} || true")
+    timings = TIMING.findall(out)
+    over = [what for what, ms, limit in timings if int(ms) > int(limit)]
+    tests(total=len(timings), failed=len(over))
+    if not timings:
+        raise SystemExit("speed.py measured nothing")
+    if over:
+        raise SystemExit(f"over the limit: {', '.join(over)}")
+
+
+# The views: each page timing as a bar, its limit as an orange line across it.
+
+
+def timing_chart(shown) -> dict:
+    timings = [
+        (what, int(ms), int(limit)) for what, ms, limit in TIMING.findall(log(shown))
+    ]
+    bar = {
+        "type": "bar",
+        "x": [what for what, _, _ in timings],
+        "y": [ms for _, ms, _ in timings],
+        "text": [f"{ms} ms" for _, ms, _ in timings],
+        "textposition": "outside",
+        "marker": {
+            "color": [
+                "#2ea44f" if ms <= limit else "#e5484d" for _, ms, limit in timings
+            ]
+        },
+        "hovertemplate": "%{x}: %{y} ms<extra></extra>",
+    }
+    # A bar is 0.8 of its category wide, centred on the category's index.
+    limits = [
+        {
+            "type": "line",
+            "x0": i - 0.4,
+            "x1": i + 0.4,
+            "y0": limit,
+            "y1": limit,
+            "line": {"color": "#ff6e00", "width": 3},
+        }
+        for i, (_, _, limit) in enumerate(timings)
+    ]
+    return {
+        "data": [bar],
+        "layout": {
+            "shapes": limits,
+            "yaxis": {"ticksuffix": " ms", "rangemode": "tozero"},
+        },
+    }
+
+
+@view(wide=True)
+def cold_load_ms(run):
+    return timing_chart(Check.cold_loads)
+
+
+@view()
+def tab_switch_ms(run):
+    return timing_chart(Check.tab_switch)
+
+
+@view(wide=True)
+def navigation_ms(run):
+    return timing_chart(Check.navigation)
