@@ -13,6 +13,18 @@ instantly. No YAML.
 - **Pipelines are Python.** Real code, real IDE support. A task can run in a container, in a VM
   (x86 or ARM, emulated or not), or straight on a machine, to toggle a GPIO pin or talk to a rig.
 
+## Try it
+
+On Linux, with python3 and curl (docker only when a task asks for a container):
+
+```sh
+curl -fsSL "https://real-live.bettertest.dev/install.sh?arch=x86_64" | sh
+```
+
+That downloads the binary, installs it to `~/.local/bin`, and runs boss and worker together on an
+example pipeline. It prints the boss UI at `http://[::1]:7357` and the worker at
+`http://[::1]:7358`. On ARM64, use `arch=aarch64`.
+
 ## Five minutes
 
 Two machines: a **worker** that runs tasks (it needs python3, and docker for containers; VMs need only KVM, the binary carries its own qemu) and a **boss**

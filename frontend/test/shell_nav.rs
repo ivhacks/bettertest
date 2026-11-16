@@ -22,15 +22,29 @@ fn pipeline_page_fits_and_its_cells_answer() {
     playwright("test/pipeline_page.py");
 }
 
+#[test]
+fn try_now_panel_follows_the_architecture() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .expect("repo root");
+    let repo = repo.to_str().expect("repo path");
+    playwright_at(repo, "/repo", "site/try_now.py");
+}
+
 /// Runs `script` in Playwright's image against the built frontend.
 fn playwright(script: &str) {
-    let root = env!("CARGO_MANIFEST_DIR");
+    playwright_at(env!("CARGO_MANIFEST_DIR"), "/frontend", script);
+}
+
+/// `source` mounted at `workdir`, then `python3 script` there.
+fn playwright_at(source: &str, workdir: &str, script: &str) {
     // The tests run in parallel; the first builds the image, the rest wait for it.
     static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
     if let Err(why) = PREPARED.get_or_init(prepare) {
         panic!("{why}");
     }
-    let mount = format!("{root}:/frontend:ro,z");
+    let mount = format!("{source}:{workdir}:ro,z");
     let status = Command::new("docker")
         .args([
             "run",
@@ -39,7 +53,7 @@ fn playwright(script: &str) {
             "--volume",
             &mount,
             "--workdir",
-            "/frontend",
+            workdir,
         ])
         .args(["bettertest-test-playwright", "python3", script])
         .status()

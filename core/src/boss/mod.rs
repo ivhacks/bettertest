@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{ConnectInfo, Path as AxumPath, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -263,6 +263,10 @@ pub async fn entry(
             get(get_pipeline_artifact),
         )
         .route("/artifact/{name}", get(get_artifact).put(put_artifact))
+        // The homepage's "Try now": one curl|sh, then these bytes. The files themselves are copied
+        // into place at deploy (see DL_DIR); nothing here writes them.
+        .route("/install.sh", get(install_sh))
+        .route("/dl/{name}", get(download_binary))
         // Pages of the web ui. The frontend reads the path and decides what to show.
         .route("/", get(home))
         .route("/pipeline/{*rest}", get(index))
@@ -518,6 +522,130 @@ async fn startup_error(headers: HeaderMap, body: String) {
     let agent = agent.and_then(|v| v.to_str().ok()).unwrap_or_default();
     let said: String = body.chars().take(2000).collect();
     println!("a browser could not start the web ui ({agent}): {said:?}");
+}
+
+/// Musl binaries `install.sh` tells curl to fetch. Deploy copies them here (see deploy.sh); this
+/// process only reads them. They are not 0666, unlike the db: a stranger pipes them into a shell,
+/// so only the person who deploys can write them.
+const DL_DIR: &str = "/var/tmp/bettertest/dl";
+
+fn binary_file(name: &str) -> Option<PathBuf> {
+    matches!(name, "bettertest-x86_64" | "bettertest-aarch64")
+        .then(|| PathBuf::from(DL_DIR).join(name))
+}
+
+/// `x86_64` when the query says nothing. `aarch64` is the other accepted value. Anything else is
+/// refused: the choice is written into a shell script.
+fn download_arch(query: Option<&str>) -> Result<&'static str, &'static str> {
+    let Some(query) = query.filter(|query| !query.is_empty()) else {
+        return Ok("x86_64");
+    };
+    let mut chosen = None;
+    for pair in query.split('&') {
+        let Some(("arch", value)) = pair.split_once('=') else {
+            continue;
+        };
+        if chosen.is_some() {
+            return Err("arch is x86_64 or aarch64");
+        }
+        chosen = Some(value);
+    }
+    match chosen {
+        None | Some("x86_64") => Ok("x86_64"),
+        Some("aarch64") => Ok("aarch64"),
+        Some(_) => Err("arch is x86_64 or aarch64"),
+    }
+}
+
+/// `https://host:port` from the request, or nothing. The string is written into a shell script, so
+/// it may only be a host and a port.
+fn public_origin(https: bool, host: &str) -> Option<String> {
+    let ok = !host.is_empty()
+        && host.len() <= 253
+        && host.chars().any(|c| c.is_ascii_alphanumeric())
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+    ok.then(|| format!("{}://{host}", if https { "https" } else { "http" }))
+}
+
+/// Downloads the binary, puts it on `~/.local/bin`, and runs unified with helloworld's task. The
+/// label is the one a worker of this architecture already has, so the example needs nothing enrolled.
+fn install_script(origin: &str, arch: &str) -> String {
+    let label = if arch == "aarch64" { "arm" } else { "x86" };
+    format!(
+        r#"#!/bin/sh
+set -eu
+bindir=$HOME/.local/bin
+mkdir -p "$bindir" "$HOME/bettertest"
+curl -fsSL "{origin}/dl/bettertest-{arch}" -o "$bindir/bettertest"
+chmod 755 "$bindir/bettertest"
+cat > "$HOME/bettertest/hello.py" << 'PY'
+from bettertest import Labels, Stage, task
+
+
+class Label(Labels):
+    {label} = "{label}"
+
+
+class Hello(Stage):
+    labels = (Label.{label},)
+
+    @task()
+    def world():
+        print("hello, world")
+PY
+exec "$bindir/bettertest" unified "$HOME/bettertest/hello.py"
+"#
+    )
+}
+
+async fn install_sh(State(boss): State<Shared>, headers: HeaderMap, uri: Uri) -> Response {
+    let arch = match download_arch(uri.query()) {
+        Ok(arch) => arch,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let Some(origin) = public_origin(boss.tls.is_some(), host) else {
+        return (StatusCode::BAD_REQUEST, "need a plain host header").into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        install_script(&origin, arch),
+    )
+        .into_response()
+}
+
+async fn download_binary(AxumPath(name): AxumPath<String>) -> Response {
+    let Some(path) = binary_file(&name) else {
+        return (StatusCode::NOT_FOUND, "no such binary").into_response();
+    };
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return (StatusCode::NOT_FOUND, format!("no {name} in {DL_DIR}")).into_response();
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let length = match file.metadata().await {
+        Ok(meta) => meta.len(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CACHE_CONTROL, "no-cache".to_string()),
+            (header::CONTENT_LENGTH, length.to_string()),
+        ],
+        Body::from_stream(ReaderStream::new(file)),
+    )
+        .into_response()
 }
 
 /// There is no landing page: `/` is the first pipeline's page. It is served here rather than

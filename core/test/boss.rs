@@ -886,3 +886,67 @@ async fn an_edited_pipedef_shows_up_on_its_page() {
     assert_eq!(tasks(shown.expect("parses")), 6);
     std::fs::remove_file(&file).expect("remove pipedef");
 }
+
+#[test]
+fn the_web_ui_is_embedded_when_the_frontend_was_built() {
+    // Debug reads the files from the build directory; release carries them. `/` is that page.
+    let built = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../frontend/dist/index.html"
+    ))
+    .exists();
+    if built {
+        assert!(EmbeddedWebAssets::get("index.html").is_some());
+    }
+}
+
+#[test]
+fn the_install_script_names_the_binary_and_the_label() {
+    let x86 = install_script("https://real-live.bettertest.dev", "x86_64");
+    assert!(x86.starts_with("#!/bin/sh\n"));
+    assert!(x86.contains("https://real-live.bettertest.dev/dl/bettertest-x86_64"));
+    assert!(x86.contains("Label.x86"));
+    assert!(x86.contains("unified \"$HOME/bettertest/hello.py\""));
+    assert!(x86.contains("hello, world"));
+    let arm = install_script("http://origin:7357", "aarch64");
+    assert!(arm.contains("http://origin:7357/dl/bettertest-aarch64"));
+    assert!(arm.contains("Label.arm"));
+    assert!(!arm.contains("Label.x86"));
+}
+
+#[test]
+fn the_install_host_is_only_a_host() {
+    assert_eq!(
+        public_origin(true, "real-live.bettertest.dev").as_deref(),
+        Some("https://real-live.bettertest.dev")
+    );
+    assert_eq!(
+        public_origin(false, "origin:7357").as_deref(),
+        Some("http://origin:7357")
+    );
+    assert_eq!(
+        public_origin(false, "[::1]:7357").as_deref(),
+        Some("http://[::1]:7357")
+    );
+    assert!(public_origin(false, "evil.com;rm -rf /").is_none());
+    assert!(public_origin(false, "").is_none());
+    assert!(public_origin(false, "$(id)").is_none());
+}
+
+#[test]
+fn install_arch_is_x86_64_or_aarch64() {
+    assert_eq!(download_arch(None).unwrap(), "x86_64");
+    assert_eq!(download_arch(Some("arch=x86_64")).unwrap(), "x86_64");
+    assert_eq!(
+        download_arch(Some("foo=1&arch=aarch64")).unwrap(),
+        "aarch64"
+    );
+    assert!(download_arch(Some("arch=arm64")).is_err());
+    assert!(download_arch(Some("arch=x86_64&arch=aarch64")).is_err());
+    assert!(binary_file("../etc/passwd").is_none());
+    assert!(
+        binary_file("bettertest-x86_64")
+            .unwrap()
+            .ends_with("bettertest-x86_64")
+    );
+}
