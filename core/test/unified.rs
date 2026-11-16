@@ -34,17 +34,43 @@ fn docker(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn build_image() {
-    let mut build = Command::new("docker")
-        .args(["build", "--quiet", "--tag", IMAGE, "-"])
-        .stdin(Stdio::piped())
+fn image_ready() -> bool {
+    Command::new("docker")
+        .args(["image", "inspect", IMAGE])
         .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    // curl is what the homepage's one-line command uses, and what that script uses to fetch the binary.
-    let dockerfile = b"FROM debian:trixie\nRUN apt-get update && apt-get install -y --no-install-recommends python3 curl && rm -rf /var/lib/apt/lists/*\n";
-    build.stdin.take().unwrap().write_all(dockerfile).unwrap();
-    assert!(build.wait().unwrap().success(), "could not build {IMAGE}");
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn build_image() {
+    // Three tests build this at once. Docker's tag of one name races: the loser exits with
+    // "already exists" while the image is not visible yet. Wait for the one that won.
+    for _ in 0..40 {
+        if image_ready() {
+            return;
+        }
+        let mut build = Command::new("docker")
+            .args(["build", "--quiet", "--tag", IMAGE, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // curl is what the homepage's one-line command uses, and what that script uses to fetch the binary.
+        let dockerfile = b"FROM debian:trixie\nRUN apt-get update && apt-get install -y --no-install-recommends python3 curl && rm -rf /var/lib/apt/lists/*\n";
+        build.stdin.take().unwrap().write_all(dockerfile).unwrap();
+        let out = build.wait_with_output().unwrap();
+        if out.status.success() || image_ready() {
+            return;
+        }
+        let err = String::from_utf8_lossy(&out.stderr);
+        if !err.contains("already exists") {
+            panic!("could not build {IMAGE}: {err}");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    panic!("could not build {IMAGE}");
 }
 
 /// A pipedef whose one task asks only for this machine's architecture label, in a fresh directory.

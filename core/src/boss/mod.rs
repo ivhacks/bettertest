@@ -650,19 +650,54 @@ async fn download_binary(AxumPath(name): AxumPath<String>) -> Response {
 
 /// There is no landing page: `/` is the first pipeline's page. It is served here rather than
 /// redirected to, which would cost a round trip, and names that pipeline as canonical for the app.
-async fn home(State(boss): State<Shared>) -> Response {
+async fn home(headers: HeaderMap, State(boss): State<Shared>) -> Response {
     let (Some(first), Some(index)) = (
         boss.pipelines().into_iter().next(),
         EmbeddedWebAssets::get("index.html"),
     ) else {
         return (StatusCode::NOT_FOUND, "no pipelines").into_response();
     };
-    // Not compressed, unlike index.html: it fits in the first burst all the same.
-    let headers = [
+    // The canonical link is spliced in, so this cannot use index.html's precompressed copy.
+    // Gzip it the same way: the document has to stay inside the first burst.
+    document(&headers, with_canonical(&index.data, &first))
+}
+
+/// The HTML document. Gzipped when the browser asks and that is smaller.
+fn document(headers: &HeaderMap, html: String) -> Response {
+    let plain = html.into_bytes();
+    let accepted = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let gzip = accepts_gzip(accepted)
+        .then(|| gzip_smaller(&plain))
+        .flatten();
+    let common = [
         (header::CONTENT_TYPE, "text/html; charset=utf-8"),
         (header::CACHE_CONTROL, "no-cache"),
     ];
-    (headers, with_canonical(&index.data, &first)).into_response()
+    match gzip {
+        Some(body) => (
+            common,
+            [
+                (header::VARY, "accept-encoding"),
+                (header::CONTENT_ENCODING, "gzip"),
+            ],
+            body,
+        )
+            .into_response(),
+        None => (common, plain).into_response(),
+    }
+}
+
+/// Gzip of `plain` when it is actually smaller. None leaves the caller sending `plain`: the
+/// document still answers, and a Vec encode does not fail short of memory.
+fn gzip_smaller(plain: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    enc.write_all(plain).ok()?;
+    let gzip = enc.finish().ok()?;
+    (gzip.len() < plain.len()).then_some(gzip)
 }
 
 fn with_canonical(index: &[u8], pipeline: &str) -> String {
