@@ -141,6 +141,7 @@ brand/                  the brand guide: style_guide.typ (Typst source), style_g
 pylib/src/bettertest/   the python library pipedefs import (Stage, task, run, copy, reboot, view)
 pipedefs/               sample pipelines: helloworld (shipped in the .deb), random_time, weather,
                         artifact, vm, views
+site/index.html         the homepage at bettertest.dev: Try now shows the install command
 .bettertest/            bettertest's own CI pipeline (bettertest.py) and the container its packages build in
 packaging/              systemd units and sysusers.d entry, shared by both packages
   deb/                  control file and maintainer scripts
@@ -289,7 +290,7 @@ Off by default: the boss speaks plain HTTP, and nobody deploying it meets a cert
 - Runs a dead boss left `running` are failed on the next start. Their running tasks end at the boss's last heartbeat, not at the restart, with a log line giving that time.
 - A worker that goes quiet is down since its last heartbeat, not since the boss gave up on it 45 s later. A running task's stream from its worker carries keep-alives too: a task whose worker says nothing for 45 s fails ("lost http://…: it has said nothing for 45s"), so a frozen or unplugged worker cannot hang a run.
 - **Retention.** The settings page (`settings` table) says how many days after a task ends its artifacts and its log are kept; empty keeps them forever, the default. The boss sweeps at startup, every hour, and when the settings are saved: in batches of 100 tasks, each its own short transaction, so running tasks keep logging. It deletes artifact files before their rows, so a failed sweep is redone rather than leaving files nothing refers to. A task records when retention dealt with it (`log_deleted_at`, `artifacts_deleted_at`), so its page and `get_artifact` say retention deleted them rather than that they never existed. Time is a parameter of the db functions, so tests check "30 days later" instantly (see the tests in `db.rs`); for end-to-end evidence, move tasks' `ended_at` back in sqlite and save the settings.
-- Everything else on disk lives under `/var/tmp/bettertest` too: `artifacts/` (uploaded), `task-artifacts/<task>/` (published by tasks, listed in `task_artifacts`), `vm-images/` (worker cache), `vms/` (per-VM scratch), `repos/` (the boss's bare git mirrors), `tasks/<id>/` (a worker's checkout, inputs and outputs of one running task).
+- Everything else on disk lives under `/var/tmp/bettertest` too: `artifacts/` (uploaded), `task-artifacts/<task>/` (published by tasks, listed in `task_artifacts`), `vm-images/` (worker cache), `vms/` (per-VM scratch), `repos/` (the boss's bare git mirrors), `tasks/<id>/` (a worker's checkout, inputs and outputs of one running task), `dl/` (the musl binaries `install.sh` serves: `bettertest-x86_64` and `bettertest-aarch64`, written by deploy, mode 0644, because strangers pipe them to a shell).
 
 ### Worker output
 
@@ -379,6 +380,10 @@ Boss :7357 (`--boss-port`)
                                           bettertest-run names the run; 404 says why there is none
   PUT  /artifact/{artifact}               upload; 409 if it exists
   GET  /artifact/{artifact}
+  GET  /install.sh?arch=x86_64|aarch64    a shell script: download that binary, install it to ~/.local/bin,
+                                          run unified on an example pipeline (helloworld, labeled for the arch)
+  GET  /dl/bettertest-x86_64              that musl binary, from /var/tmp/bettertest/dl (aarch64 the same way);
+                                          404 names the missing file. No role: the homepage's curl|sh is public
 
   boss → worker, per task (the worker learns the boss's address from these calls):
   POST {worker}/start-container | start-vm  (when the task has an image | vm)

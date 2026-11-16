@@ -41,7 +41,8 @@ fn build_image() {
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    let dockerfile = b"FROM debian:trixie\nRUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*\n";
+    // curl is what the homepage's one-line command uses, and what that script uses to fetch the binary.
+    let dockerfile = b"FROM debian:trixie\nRUN apt-get update && apt-get install -y --no-install-recommends python3 curl && rm -rf /var/lib/apt/lists/*\n";
     build.stdin.take().unwrap().write_all(dockerfile).unwrap();
     assert!(build.wait().unwrap().success(), "could not build {IMAGE}");
 }
@@ -265,5 +266,212 @@ async fn unified_plus_one_worker_lists_both() {
     let mut urls: Vec<&str> = workers.iter().map(|w| w.url.as_str()).collect();
     urls.sort();
     assert_eq!(urls, ["http://[::1]:7358", "http://extra:7358"]);
+    let _ = fs::remove_dir_all(pipedefs);
+}
+
+fn machine_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    }
+}
+
+/// A container whose command is a shell script, not the mounted binary: the machine the homepage's
+/// command lands on.
+fn run_script(network: &Network, command: &str) -> Container {
+    let name = format!("bettertest-unified-{}", uuid::Uuid::new_v4());
+    docker(&[
+        "run",
+        "--detach",
+        "--init",
+        "--name",
+        &name,
+        "--network",
+        &network.0,
+        "--sysctl",
+        "net.ipv6.conf.all.disable_ipv6=0",
+        "--publish",
+        "127.0.0.1::7357",
+        // A terminal, as the command is pasted into. On a pipe, stdout stays buffered and the two
+        // links never reach `docker logs`.
+        "--tty",
+        IMAGE,
+        "sh",
+        "-c",
+        command,
+    ]);
+    Container(name)
+}
+
+async fn http(url: &str) -> reqwest::Response {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        match reqwest::get(url).await {
+            Ok(reply) => return reply,
+            Err(e) => last = e.to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("GET {url}: {last}");
+}
+
+async fn curl_in(container: &Container, url: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let out = Command::new("docker")
+            .args(["exec", &container.0, "curl", "-fsS", url])
+            .output()
+            .unwrap();
+        last = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if out.status.success() {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("curl {url} failed: {last}\n{}", container.logs());
+}
+
+/// The homepage command, pointed at a boss built from this commit: it downloads, installs, and runs
+/// unified with the example pipeline. Both links it prints answer. The other architecture is
+/// downloaded and not run.
+#[tokio::test]
+async fn the_install_command_runs_unified_and_both_links_answer() {
+    build_image();
+    let native = machine_arch();
+    let other = if native == "aarch64" {
+        "x86_64"
+    } else {
+        "aarch64"
+    };
+    let pipedefs = pipedef_dir();
+    let network = Network::new();
+    let origin = Container::start(&network, "origin", &pipedefs, &["boss", "/pipedefs"]);
+    let base = origin.boss();
+    let script = http(&format!("{base}/install.sh?arch={native}"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        script.contains(&format!("{base}/dl/bettertest-{native}")),
+        "{script}"
+    );
+    assert!(
+        script.contains(&format!("Label.{}", arch_label())),
+        "{script}"
+    );
+    assert!(script.contains("unified"), "{script}");
+    let arm = http(&format!("{base}/install.sh?arch=aarch64"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(arm.contains("/dl/bettertest-aarch64"), "{arm}");
+    assert!(arm.contains("Label.arm"), "{arm}");
+    let bad = http(&format!("{base}/install.sh?arch=nope")).await;
+    assert_eq!(bad.status(), 400, "{bad:?}");
+
+    docker(&[
+        "exec",
+        &origin.0,
+        "sh",
+        "-c",
+        &format!(
+            "mkdir -p /var/tmp/bettertest/dl \
+             && cp /usr/bin/bettertest /var/tmp/bettertest/dl/bettertest-{native} \
+             && printf 'not-the-native-binary\\n' > /var/tmp/bettertest/dl/bettertest-{other}"
+        ),
+    ]);
+    let got = http(&format!("{base}/dl/bettertest-{native}")).await;
+    assert!(got.status().is_success(), "{got:?}");
+    let bytes = got.bytes().await.unwrap();
+    assert!(
+        bytes.starts_with(b"\x7fELF"),
+        "the download is not a binary"
+    );
+    let other_bytes = http(&format!("{base}/dl/bettertest-{other}"))
+        .await
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(&other_bytes[..], b"not-the-native-binary\n");
+
+    // The same command the homepage shows, with this boss's host instead of the live one.
+    let guest = run_script(
+        &network,
+        &format!("curl -fsSL 'http://origin:7357/install.sh?arch={native}' | sh"),
+    );
+    let logs = {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let logs = guest.logs();
+            if logs.contains("boss web ui at http://[::1]:7357")
+                && logs.contains("worker listening on http://[::1]:7358")
+            {
+                break logs;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "unified never printed both links\n{logs}"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    // The two links the binary printed. The boss there is serving the example pipeline (its web
+    // page is the release binary's embedded UI; a debug binary reads that UI from the build
+    // directory, which this container does not have). The worker answers its health check.
+    let pipelines = curl_in(&guest, "http://[::1]:7357/api/pipelines").await;
+    assert!(pipelines.contains("hello"), "{pipelines}\n{logs}");
+    let health = curl_in(&guest, "http://[::1]:7358/health").await;
+    assert!(health.contains("ok"), "{health}\n{logs}");
+
+    let workers = workers_once(&guest, |w| w.iter().any(up_with_label)).await;
+    assert_eq!(workers.len(), 1, "{workers:?}\n{}", guest.logs());
+    let client = reqwest::Client::new();
+    let reply = client
+        .post(format!("{}/api/start-run/hello", guest.boss()))
+        .send()
+        .await
+        .unwrap();
+    assert!(reply.status().is_success(), "{reply:?}\n{}", guest.logs());
+    let run: Run = reply.json().await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let run = loop {
+        let now: Run = client
+            .get(format!("{}/api/run/{}", guest.boss(), run.id))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if now.state != RunState::Running {
+            break now;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "run still going\n{}",
+            guest.logs()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let task = &run.stages[0].tasks[0];
+    let log = client
+        .get(format!("{}/api/task/{}/log", guest.boss(), task.id))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(run.state, RunState::Pass, "{log}\n{}", guest.logs());
+    assert!(log.contains("hello, world"), "{log}");
     let _ = fs::remove_dir_all(pipedefs);
 }

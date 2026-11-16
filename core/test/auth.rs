@@ -32,6 +32,9 @@ fn passwords_check_out_only_when_right() {
 #[test]
 fn what_each_route_needs() {
     assert_eq!(needed("GET", "/pipeline/app"), None);
+    // The homepage's curl|sh, including on a boss locked down to none.
+    assert_eq!(needed("GET", "/install.sh"), None);
+    assert_eq!(needed("GET", "/dl/bettertest-x86_64"), None);
     assert_eq!(needed("GET", "/bettertest-frontend-1a2b.wasm"), None);
     assert_eq!(needed("POST", "/api/login"), None);
     // A browser that cannot start the ui has not logged in, and still gets to say why.
