@@ -549,6 +549,35 @@ fn home_names_the_first_pipeline_as_canonical() {
     );
 }
 
+#[tokio::test]
+async fn the_home_document_is_gzipped_when_the_browser_takes_gzip() {
+    let html = with_canonical(
+        b"<html><head><title>bettertest</title></head><body>frame</body></html>",
+        "app",
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+    let response = document(&headers, html.clone());
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(response.headers()[header::VARY], "accept-encoding");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-cache");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut decoded = flate2::write::GzDecoder::new(Vec::new());
+    std::io::Write::write_all(&mut decoded, &body).unwrap();
+    let text = String::from_utf8(decoded.finish().unwrap()).unwrap();
+    assert_eq!(text, html);
+
+    headers.insert(header::ACCEPT_ENCODING, "gzip;q=0".parse().unwrap());
+    let plain = document(&headers, html.clone());
+    assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+    let body = axum::body::to_bytes(plain.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body, html);
+}
+
 #[test]
 fn unknown_stages_and_tasks() {
     let earlier = run(&[("Build", &[("compile", Pass)])]);

@@ -4,9 +4,19 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>bettertest</title>
-  <!-- Enough to paint the name before the stylesheet arrives. The real sheet overrides it, and
-       stays a separate cached file so a later visit does not re-download it inside this page. -->
-  <style>html,body{margin:0;background:#000;color:#fff}body{font:18px/1.4 system-ui,sans-serif}@media (prefers-color-scheme:light){html,body{background:#fff;color:#000}}</style>
+  <!-- Paints before the stylesheet and the wasm. The real sheet restates the colors; this stops a
+       dark-mode visit flashing white, and draws the route's skeleton in the same colors. -->
+  <style>
+    html { color-scheme: dark; background: #000; }
+    body { margin: 0; background: #000; color: #fff; }
+    .frame-skel { display: flex; flex-direction: column; gap: 3px; }
+    .frame-skel span { display: block; height: 28px; background: #2a2a2a; }
+    @media (prefers-color-scheme: light) {
+      html { color-scheme: light; background: #fff; }
+      body { background: #fff; color: #000; }
+      .frame-skel span { background: #ddd; }
+    }
+  </style>
   <!-- Copied as they are, without a content hash, yet served as immutable: a changed asset needs
        a new name (bump its .vN). The fonts' OFL licenses travel with them. -->
   <link data-trunk rel="copy-dir" href="assets" />
@@ -14,8 +24,7 @@
   <link rel="icon" href="/assets/favicon-32.v1.png" type="image/png" sizes="32x32" />
   <link rel="preload" href="/assets/archivo.v1.woff2" as="font" type="font/woff2" crossorigin />
   <link data-trunk rel="css" href="style.css" />
-  <!-- The page stays blank until the app draws it. A browser that cannot start the app says why,
-       on the page and in the boss's log, instead of staying blank. -->
+  <!-- If the app never starts, say why on the page and to the boss, instead of leaving the frame. -->
   <script>
     addEventListener("error", (e) => failed(`${e.message} at ${e.filename}:${e.lineno}`));
     addEventListener("unhandledrejection", (e) => failed(String(e.reason?.stack || e.reason)));
@@ -31,5 +40,64 @@
     }
   </script>
 </head>
-<body></body>
+<body data-frame="pipeline">
+  <!-- The same header the app draws: mark, this route, the page icons, the account. The script
+       fills the route in before the first paint. The wasm then replaces the body in place. -->
+  <header><a class="home" href="/"><img src="/assets/mark.v1.svg" alt="bettertest"/></a><span class="context" id="frame-context"><a id="frame-crumb"></a><span class="actions"><button class="primary" id="frame-action" type="button">New Run</button></span></span><nav class="links"><a class="icon" href="/" title="Pipelines" aria-label="Pipelines"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10M15 9.5v10"/></svg></a><a class="icon" href="/workers" title="Workers" aria-label="Workers"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="6"/><rect x="3.5" y="13.5" width="17" height="6"/><path d="M7 7.5h2M7 16.5h2"/></svg></a><a class="icon" href="/settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3.5 7.5h17M3.5 16.5h17"/><circle cx="9" cy="7.5" r="2.5" fill="var(--background)"/><circle cx="15" cy="16.5" r="2.5" fill="var(--background)"/></svg></a><a class="icon" href="/users" title="Users" aria-label="Users"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="8.5" r="3"/><path d="M3 19.5c1-3 3-4.5 6-4.5s5 1.5 6 4.5"/><path d="M15 5.8a3 3 0 0 1 0 5.4M17.5 15.3c1.6.6 2.7 2 3.3 4.2"/></svg></a><a class="account" href="/login" aria-label="Log In"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5"/></svg></a></nav></header>
+  <main id="frame-main"><div class="frame-skel"><span></span><span></span><span></span><span></span><span></span><span></span></div></main>
+  <script>
+    // Names the route in the frame before the first paint. The header's boxes are the app's.
+    (function () {
+      function decode(s) {
+        try { return decodeURIComponent(s); } catch (e) { return s; }
+      }
+      function canonical() {
+        var link = document.querySelector('link[rel="canonical"]');
+        var href = link ? link.getAttribute("href") || "" : "";
+        var match = href.match(/\/pipeline\/([^/?#]+)/);
+        return match ? decode(match[1]) : "";
+      }
+      var parts = location.pathname.split("/").filter(Boolean);
+      var kind = "other", name = "";
+      if (!parts.length) { kind = "pipeline"; name = canonical(); }
+      else if (parts[0] === "pipeline" && parts.length === 2) { kind = "pipeline"; name = decode(parts[1]); }
+      else if (parts[0] === "task" && parts.length === 2) { kind = "task"; name = decode(parts[1]).slice(0, 6); }
+      else if (parts.length === 1 && ["workers", "settings", "users", "login"].indexOf(parts[0]) >= 0) kind = parts[0];
+      document.body.setAttribute("data-frame", kind);
+      var context = document.getElementById("frame-context");
+      var crumb = document.getElementById("frame-crumb");
+      var action = document.getElementById("frame-action");
+      var main = document.getElementById("frame-main");
+      if (kind === "pipeline" || kind === "workers") {
+        action.textContent = kind === "pipeline" ? "New Run" : "New Worker";
+        // The grid's header is the button only. The pipeline's name is its tab.
+        crumb.remove();
+        if (kind === "pipeline" && name) {
+          var tabs = document.createElement("nav");
+          tabs.className = "tabs";
+          var tab = document.createElement("a");
+          tab.className = "tab current";
+          tab.href = "/pipeline/" + encodeURIComponent(name);
+          tab.textContent = name;
+          tabs.appendChild(tab);
+          document.body.insertBefore(tabs, document.currentScript);
+        }
+      } else {
+        context.remove();
+        if (kind === "login") {
+          main.innerHTML = '<form class="login" onsubmit="return false"><input type="text" placeholder="name" autocomplete="username"><input type="password" placeholder="password" autocomplete="current-password"><button class="primary" type="button">Log In</button><button type="button">Log In With Passkey</button></form>';
+        } else if (kind === "settings") {
+          main.innerHTML = '<form class="settings" onsubmit="return false"><label>Keep task artifacts for <input type="number" placeholder="forever"> days</label><label>Keep task logs for <input type="number" placeholder="forever"> days</label><p class="hint">Counted from when each task ends. Empty keeps them forever.</p><button class="primary" type="button">Save</button></form>';
+        } else if (kind === "users") {
+          main.innerHTML = '<form class="add" onsubmit="return false"><input type="text" placeholder="name"><select><option>read</option><option selected>write</option><option>admin</option></select><input type="password" placeholder="password, 8 or more" autocomplete="new-password"><button class="primary" type="button">Add User</button></form>';
+        } else {
+          var line = document.createElement("p");
+          line.className = "empty";
+          line.textContent = name ? "Task " + name : "Not found";
+          main.replaceChildren(line);
+        }
+      }
+    })();
+  </script>
+</body>
 </html>

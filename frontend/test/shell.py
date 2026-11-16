@@ -16,6 +16,9 @@ and the document check does not fail for them. What it does demand:
 - the same large asset is not fetched twice
 - WebKit, as an iPhone, starts the app over TLS as the boss speaks it, on a first visit and on a
   second whose connections resume the TLS session
+- before the wasm loads, the document has already painted that route's frame: the real header,
+  nav and account control, not a blank page and not the wordmark alone. Releasing the wasm mounts
+  the app in that same header. The document's transfer, headers included, stays inside the burst
 
 The server is local and speaks the same cache and gzip rules as the boss's embedded files.
 It never talks to a live bettertest. Syeve is not in the product yet, so this file serves a
@@ -271,6 +274,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/https":
             self._json(b"null")
+            return
+        if path == "/api/users":
+            self._json(b"[]")
             return
         if path.startswith("/api/pipeline/") and path.endswith("/events"):
             name = path.split("/")[3]
@@ -756,8 +762,9 @@ requestAnimationFrame(sample);
 """
 
 
-def test_nothing_is_painted_before_the_app(browsers, base):
-    """The first visible frame is the page itself: no wordmark-only shell before the app."""
+def test_the_frame_is_painted_before_the_app(browsers, base):
+    """Before the app, the page is already this route: header, nav, New Run. Not a blank body
+    and not the wordmark by itself."""
     for name, (browser, device) in browsers.items():
         context = browser.new_context(**device)
         try:
@@ -767,10 +774,178 @@ def test_nothing_is_painted_before_the_app(browsers, base):
             page.wait_for_selector(f"a[href='/task/{TASK}']", timeout=30_000)
             frames = page.evaluate("window.__btFrames")
             assert frames, f"{name}: no frame was sampled before the app started"
-            painted = [text for text in frames if text.strip()]
-            assert not painted, f"{name}: painted before the app started: {painted[:3]}"
+            painted = [text.strip() for text in frames if text.strip()]
+            assert painted, f"{name}: nothing was painted before the app"
+            for text in painted:
+                assert text != "bettertest", f"{name}: wordmark only: {text!r}"
+                assert "New Run" in text, f"{name}: frame was not the page: {text!r}"
+            MEASUREMENTS[f"{name}_frames_before_app"] = len(painted)
         finally:
             context.close()
+
+
+# Routes whose header the document can draw from the URL alone. A task's crumbs arrive with its
+# snapshot, so only the mark, nav and account (the row that does not move) are compared there.
+FRAME_ROUTES = [
+    ("/pipeline/app", "pipeline"),
+    ("/workers", "workers"),
+    ("/settings", "settings"),
+    ("/users", "users"),
+    ("/login", "login"),
+    (f"/task/{TASK}", "task"),
+]
+FRAME_WIDTHS = (1280, 390, 320)
+# A few pixels: subpixel rounding and the font, not a row that jumped.
+HEADER_TOLERANCE = 4
+
+FRAME_BOXES = """() => {
+    const box = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height];
+    };
+    const root = document.documentElement;
+    const width = Math.max(root.scrollWidth, document.body.scrollWidth);
+    return {
+        header: box("header"),
+        home: box("header .home"),
+        links: box("header nav.links"),
+        account: box("header .account"),
+        icons: document.querySelectorAll("header .icon").length,
+        text: document.body.innerText.replace(/\\s+/g, " ").trim(),
+        scroll: width - root.clientWidth,
+        flex: getComputedStyle(document.querySelector("header")).display,
+    };
+}"""
+
+
+def boxes_near(before, after, keys):
+    for key in keys:
+        a, b = before[key], after[key]
+        assert a is not None and b is not None, (key, a, b)
+        for n, (x, y) in enumerate(zip(a, b)):
+            assert abs(x - y) <= HEADER_TOLERANCE, (key, n, a, b)
+
+
+def hold_wasm(page):
+    """Never answers the wasm, until the returned list is continued."""
+    held = []
+
+    def intercept(route):
+        held.append(route)
+
+    page.route("**/*.wasm", intercept)
+    return held
+
+
+def release_wasm(held):
+    while held:
+        held.pop().continue_()
+
+
+def wait_frame(page):
+    page.wait_for_function(
+        """() => {
+            const header = document.querySelector("header");
+            const img = document.querySelector("header .home img");
+            return header && getComputedStyle(header).display === "flex"
+                && document.body.hasAttribute("data-frame")
+                && !document.body.hasAttribute("data-started")
+                && img && img.complete
+                && document.fonts.status === "loaded";
+        }""",
+        timeout=15_000,
+    )
+
+
+def settled(page, kind):
+    page.wait_for_selector("body[data-started] header .account", timeout=30_000)
+    if kind == "pipeline":
+        page.wait_for_selector(f"a[href='/task/{TASK}']", timeout=30_000)
+    elif kind == "workers":
+        page.wait_for_selector("text=No workers yet", timeout=30_000)
+    elif kind == "settings":
+        page.wait_for_selector("form.settings", timeout=30_000)
+    elif kind == "users":
+        page.wait_for_selector("form.add button.primary", timeout=30_000)
+    elif kind == "login":
+        page.wait_for_selector("form.login button.primary", timeout=30_000)
+    elif kind == "task":
+        page.wait_for_selector("text=shell-nav-marker", timeout=30_000)
+
+
+def shot(page, directory, name):
+    if not directory:
+        return
+    path = os.path.join(directory, name)
+    page.screenshot(path=path, animations="disabled")
+
+
+def test_the_frame_matches_the_app_before_wasm_loads(browser, webkit, playwright, base):
+    """Hold the wasm so it never arrives. The document's frame is already the page, at a desktop
+    width and at phone widths, in Chromium and in WebKit as an iPhone. Releasing the wasm mounts
+    the app in that header, and nothing scrolls sideways."""
+    shots = os.environ.get("BT_FRAME_SHOTS")
+    if shots:
+        os.makedirs(shots, exist_ok=True)
+    iphone = playwright.devices["iPhone 15"]
+    browsers = {"chromium": (browser, {}), "webkit": (webkit, iphone)}
+    for name, (engine, device) in browsers.items():
+        for width in FRAME_WIDTHS:
+            options = dict(device)
+            options["viewport"] = {"width": width, "height": 800}
+            options["color_scheme"] = "dark"
+            context = engine.new_context(**options)
+            try:
+                for path, kind in FRAME_ROUTES:
+                    page = context.new_page()
+                    held = hold_wasm(page)
+                    try:
+                        page.goto(base + path, wait_until="domcontentloaded")
+                        wait_frame(page)
+                        assert held, f"{name} {width} {path}: wasm was not held"
+                        frame = page.evaluate(FRAME_BOXES)
+                        assert frame["flex"] == "flex", frame
+                        assert frame["icons"] == 4, frame
+                        assert frame["account"] is not None, frame
+                        assert frame["text"] and frame["text"] != "bettertest", frame["text"]
+                        assert frame["scroll"] <= 0, (
+                            f"{name} {width} {path}: frame scrolls sideways by {frame['scroll']}px"
+                        )
+                        if kind == "pipeline":
+                            assert "New Run" in frame["text"], frame["text"]
+                        elif kind == "workers":
+                            assert "New Worker" in frame["text"], frame["text"]
+                        elif kind == "login":
+                            assert "Log In" in frame["text"], frame["text"]
+                        shot(page, shots, f"frame-{name}-{width}-{kind}.png")
+                        release_wasm(held)
+                        settled(page, kind)
+                        app = page.evaluate(FRAME_BOXES)
+                        assert app["scroll"] <= 0, (
+                            f"{name} {width} {path}: app scrolls sideways by {app['scroll']}px"
+                        )
+                        keys = ["home", "links", "account"]
+                        # A task's crumbs show up with its log, so on a phone the header grows
+                        # downward. The mark, nav and account stay on the first row.
+                        if kind != "task" or width > 640:
+                            keys.append("header")
+                        else:
+                            assert abs(frame["header"][0] - app["header"][0]) <= HEADER_TOLERANCE
+                            assert abs(frame["header"][1] - app["header"][1]) <= HEADER_TOLERANCE
+                            assert abs(frame["header"][2] - app["header"][2]) <= HEADER_TOLERANCE
+                        boxes_near(frame, app, keys)
+                        shot(page, shots, f"app-{name}-{width}-{kind}.png")
+                        MEASUREMENTS[f"frame_{name}_{width}_{kind}"] = {
+                            "frame": frame["header"],
+                            "app": app["header"],
+                        }
+                    finally:
+                        release_wasm(held)
+                        page.close()
+            finally:
+                context.close()
 
 
 def test_a_browser_that_cannot_start_the_app_says_why(browsers, base):
@@ -888,7 +1063,7 @@ TESTS = [
 ]
 
 
-def main():
+def main(only=()):
     # The browser side runs in Playwright's image, which has no trunk.
     if dist_stale():
         raise SystemExit("frontend/dist is missing or older than frontend/: run ./build.sh (or frontend/build.sh) first")
@@ -908,6 +1083,7 @@ def main():
             print(f"FAIL {test.__name__}")
             traceback.print_exc()
 
+    wanted = set(only)
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
@@ -915,15 +1091,31 @@ def main():
             )
             webkit = playwright.webkit.launch()
             try:
-                for test in TESTS:
-                    run(test, browser, base)
-                # Plotly draws in WebKit as well: iPhone Safari is a browser the results page has.
-                run(test_views_draw_and_only_they_load_plotly, webkit, base)
                 iphone = playwright.devices["iPhone 15"]
-                run(test_webkit_starts_the_app_over_tls, webkit, tls_base, iphone)
+                def selected(test):
+                    return not wanted or test.__name__ in wanted
+
+                for test in TESTS:
+                    if selected(test):
+                        run(test, browser, base)
+                # Plotly draws in WebKit as well: iPhone Safari is a browser the results page has.
+                if selected(test_views_draw_and_only_they_load_plotly):
+                    run(test_views_draw_and_only_they_load_plotly, webkit, base)
+                if selected(test_webkit_starts_the_app_over_tls):
+                    run(test_webkit_starts_the_app_over_tls, webkit, tls_base, iphone)
                 both = {"chromium": (browser, {}), "webkit": (webkit, iphone)}
-                run(test_nothing_is_painted_before_the_app, both, base)
-                run(test_a_browser_that_cannot_start_the_app_says_why, both, base)
+                if selected(test_the_frame_is_painted_before_the_app):
+                    run(test_the_frame_is_painted_before_the_app, both, base)
+                if selected(test_the_frame_matches_the_app_before_wasm_loads):
+                    run(
+                        test_the_frame_matches_the_app_before_wasm_loads,
+                        browser,
+                        webkit,
+                        playwright,
+                        base,
+                    )
+                if selected(test_a_browser_that_cannot_start_the_app_says_why):
+                    run(test_a_browser_that_cannot_start_the_app_says_why, both, base)
             finally:
                 browser.close()
                 webkit.close()
@@ -949,4 +1141,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

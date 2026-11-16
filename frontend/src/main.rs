@@ -53,10 +53,13 @@ fn main() {
         if me.as_ref().is_some_and(|me| me.role == Role::None) && path != "/login" {
             write_history(&format!("/login?next={path}"), true);
         }
-        // index.html's watchdog stands down once this is set, and anything it wrote goes.
+        // The document already painted this route's frame. Mark the app up, then drop the frame
+        // and draw in the same turn, so the header is not blank between the two. The watchdog
+        // stands down once data-started is set.
         if let Some(body) = gloo::utils::document().body() {
-            body.set_text_content(None);
             let _ = body.set_attribute("data-started", "");
+            let _ = body.remove_attribute("data-frame");
+            body.set_text_content(None);
             yew::Renderer::<App>::with_root(body.into()).render();
         }
     });
