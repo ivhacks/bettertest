@@ -88,8 +88,9 @@ pub fn is_app_path(path: &str) -> bool {
     page(path).is_some()
 }
 
-/// The page at `url`, keyed by it: a new key destroys the previous page, and with it the stream
-/// it was following.
+/// The page at `url`. A new key destroys the previous page, and with it the stream it was
+/// following. The pipeline page is the exception: one component covers every pipeline and its
+/// results, so switching tabs keeps the grid up until the snapshot it switched to can replace it.
 fn page(url: &str) -> Option<Html> {
     let key = url.to_string();
     let path = url.split(['?', '#']).next().unwrap_or(url);
@@ -97,7 +98,8 @@ fn page(url: &str) -> Option<Html> {
     Some(match segments.as_slice() {
         [""] => html! {},
         ["pipeline", name] if !name.is_empty() => {
-            html! { <pages::pipeline::PipelinePage key={key} id={name.to_string()} /> }
+            let run = run_query(url);
+            html! { <pages::pipeline::PipelinePage key="pipeline" id={name.to_string()} run={run} /> }
         }
         ["task", id] if !id.is_empty() => {
             html! { <pages::task::TaskPage key={key} id={id.to_string()} /> }
@@ -108,6 +110,12 @@ fn page(url: &str) -> Option<Html> {
         ["login"] => html! { <pages::login::LoginPage key={key} /> },
         _ => return None,
     })
+}
+
+/// `?run=<id>` on a pipeline url, the results to show instead of the grid.
+fn run_query(url: &str) -> Option<String> {
+    let query = url.split_once('?')?.1.split('#').next()?;
+    query.strip_prefix("run=").map(str::to_string)
 }
 
 fn pathname() -> String {
