@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -234,6 +235,10 @@ PIPELINES = {
     "app": snapshot(pipeline_body("app", "unit", TASK)),
     "docs": snapshot(pipeline_body("docs", "spell", OTHER)),
 }
+
+# Seconds a pipeline snapshot waits before it is written. Zero except while a test asks, so a
+# switch can be watched with the previous grid still up. Every other stream answers at once.
+SNAPSHOT_DELAY = 0.0
 TASKS = {
     TASK: snapshot(task_body(TASK, "unit", "app")),
     OTHER: snapshot(task_body(OTHER, "spell", "docs")),
@@ -349,6 +354,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        # The stream is open and the snapshot has not arrived yet: the page must keep showing
+        # what it had, which a test can only see if this wait is long enough to paint.
+        if SNAPSHOT_DELAY and urlparse(self.path).path.startswith("/api/pipeline/"):
+            time.sleep(SNAPSHOT_DELAY)
         try:
             self.wfile.write(b"event: message\ndata: " + body + b"\n\n")
             self.wfile.flush()

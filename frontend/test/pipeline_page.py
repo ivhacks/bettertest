@@ -9,11 +9,16 @@ and a dozen tabs:
 - run ids are muted text, not link-colored;
 - switching to a big-ish pipeline (5 stages of 10 tasks, 50 runs: 2 500 cells) draws all its runs
   within SWITCH_MS of the tab's click.
+- switching tabs, and going back and forward, never paints an intermediate frame: the grid does
+  not empty, no skeleton appears, and the other pipeline is not shown half-drawn. The snapshot
+  is held back so the wait is real. Chromium and WebKit, at 390 and 1280.
 
 The boss is shell.py's stand-in: frontend/dist, plus this pipeline's snapshot. Like shell.py, it
 runs in Playwright's image (see shell_nav.rs, which runs both in cargo test).
 """
 
+import os
+import re
 import sys
 
 import shell
@@ -298,6 +303,291 @@ def cells_answer_like_buttons(browser, base):
     page.close()
 
 
+# Two pipelines a switch can be told apart by, even half-drawn: different stage names, task names
+# and row counts. Short names, so measuring them does not tilt a header and move the grid.
+# Pipedef tasks name labels only.
+RED_STAGES = [("Red", ["build", "test"]), ("Rose", ["lint", "pack"])]
+BLUE_STAGES = [("Blue", ["boot"]), ("Bay", ["probe"]), ("Bolt", ["ship"])]
+TABS = ["red", "blue"]
+# The stand-in holds the snapshot this long, inside the 500–1000ms the wait has to be real for.
+SNAPSHOT_DELAY = 0.8
+
+
+def flicker_pipeline(name, stages, runs):
+    task_def = {
+        "worker": None,
+        "labels": ["x86"],
+        "image": None,
+        "vm": None,
+        "arch": None,
+        "timeout": None,
+        "sandbox": None,
+    }
+    pipe_stages = [
+        {
+            "name": stage,
+            "sandbox": None,
+            "tasks": [{"name": task, **task_def} for task in tasks],
+        }
+        for stage, tasks in stages
+    ]
+
+    def one_run(number):
+        stages_out = []
+        n = 0
+        for stage, tasks in stages:
+            row = []
+            for task in tasks:
+                row.append(
+                    {
+                        "id": f"{number:08x}-0000-4000-8{n:03x}-{number:012x}",
+                        "name": task,
+                        "state": "pass",
+                        "worker": None,
+                        "started": 1_000,
+                        "ended": 2_000,
+                        "carried_from": None,
+                        "tests": None,
+                    }
+                )
+                n += 1
+            stages_out.append({"name": stage, "tasks": row})
+        return {
+            "id": f"{number:08x}-1111-4000-8000-000000000000",
+            "pipeline": name,
+            "state": "pass",
+            "commit": None,
+            "stages": stages_out,
+        }
+
+    return {
+        "name": name,
+        "pipelines": TABS,
+        "pipeline": {"Ok": {"stages": pipe_stages, "sandboxes": {}}},
+        "runs": [one_run(n) for n in range(runs, 0, -1)],
+    }
+
+
+def expect(name, stages, runs):
+    tasks = [task for _stage, tasks in stages for task in tasks]
+    return {
+        "current": name,
+        "tabs": TABS,
+        "stages": [stage for stage, _tasks in stages],
+        "tasks": tasks,
+        "rows": runs,
+        "cells": runs * len(tasks),
+    }
+
+
+RED = expect("red", RED_STAGES, 3)
+BLUE = expect("blue", BLUE_STAGES, 1)
+
+# Samples every mutation and every frame. `target` is the pipeline that must end up showing.
+# A hidden staging grid, if one is ever mounted, is not the page.
+WATCH = r"""(target) => {
+    if (window.__btStop) window.__btStop();
+    const state = {
+        samples: [], stop: false, done: false, target,
+        stable: 0, t0: performance.now(), action: null,
+    };
+    window.__bt = state;
+    const visible = (el) => {
+        for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+            if (n.classList && n.classList.contains("staging")) return false;
+            const style = getComputedStyle(n);
+            if (style.display === "none" || style.visibility === "hidden") return false;
+        }
+        return true;
+    };
+    const rect = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const round = (n) => Math.round(n * 100) / 100;
+        return [round(r.x), round(r.y), round(r.width), round(r.height)];
+    };
+    const read = (why) => {
+        const grids = [...document.querySelectorAll(".grid")].filter(visible);
+        const grid = grids[0] || null;
+        const tabs = [...document.querySelectorAll("nav.tabs a.tab")].filter(visible);
+        const current = tabs.filter((t) => t.classList.contains("current")).map((t) => t.textContent);
+        return {
+            why,
+            t: Math.round(performance.now() - state.t0),
+            skel: !!document.querySelector(".frame-skel"),
+            visibleGrids: grids.length,
+            stages: grid ? [...grid.querySelectorAll("th.stage span")].map((e) => e.textContent) : [],
+            tasks: grid ? [...grid.querySelectorAll("th.task span")].map((e) => e.textContent) : [],
+            rows: grid ? grid.querySelectorAll("tbody tr").length : 0,
+            cells: grid ? grid.querySelectorAll("tbody td").length : 0,
+            tabs: tabs.map((t) => t.textContent),
+            current: current.length === 1 ? current[0] : current.join(","),
+            header: rect(document.querySelector("header")),
+            grid: rect(grid),
+        };
+    };
+    window.__btRead = () => read("now");
+    const sample = (why) => {
+        if (state.stop || state.samples.length > 4000) return;
+        const row = read(why);
+        state.samples.push(row);
+        const want = state.target;
+        const same = row.current === want.current && row.rows === want.rows && row.cells === want.cells
+            && JSON.stringify(row.tabs) === JSON.stringify(want.tabs)
+            && JSON.stringify(row.stages) === JSON.stringify(want.stages)
+            && JSON.stringify(row.tasks) === JSON.stringify(want.tasks);
+        state.stable = same ? state.stable + 1 : 0;
+        if (why === "raf" && state.stable >= 3) state.done = true;
+    };
+    const obs = new MutationObserver(() => sample("mut"));
+    obs.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    const tick = () => {
+        if (state.stop) return;
+        sample("raf");
+        requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    window.__btStop = () => { state.stop = true; obs.disconnect(); };
+}"""
+
+
+def matches(sample, ident):
+    box = sample["grid"]
+    return (
+        not sample["skel"]
+        and sample["visibleGrids"] == 1
+        and sample["current"] == ident["current"]
+        and sample["tabs"] == ident["tabs"]
+        and sample["stages"] == ident["stages"]
+        and sample["tasks"] == ident["tasks"]
+        and sample["rows"] == ident["rows"]
+        and sample["cells"] == ident["cells"]
+        and sample["header"] is not None
+        and box is not None
+        and box[2] > 20
+        and box[3] > 20
+    )
+
+
+def jumped(a, b):
+    if not a or not b:
+        return True
+    return any(abs(x - y) > 1 for x, y in zip(a, b))
+
+
+def summarize(sample):
+    return (
+        f"t={sample['t']} {sample['why']} current={sample['current']!r} "
+        f"stages={sample['stages']} tasks={sample['tasks']} "
+        f"rows={sample['rows']} cells={sample['cells']} tabs={sample['tabs']} "
+        f"grids={sample['visibleGrids']} skel={sample['skel']} "
+        f"header={sample['header']} grid={sample['grid']}"
+    )
+
+
+def assert_no_flicker(samples, before, after, action_at):
+    bad = []
+    seen_before = False
+    seen_after = False
+    identity = None
+    header = None
+    grid_box = None
+    held = None
+    for sample in samples:
+        if sample["t"] < action_at:
+            continue
+        which = "before" if matches(sample, before) else "after" if matches(sample, after) else None
+        problems = []
+        if sample["skel"]:
+            problems.append("skeleton is showing")
+        if which is None:
+            problems.append("not a complete pipeline")
+        elif which == "before" and seen_after:
+            problems.append("the old pipeline came back after the new one")
+        if which == "before":
+            seen_before = True
+        if which == "after" and held is None:
+            held = sample["t"] - action_at
+            seen_after = True
+        if which == "after":
+            seen_after = True
+        # The chrome does not move. The grid may change size only in the frame the pipeline does.
+        if header is not None and jumped(header, sample["header"]):
+            problems.append(f"header jumped {header} -> {sample['header']}")
+        if which is not None and which == identity and grid_box is not None and jumped(grid_box, sample["grid"]):
+            problems.append(f"grid jumped {grid_box} -> {sample['grid']}")
+        if which is not None:
+            identity = which
+            grid_box = sample["grid"]
+        if sample["header"] is not None:
+            header = sample["header"]
+        if problems:
+            bad.append(f"{summarize(sample)} :: {', '.join(problems)}")
+    assert seen_before, "the switch never showed the pipeline it left"
+    assert not bad, f"{len(bad)} intermediate frame(s):\n" + "\n".join(bad[:12])
+    assert seen_after, "the pipeline switched to never arrived"
+    assert held is not None and held >= 500, (
+        f"the new pipeline showed {held}ms after the switch; "
+        f"the snapshot is held {int(SNAPSHOT_DELAY * 1000)}ms, so this did not wait"
+    )
+    return held
+
+
+def switch(page, how, name, before, after, shots, width):
+    page.evaluate(WATCH, after)
+    page.wait_for_timeout(50)
+    action_at = page.evaluate(
+        "() => { window.__bt.action = performance.now() - window.__bt.t0; return window.__bt.action; }"
+    )
+    if how == "click":
+        page.locator("nav.tabs a.tab", has_text=re.compile(rf"^{re.escape(name)}$")).click()
+    elif how == "back":
+        page.go_back(wait_until="commit")
+    else:
+        page.go_forward(wait_until="commit")
+    # One frame while the snapshot is still held. Screenshot time itself is not part of the wait
+    # the samples measure; the samples cover every mutation and frame until the new grid is up.
+    if shots and how == "click":
+        page.wait_for_timeout(250)
+        page.screenshot(path=os.path.join(shots, f"mid-{width}.png"))
+    page.wait_for_function("() => window.__bt.done", timeout=8000)
+    samples = page.evaluate("() => window.__bt.samples")
+    page.evaluate("() => window.__btStop()")
+    assert page.url.endswith(f"/pipeline/{name}"), page.url
+    held = assert_no_flicker(samples, before, after, action_at)
+    print(f"  {how} -> {name} held the previous pipeline {held}ms across {len(samples)} samples")
+
+
+def switching_tabs_never_flickers(chromium, webkit, base):
+    """Clicking a pipeline tab, and the browser's back and forward, paints no intermediate frame."""
+    shell.PIPELINES["red"] = shell.snapshot(flicker_pipeline("red", RED_STAGES, 3))
+    shell.PIPELINES["blue"] = shell.snapshot(flicker_pipeline("blue", BLUE_STAGES, 1))
+    shell.SNAPSHOT_DELAY = SNAPSHOT_DELAY
+    shots = os.environ.get("BT_SHOTS")
+    try:
+        for browser_name, browser in (("chromium", chromium), ("webkit", webkit)):
+            for width, mobile in ((390, True), (1280, False)):
+                context = browser.new_context(
+                    viewport={"width": width, "height": 800},
+                    is_mobile=mobile,
+                    has_touch=mobile,
+                )
+                page = context.new_page()
+                try:
+                    page.goto(f"{base}/pipeline/red", wait_until="domcontentloaded")
+                    page.wait_for_selector(".grid tbody td")
+                    page.evaluate("() => document.fonts.ready")
+                    page.wait_for_timeout(300)
+                    print(f"{browser_name} {width}px")
+                    switch(page, "click", "blue", RED, BLUE, shots, width)
+                    switch(page, "back", "red", BLUE, RED, None, width)
+                    switch(page, "forward", "blue", RED, BLUE, None, width)
+                finally:
+                    context.close()
+    finally:
+        shell.SNAPSHOT_DELAY = 0.0
+
+
 def main():
     # The browser side runs in Playwright's image, which has no trunk.
     if shell.dist_stale():
@@ -315,7 +605,17 @@ def main():
             browser = playwright.chromium.launch(
                 args=["--no-sandbox", "--disable-dev-shm-usage"]
             )
-            tests = [nothing_scrolls_sideways, cells_answer_like_buttons, switching_pipelines_draws_at_once]
+            webkit = playwright.webkit.launch()
+
+            def tabs_never_flicker(browser, base):
+                switching_tabs_never_flickers(browser, webkit, base)
+
+            tests = [
+                nothing_scrolls_sideways,
+                cells_answer_like_buttons,
+                switching_pipelines_draws_at_once,
+                tabs_never_flicker,
+            ]
             for test in tests:
                 try:
                     test(browser, base)
@@ -323,6 +623,7 @@ def main():
                 except AssertionError as error:
                     failed += 1
                     print(f"FAIL {test.__name__}\n{error}")
+            webkit.close()
             browser.close()
     finally:
         server.shutdown()
