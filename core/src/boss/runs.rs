@@ -8,6 +8,9 @@ pub(super) struct Going {
     pub(super) commit: Option<Commit>,
     // Set to the reason to cancel the run.
     pub(super) cancel: watch::Sender<Option<String>>,
+    // Cancelled because a worker it uses is restarting: once stopped, it resumes (see resume).
+    pub(super) interrupted: bool,
+    pub(super) spanning: Spanning,
 }
 
 /// Says why, once a run is cancelled.
@@ -200,39 +203,173 @@ pub(super) fn begin_run(
             Ok((Event::RunStarted(run.clone()), run))
         })
         .map_err(internal)?;
-    let (cancel, cancelled) = watch::channel(None);
-    {
-        let mut going = lock(&boss.going);
-        // Only the newest commit of a branch is worth finishing: cancel runs of older ones.
-        if let Some(new) = &run.commit {
-            let reason = format!("cancelled: {} replaced it", new.label());
-            for other in going.values() {
-                let replaced = other.pipeline == run.pipeline
-                    && other
-                        .commit
-                        .as_ref()
-                        .is_some_and(|old| old.branch == new.branch && old.sha != new.sha);
-                if replaced {
-                    other.cancel.send_replace(Some(reason.clone()));
-                }
+    let mut going = lock(&boss.going);
+    // Only the newest commit of a branch is worth finishing: cancel runs of older ones.
+    if let Some(new) = &run.commit {
+        let reason = format!("cancelled: {} replaced it", new.label());
+        for other in going.values_mut() {
+            let replaced = other.pipeline == run.pipeline
+                && other
+                    .commit
+                    .as_ref()
+                    .is_some_and(|old| old.branch == new.branch && old.sha != new.sha);
+            if replaced {
+                other.interrupted = false;
+                other.cancel.send_replace(Some(reason.clone()));
             }
         }
-        let this = Going {
-            pipeline: run.pipeline.clone(),
-            commit: run.commit.clone(),
-            cancel,
-        };
-        going.insert(run.id, this);
     }
-    spawn(execute_run(
-        boss.clone(),
-        run.clone(),
-        pipeline,
-        source,
-        link,
-        cancelled,
-    ));
+    go(boss, &mut going, run.clone(), pipeline, source, link);
     Ok(run)
+}
+
+/// Runs `run`, which the db has, from its first pending task on. It is `going` until it is over.
+fn go(
+    boss: &Shared,
+    going: &mut HashMap<Uuid, Going>,
+    run: Run,
+    pipeline: Pipeline,
+    source: String,
+    link: Option<String>,
+) {
+    let (cancel, cancelled) = watch::channel(None);
+    let spanning = Spanning::default();
+    let this = Going {
+        pipeline: run.pipeline.clone(),
+        commit: run.commit.clone(),
+        cancel,
+        interrupted: false,
+        spanning: spanning.clone(),
+    };
+    going.insert(run.id, this);
+    let running = Running {
+        boss: boss.clone(),
+        run: Arc::new(run),
+        source: source.into(),
+        cancelled,
+        spanning,
+    };
+    spawn(execute_run(running, pipeline, link));
+}
+
+/// Goes on with run `id` after `why` (a restart of the boss, or of a worker it uses) cut it
+/// short, keeping its id. It starts again from its first stage that has not passed, or from an
+/// earlier one that starts a sandbox the rest need, gone with the restart (see resume_from). The
+/// tasks that run again keep their logs, which say why. A run whose pipedef no longer lines up
+/// with it cannot go on, and fails. `link` is where people see the pipeline, for the forge, if known.
+pub(super) async fn resume(boss: Shared, id: Uuid, why: String, link: Option<String>) {
+    let read = || {
+        let run = boss.db().run(id);
+        run.unwrap_or_else(|e| {
+            eprintln!("could not read run {id} to resume it: {e}");
+            None
+        })
+    };
+    let Some(run) = read() else { return };
+    let loaded = match load_pipeline(&boss, &run.pipeline, run.commit.as_ref()).await {
+        Ok((source, Ok(pipeline))) if lines_up(&run, &pipeline) => Ok((source, pipeline)),
+        Ok((_, Ok(_))) => Err("its pipedef no longer has the stages and tasks it had".into()),
+        Ok((_, Err(e))) | Err((_, e)) => Err(e),
+    };
+    let (source, pipeline) = match loaded {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            let why = format!("{why}, and the run cannot go on: {e}");
+            return end_run(&boss, &run, Some(why), link).await;
+        }
+    };
+    let Some(from) = resume_from(&run, &pipeline) else {
+        return end_run(&boss, &run, None, link).await;
+    };
+    for stage in run.stages.iter().skip(from) {
+        for task in stage.tasks.iter().filter(|t| t.state != TaskState::Pending) {
+            rewind(&boss, &run, task, &why);
+        }
+    }
+    let Some(run) = read() else { return };
+    go(&boss, &mut lock(&boss.going), run, pipeline, source, link);
+}
+
+/// Whether `run` has the stages and tasks `pipeline` has, in the same order.
+fn lines_up(run: &Run, pipeline: &Pipeline) -> bool {
+    run.stages.len() == pipeline.stages.len()
+        && run
+            .stages
+            .iter()
+            .zip(&pipeline.stages)
+            .all(|(ran, defined)| {
+                let names = ran.tasks.iter().map(|t| &t.name);
+                ran.name == defined.name && names.eq(defined.tasks.iter().map(|t| &t.name))
+            })
+}
+
+/// The stage an interrupted run goes on from: its first stage that has not passed, or an earlier
+/// one that starts a sandbox of the pipeline's it needs (see restart_start). None once a task has
+/// failed, or every one has passed: then the run is over.
+pub(super) fn resume_from(run: &Run, pipeline: &Pipeline) -> Option<usize> {
+    let mut tasks = run.stages.iter().flat_map(|s| &s.tasks);
+    if tasks.any(|t| t.state == TaskState::Fail) {
+        return None;
+    }
+    let not_passed = |s: &StageRun| s.tasks.iter().any(|t| t.state != TaskState::Pass);
+    let at = run.stages.iter().position(not_passed)?;
+    Some(restart_start(pipeline, at, None).0)
+}
+
+/// Puts `task` of `run` back to pending, to run again: its artifacts go, its log stays and says
+/// `why`.
+fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
+    if task.started.is_some() {
+        boss.log(
+            task.id,
+            LogStream::Bettertest,
+            format!("{why}: running this again"),
+        );
+    }
+    // Files first, as retention does: should forgetting them fail, nothing refers to them anyway.
+    match task_artifacts_dir(task.id).and_then(fs::remove_dir_all) {
+        Err(e) if e.kind() != ErrorKind::NotFound => {
+            eprintln!("could not delete the artifacts of task {}: {e}", task.id);
+        }
+        _ => {}
+    }
+    let rewound = boss.record(|db| {
+        db.rewind_task(task.id)?;
+        let event = Event::TaskState {
+            pipeline: run.pipeline.clone(),
+            run: run.id,
+            task: task.id,
+            state: TaskState::Pending,
+            at: now(),
+        };
+        Ok((event, ()))
+    });
+    if let Err(e) = rewound {
+        eprintln!("could not put task {} back to pending: {e}", task.id);
+    }
+}
+
+/// Ends `run`, which will not go on: every task not over is skipped, its log saying `why`, if
+/// given. The run passed if every task did.
+async fn end_run(boss: &Shared, run: &Run, why: Option<String>, link: Option<String>) {
+    let tasks = || run.stages.iter().flat_map(|s| &s.tasks);
+    for task in tasks().filter(|t| !t.state.is_over()) {
+        if let Some(why) = &why {
+            boss.log(task.id, LogStream::Bettertest, why.clone());
+        }
+        boss.set_task_state(run, task.id, TaskState::Skipped);
+    }
+    let link = link.as_deref();
+    match tasks().all(|t| t.state == TaskState::Pass) {
+        true => {
+            boss.set_run_state(run, RunState::Pass);
+            boss.report(run, "success", "passed", link).await;
+        }
+        false => {
+            boss.set_run_state(run, RunState::Fail);
+            boss.report(run, "failure", "failed", link).await;
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -329,8 +466,9 @@ pub(super) async fn cancel_run(
         true => format!("cancelled by {}", me.name),
         false => "cancelled from the web ui".to_string(),
     };
-    match lock(&boss.going).get(&id) {
+    match lock(&boss.going).get_mut(&id) {
         Some(going) => {
+            going.interrupted = false;
             going.cancel.send_replace(Some(reason));
             Ok(StatusCode::NO_CONTENT)
         }
@@ -511,28 +649,19 @@ pub(super) fn carry_over(
 
 /// Stages run one at a time, in the order the pipedef defines them. Once one fails, the rest are
 /// skipped.
-pub(super) async fn execute_run(
-    boss: Shared,
-    run: Run,
-    pipeline: Pipeline,
-    source: String,
-    link: Option<String>,
-    cancelled: Cancelled,
-) {
+pub(super) async fn execute_run(r: Running, pipeline: Pipeline, link: Option<String>) {
     let link = link.as_deref();
-    boss.report(&run, "pending", "running", link).await;
-    let r = Running {
-        boss,
-        run: Arc::new(run),
-        source: source.into(),
-        cancelled,
-        spanning: Spanning::default(),
-    };
+    r.boss.report(&r.run, "pending", "running", link).await;
     let mut failed = false;
     // The run was created from this pipeline, so its stages and tasks line up one to one.
     for (index, (stage, stage_run)) in pipeline.stages.iter().zip(&r.run.stages).enumerate() {
-        // Tasks a restart carried over keep the result they have.
-        let fresh = || stage_run.tasks.iter().filter(|t| t.carried_from.is_none());
+        // Tasks a restart carried over, or that ran before the run was resumed, keep their result.
+        let fresh = || {
+            stage_run
+                .tasks
+                .iter()
+                .filter(|t| t.state == TaskState::Pending)
+        };
         if failed || r.is_cancelled() {
             for task_run in fresh() {
                 r.skip(task_run.id);
@@ -556,8 +685,18 @@ pub(super) async fn execute_run(
         }
     }
     let (boss, run) = (&r.boss, &*r.run);
-    lock(&boss.going).remove(&run.id);
+    let going = lock(&boss.going).remove(&run.id);
     let reason = r.cancelled.borrow().clone();
+    if going.is_some_and(|going| going.interrupted) {
+        let link = link.map(str::to_string);
+        spawn(resume(
+            boss.clone(),
+            run.id,
+            reason.unwrap_or_default(),
+            link,
+        ));
+        return;
+    }
     let state = if failed || reason.is_some() {
         RunState::Fail
     } else {
@@ -636,7 +775,9 @@ impl Running {
     }
 
     /// Stops `target` on `worker`. Returns whether it stopped: one that will not is leaking worker
-    /// resources, so task `last`, whose log says why, fails, and its stage with it.
+    /// resources, so task `last`, whose log says why, fails, and its stage with it. In a cancelled
+    /// run it is skipped instead, like the rest: a worker that is restarting cannot stop anything,
+    /// and takes its sandboxes with it.
     async fn stop_sandbox(
         &self,
         worker: &str,
@@ -648,7 +789,7 @@ impl Running {
         };
         if let Some(last) = last {
             self.boss.log(last, LogStream::Bettertest, e);
-            self.boss.set_task_state(&self.run, last, TaskState::Fail);
+            self.end(last, false);
         }
         false
     }

@@ -25,39 +25,61 @@ fn task(name: &str) -> Task {
 }
 
 #[test]
-fn runs_a_dead_boss_left_end_at_its_last_heartbeat() {
+fn a_rewound_task_is_pending_again_and_keeps_only_its_log() {
     let mut db = db();
     let pipeline = Pipeline {
         stages: vec![Stage {
             name: "Test".into(),
             sandbox: None,
-            tasks: vec![task("running"), task("pending")],
+            tasks: vec![task("cut_short")],
         }],
         sandboxes: Default::default(),
     };
     let run = db
         .insert_run("app", &pipeline, None, &BTreeMap::new())
         .unwrap();
-    let running = run.stages[0].tasks[0].id;
-    db.start_task(running, "http://worker:7358", START).unwrap();
-    // The boss beat a minute in, then died; the next one starts a day later.
-    db.heartbeat("boss", START + 60_000).unwrap();
-    assert_eq!(db.fail_abandoned_runs(START + DAY).unwrap(), 1);
-    let run = db.run(run.id).unwrap().unwrap();
-    assert_eq!(run.state, RunState::Fail);
-    let tasks = &run.stages[0].tasks;
-    assert_eq!(
-        (tasks[0].state, tasks[0].ended),
-        (TaskState::Fail, Some(START + 60_000))
-    );
-    assert_eq!(tasks[1].state, TaskState::Skipped);
-    let log = db.log(running).unwrap();
-    assert_eq!(
-        log.last().map(|l| l.line.as_str()),
-        Some(
-            "the boss stopped while this task was running: its last heartbeat was at 2025-11-08 00:01:00 UTC"
-        )
-    );
+    let id = run.stages[0].tasks[0].id;
+    db.start_task(id, "http://worker:7358", START).unwrap();
+    db.set_tests(
+        id,
+        Tests {
+            total: 3,
+            failed: 1,
+        },
+    )
+    .unwrap();
+    let artifact = Artifact {
+        name: "app.deb".into(),
+        size: 7,
+    };
+    db.add_artifact(id, &artifact).unwrap();
+    let line = LogLine {
+        stream: LogStream::Stdout,
+        line: "half way".into(),
+    };
+    db.append_log(id, std::slice::from_ref(&line)).unwrap();
+    assert_eq!(db.running_runs().unwrap(), [run.id]);
+
+    db.rewind_task(id).unwrap();
+    let task = &db.run(run.id).unwrap().unwrap().stages[0].tasks[0];
+    let fresh = TaskRun {
+        id,
+        name: "cut_short".into(),
+        state: TaskState::Pending,
+        worker: None,
+        started: None,
+        ended: None,
+        carried_from: None,
+        tests: None,
+    };
+    assert_eq!(*task, fresh);
+    // Running again, it may publish app.deb again.
+    assert_eq!(db.artifacts(id).unwrap(), []);
+    db.add_artifact(id, &artifact).unwrap();
+    assert_eq!(db.log(id).unwrap(), [line]);
+    assert_eq!(db.running_runs().unwrap(), [run.id]);
+    db.set_run_state(run.id, RunState::Pass).unwrap();
+    assert!(db.running_runs().unwrap().is_empty());
 }
 
 /// A run of two tasks: `old` ended on day 0, `newer` on day 20.

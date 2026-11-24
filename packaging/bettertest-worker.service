@@ -8,6 +8,9 @@ User=bettertest
 StateDirectory=bettertest
 WorkingDirectory=/var/lib/bettertest
 ExecStart=/usr/bin/bettertest worker
+# SIGTERM to the worker alone: it tells the boss it is restarting before its tasks end, so the boss
+# runs them again rather than failing them. What is left is killed once the worker has exited.
+KillMode=mixed
 Restart=always
 RestartSec=3
 

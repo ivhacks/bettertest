@@ -163,12 +163,9 @@ pub async fn entry(
         }
     }
 
-    let mut db = db::open()?;
-    let abandoned = db.fail_abandoned_runs(now())?;
-    db.heartbeat("boss", now())?;
-    if abandoned > 0 {
-        println!("marked {abandoned} runs from a previous boss as failed");
-    }
+    let db = db::open()?;
+    // Runs the previous boss process left going, cut short when it stopped. They go on.
+    let interrupted = db.running_runs()?;
     let enrolled = db.workers()?;
 
     // Big enough that only a badly stuck browser falls behind. One that does gets a fresh snapshot.
@@ -198,9 +195,17 @@ pub async fn entry(
         boss.enroll(url);
     }
     spawn(sweep_hourly(boss.clone()));
-    spawn(heartbeat(boss.clone()));
     for index in 0..boss.repos.len() {
         boss.fetch(index).await;
+    }
+    if !interrupted.is_empty() {
+        println!(
+            "resuming {} runs a previous boss left going",
+            interrupted.len()
+        );
+    }
+    for id in interrupted {
+        spawn(resume(boss.clone(), id, "the boss restarted".into(), None));
     }
     if boss.pipelines().is_empty() {
         println!("no pipedefs yet. add some and restart the boss");
@@ -318,20 +323,6 @@ fn not_found(what: impl std::fmt::Display) -> Failure {
 fn parse_id(id: &str) -> Result<Uuid, Failure> {
     Uuid::parse_str(id).map_err(|_| (StatusCode::BAD_REQUEST, format!("{id:?} is not a uuid")))
 }
-
-/// Writes the boss's heartbeat every 15 seconds, so that after a crash or a power cut the next boss
-/// knows when this one stopped.
-async fn heartbeat(boss: Shared) {
-    let mut beat = tokio::time::interval(HEARTBEAT);
-    loop {
-        beat.tick().await;
-        if let Err(e) = boss.db().heartbeat("boss", now()) {
-            eprintln!("could not record the boss's heartbeat: {e}");
-        }
-    }
-}
-
-const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// Retention keeps up with the clock once an hour, which is plenty for settings counted in days.
 async fn sweep_hourly(boss: Shared) {
