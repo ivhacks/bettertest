@@ -7,9 +7,18 @@
 #
 # ./tools.sh [arch] writes target/tools/<arch>/, each file zstd-compressed, for this machine's
 # architecture (x86_64 or aarch64) or the one given. core/build.rs runs it, so cargo does; it does nothing when that
-# directory was made by this version of the script. Needs zig, python3, ninja, pkg-config, make,
-# perl, curl, bzip2 and zstd. qemu brings the meson everything here builds with.
+# directory was made by this version of the script. Needs zig, python3 with venv (Debian:
+# python3-venv), ninja, pkg-config, make, perl, curl, bzip2 and zstd. qemu brings the meson
+# everything here builds with.
 set -euo pipefail
+# Without pkg-config, meson finds none of the libraries built here and quietly builds its own
+# downloaded copies instead, which fail far from the cause.
+for program in zig python3 ninja pkg-config make perl curl bzip2 zstd; do
+    if ! command -v "$program" >/dev/null; then
+        echo "tools.sh needs $program" >&2
+        exit 1
+    fi
+done
 arch=${1:-$(uname -m)}
 root=$(cd "$(dirname "$0")" && pwd)
 out=$root/target/tools/$arch
@@ -60,15 +69,20 @@ fetch https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.6p2.tar.gz
 # defines NDEBUG when optimizing, which qemu refuses.
 host=$arch-linux-musl
 tool() { # name, command
-    printf '#!/bin/sh\nexec %s "$@"\n' "$2" > "$build/bin/$host-$1"
-    chmod +x "$build/bin/$host-$1"
+    printf '#!/bin/sh\nexec %s "$@"\n' "$2" > "$build/bin/$1"
+    chmod +x "$build/bin/$1"
 }
-tool gcc "zig cc -target $host -Wno-gcc-install-dir-libstdcxx"
-tool cc "zig cc -target $host -Wno-gcc-install-dir-libstdcxx"
-tool c++ "zig c++ -target $host -Wno-gcc-install-dir-libstdcxx"
+tool "$host-gcc" "zig cc -target $host -Wno-gcc-install-dir-libstdcxx"
+tool "$host-cc" "zig cc -target $host -Wno-gcc-install-dir-libstdcxx"
+tool "$host-c++" "zig c++ -target $host -Wno-gcc-install-dir-libstdcxx"
+tool "$host-ar" "zig ar"
+tool "$host-ranlib" "zig ranlib"
+tool "$host-ld" "zig ld.lld"
+tool "$host-pkg-config" pkg-config
+# The build machine's own, for the programs qemu and e2fsprogs build and run as they go: zig too,
+# so the machine needs no compiler or binutils of its own.
+tool cc "zig cc -target $(uname -m)-linux-musl"
 tool ar "zig ar"
-tool ranlib "zig ranlib"
-tool pkg-config pkg-config
 export PATH=$build/bin:$PATH
 export CC=$host-cc CXX=$host-c++ AR=$host-ar RANLIB=$host-ranlib
 export CFLAGS="-Os -ffunction-sections -fdata-sections" LDFLAGS="-static -s -Wl,--gc-sections"
@@ -93,20 +107,24 @@ cpu = '$arch'
 endian = 'little'
 EOF
 
+# libtool insists on finding a linker of its own, and a machine without binutils has none. Only
+# here: OpenSSH links with $LD, which has to stay the compiler.
 autotools() { # source dir, configure options
     local dir=$build/src/$1
     shift
-    (cd "$dir" && ./configure --host="$host" --prefix="$prefix" "$@" && make -j"$jobs" install)
+    (cd "$dir" && LD=$host-ld ./configure --host="$host" --prefix="$prefix" "$@" &&
+        make -j"$jobs" install)
 }
 # The build machine's own meson is often too old for glib.
 python3 -m zipfile -e "$build/src/qemu/python/wheels/meson-1.11.1-py3-none-any.whl" "$build/meson"
 printf 'import sys\nfrom mesonbuild import mesonmain\nsys.exit(mesonmain.main())\n' \
     > "$build/meson/meson.py"
+# Every library comes from here: one meson does not find is an error, not a copy it downloads.
 mesonbuild() { # source dir, meson options
     local dir=$build/src/$1
     shift
     python3 "$build/meson/meson.py" setup "$dir/build" "$dir" --cross-file "$build/cross.ini" \
-        --prefix "$prefix" --libdir lib "$@"
+        --prefix "$prefix" --libdir lib --wrap-mode=nodownload "$@"
     ninja -C "$dir/build" install
 }
 
@@ -132,8 +150,8 @@ mesonbuild slirp
 )
 (
     cd "$build/src/e2fsprogs"
-    ./configure --host="$host" --disable-nls --disable-fuse2fs --disable-uuidd --disable-tdb \
-        --disable-imager --disable-defrag --disable-e2initrd-helper
+    BUILD_CC=cc ./configure --host="$host" --disable-nls --disable-fuse2fs --disable-uuidd \
+        --disable-tdb --disable-imager --disable-defrag --disable-e2initrd-helper
     make -j"$jobs" libs
     make -j"$jobs" -C debugfs debugfs
     make -j"$jobs" -C e2fsck e2fsck
@@ -157,4 +175,6 @@ done
 for license in qemu/COPYING qemu/pc-bios/edk2-licenses.txt e2fsprogs/NOTICE openssh/LICENCE; do
     zstd -19 -q "$src/$license" -o "$out/LICENSE.${license%%/*}.${license##*/}"
 done
+# Gigabytes nothing uses now. A failed build leaves its tree to look into.
+rm -rf "$build"
 echo "$stamp" > "$out.stamp"
