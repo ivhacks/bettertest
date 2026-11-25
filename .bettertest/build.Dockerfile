@@ -11,8 +11,13 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     && dnf clean all
 
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-        --target x86_64-unknown-linux-musl --target wasm32-unknown-unknown \
+        --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl \
+        --target wasm32-unknown-unknown \
     && ln -s /root/.cargo/bin/* /usr/local/bin/
+
+# ./build.sh aarch64 cross-builds with it.
+RUN curl -sSfL https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz \
+        | tar -xJ -C /usr/local/bin --strip-components=1 cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild
 
 RUN curl -sSfL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
         | tar -xz -C /usr/local/bin trunk
@@ -23,4 +28,4 @@ RUN curl -sSfL https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.x
 # The vm tools the binary carries take minutes to build, so they are built here, where docker
 # keeps them until tools.sh changes. A build copies them into its checkout's target/.
 COPY tools.sh /tools/
-RUN /tools/tools.sh x86_64 && rm -rf /tools/target/tools-build
+RUN /tools/tools.sh x86_64 && /tools/tools.sh aarch64 && rm -rf /tools/target/tools-build

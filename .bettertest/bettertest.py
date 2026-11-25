@@ -1,6 +1,6 @@
 """bettertest's own pipeline: build the .deb and .rpm, install each on a fresh vm of its distro, and
-check that it works. An emulated arm vm checks that vms of another architecture work too. The
-intern test puts the bare binary on a fresh Debian, which has no qemu, and runs a pipeline whose
+check that it works. An emulated arm vm checks that vms of another architecture work too, and runs
+the aarch64 binary, cross-built beside the packages. The intern test puts the bare binary on a fresh Debian, which has no qemu, and runs a pipeline whose
 task is a vm, as a user without sudo who may use kvm: that vm is nested inside the Debian one, so
 the worker needs nested virtualization. Tasks publish artifacts from the worker itself, from a container and from a vm, later tasks check that
 they all arrive, and that asking for one that is not there says why.
@@ -16,8 +16,8 @@ The worker downloads those URLs itself.
 
 Three VMs are resident at once from Build through Check, and the intern's a fourth during
 Install. Each qemu is given 2048 MiB, so that is 8 GiB before qemu's own overhead and the package
-build running beside them. A 4 GiB worker cannot run this pipeline; give it about 10 GiB. Build starts four tasks at once, so
---tasks 4 is enough to not queue there; a smaller capacity only queues, and the VMs still all
+builds running beside them. A 4 GiB worker cannot run this pipeline; give it about 10 GiB. Build starts five tasks at once, so
+--tasks 5 is enough to not queue there; a smaller capacity only queues, and the VMs still all
 stay up. The arm VM is emulated on x86, by the qemu and UEFI firmware the binary carries. Emulation
 keeps the guest clock at wall speed, so Debian's 90s wait for /boot/efi used to drop the boot
 into emergency mode; the worker lengthens that wait and allows 30 minutes for the ready callback.
@@ -79,6 +79,22 @@ ARM = Sandbox(
 
 def in_vm_python(code: str) -> None:
     run(f"python3 - <<'EOF'\n{code}\nEOF")
+
+
+def build_binary(arch: str) -> str:
+    """Builds the static binary for arch from this checkout, in the task's container, and returns
+    its path there. A fresh container per run, so runs at the same time share nothing. It builds
+    from nothing each time, a few minutes."""
+    subprocess.run(["tar", "-czf", "../src.tgz", "."], check=True)
+    copy("../src.tgz", "/src.tgz")
+    run("mkdir /src && tar -xzf /src.tgz -C /src")
+    run("mkdir /src/target && cp -r /tools/target/tools /src/target/")
+    run(f"cd /src && ./build.sh {arch}")
+    # Fully static means no program interpreter (ld.so) and no dynamic section.
+    binary = f"/src/target/{arch}-unknown-linux-musl/release/bettertest"
+    run(f"! readelf -lW {binary} | grep -E 'INTERP|DYNAMIC'")
+    run(f"echo '{binary}: statically linked'")
+    return binary
 
 
 def made_here(text: str) -> None:
@@ -145,22 +161,18 @@ class Build(Stage):
 
     @task(image=BUILD_IMAGE)
     def packages():
-        # A fresh container per run, so runs at the same time share nothing. It builds from
-        # nothing each time, about two minutes.
-        subprocess.run(["tar", "-czf", "../src.tgz", "."], check=True)
-        copy("../src.tgz", "/src.tgz")
-        run("mkdir /src && tar -xzf /src.tgz -C /src")
-        run("mkdir /src/target && cp -r /tools/target/tools /src/target/")
-        run("cd /src && ./build.sh && ./deb.sh && ./rpm.sh")
-        # Fully static means no program interpreter (ld.so) and no dynamic section.
-        binary = "/src/target/x86_64-unknown-linux-musl/release/bettertest"
-        run(f"! readelf -lW {binary} | grep -E 'INTERP|DYNAMIC'")
-        run(f"echo '{binary}: statically linked'")
+        binary = build_binary("x86_64")
+        run("cd /src && ./deb.sh && ./rpm.sh")
         run("cp /src/target/debian/bettertest_*.deb /bettertest.deb")
         run("cp /src/target/rpm/bettertest-*.rpm /bettertest.rpm")
         artifact("/bettertest.deb", name="bettertest.deb")
         artifact("/bettertest.rpm", name="bettertest.rpm")
         artifact(binary, name="bettertest")
+
+    @task(image=BUILD_IMAGE)
+    def arm_binary():
+        # Cross-built on the x86 worker, as release.sh builds it. Install runs it on the arm vm.
+        artifact(build_binary("aarch64"), name="bettertest")
 
     @task(sandbox=DEBIAN)
     def debian():
@@ -216,6 +228,13 @@ class Install(Stage):
             "test \"$(cat /tmp/there.txt)\" = 'from the worker' && echo 'from arm' > /tmp/back.txt"
         )
         artifact("/tmp/back.txt", name="back.txt")
+        # The arm binary Build cross-built runs on arm: parse runs its embedded python library.
+        copy(
+            get_artifact_this_run(Build.arm_binary, name="bettertest"),
+            "/tmp/bettertest",
+        )
+        copy("pipedefs/helloworld.py", "/tmp/helloworld.py")
+        run("chmod +x /tmp/bettertest && /tmp/bettertest parse /tmp/helloworld.py")
         # Not /tmp: Debian empties it on boot. Check compares it with the boot after Reboot.
         run("cat /proc/sys/kernel/random/boot_id > ~/before")
 
