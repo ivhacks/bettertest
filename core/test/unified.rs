@@ -295,6 +295,184 @@ async fn unified_plus_one_worker_lists_both() {
     let _ = fs::remove_dir_all(pipedefs);
 }
 
+/// A pipedef whose second stage sleeps long enough to restart things under it, in a fresh
+/// directory.
+fn slow_pipedef_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("bettertest-unified-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&dir).unwrap();
+    let source = r#"
+import time
+
+from bettertest import Labels, Stage, task
+
+
+class Label(Labels):
+    LABEL = "LABEL"
+
+
+class First(Stage):
+    labels = (Label.LABEL,)
+
+    @task()
+    def quick():
+        print("quick")
+
+
+class Slow(Stage):
+    labels = (Label.LABEL,)
+
+    @task()
+    def sleepy():
+        print("sleeping")
+        time.sleep(10)
+        print("woke")
+"#
+    .replace("LABEL", arch_label());
+    fs::write(dir.join("slow.py"), source).unwrap();
+    dir
+}
+
+/// GET `path` of `container`'s boss, waiting while it restarts.
+async fn get(container: &Container, path: &str) -> reqwest::Response {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match reqwest::get(format!("{}{path}", container.boss())).await {
+            Ok(reply) if reply.status().is_success() => return reply,
+            reply => assert!(
+                Instant::now() < deadline,
+                "GET {path}: {reply:?}\n{}",
+                container.logs()
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn start_run(container: &Container, pipeline: &str) -> Run {
+    let reply = reqwest::Client::new()
+        .post(format!("{}/api/start-run/{pipeline}", container.boss()))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        reply.status().is_success(),
+        "{reply:?}\n{}",
+        container.logs()
+    );
+    reply.json().await.unwrap()
+}
+
+async fn task_log(container: &Container, task: uuid::Uuid) -> String {
+    let log = get(container, &format!("/api/task/{task}/log")).await;
+    log.text().await.unwrap()
+}
+
+/// Waits until task `task` has printed `line` `times` times in all.
+async fn until_printed(container: &Container, task: uuid::Uuid, line: &str, times: usize) {
+    let deadline = Instant::now() + Duration::from_secs(150);
+    loop {
+        let log = task_log(container, task).await;
+        if log.lines().filter(|l| *l == line).count() >= times {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{line:?} not {times} times in\n{log}\n{}",
+            container.logs()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Run `id` once it is over.
+async fn until_over(container: &Container, id: uuid::Uuid) -> Run {
+    let deadline = Instant::now() + Duration::from_secs(150);
+    loop {
+        let run: Run = get(container, &format!("/api/run/{id}"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        if run.state != RunState::Running {
+            return run;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "run still going\n{}",
+            container.logs()
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// A deploy restarts the boss and the worker while runs are going: the first runs its slow task,
+/// the second waits for the worker's one slot. Neither fails for it. The worker restarted alone
+/// tells the boss, which runs the task it cut short again once the worker is back. Restarted
+/// together, as `systemctl restart bettertest-boss bettertest-worker` does, they leave runs the new
+/// boss goes on with. Both runs pass, and the slow task ran to its end only once.
+#[tokio::test]
+async fn runs_go_on_through_restarts_of_the_boss_and_the_worker() {
+    build_image();
+    let pipedefs = slow_pipedef_dir();
+    let network = Network::new();
+    let boss = Container::start(&network, "boss", &pipedefs, &["boss", "/pipedefs"]);
+    let worker = Container::start(&network, "worker", &pipedefs, &["worker"]);
+    add_worker(&boss, "http://worker:7358").await;
+    workers_once(&boss, |w| w.iter().any(up_with_label)).await;
+    let first = start_run(&boss, "slow").await;
+    let second = start_run(&boss, "slow").await;
+    let sleepy = first.stages[1].tasks[0].id;
+
+    until_printed(&boss, sleepy, "sleeping", 1).await;
+    worker.restart();
+    until_printed(&boss, sleepy, "sleeping", 2).await;
+    std::thread::scope(|both| {
+        both.spawn(|| worker.restart());
+        boss.restart();
+    });
+
+    for run in [&first, &second] {
+        let over = until_over(&boss, run.id).await;
+        let mut logs = String::new();
+        for task in over.stages.iter().flat_map(|s| &s.tasks) {
+            logs += &task_log(&boss, task.id).await;
+        }
+        assert_eq!(over.state, RunState::Pass, "{logs}\n{}", boss.logs());
+    }
+    let log = task_log(&boss, sleepy).await;
+    let printed = |line: &str| log.lines().filter(|l| *l == line).count();
+    assert_eq!((printed("sleeping"), printed("woke")), (3, 1), "{log}");
+    assert!(
+        log.contains("http://worker:7358 is restarting: running this again"),
+        "{log}"
+    );
+    let _ = fs::remove_dir_all(pipedefs);
+}
+
+/// Boss and worker in one process, restarted under a running task: the worker tells the boss in it,
+/// the process exits, and the boss that starts goes on with the run, which passes.
+#[tokio::test]
+async fn unified_restarted_mid_run_goes_on_and_passes() {
+    build_image();
+    let pipedefs = slow_pipedef_dir();
+    let network = Network::new();
+    let unified = Container::start(&network, "unified", &pipedefs, &["unified", "/pipedefs"]);
+    workers_once(&unified, |w| w.iter().any(up_with_label)).await;
+    let run = start_run(&unified, "slow").await;
+    let sleepy = run.stages[1].tasks[0].id;
+    until_printed(&unified, sleepy, "sleeping", 1).await;
+    let restarting = Instant::now();
+    unified.restart();
+    // It stopped on SIGTERM, rather than being killed 10 s later.
+    assert!(restarting.elapsed() < Duration::from_secs(8), "{}", unified.logs());
+    let over = until_over(&unified, run.id).await;
+    let log = task_log(&unified, sleepy).await;
+    assert_eq!(over.state, RunState::Pass, "{log}\n{}", unified.logs());
+    let printed = |line: &str| log.lines().filter(|l| *l == line).count();
+    assert_eq!((printed("sleeping"), printed("woke")), (2, 1), "{log}");
+    let _ = fs::remove_dir_all(pipedefs);
+}
+
 fn machine_arch() -> &'static str {
     if cfg!(target_arch = "aarch64") {
         "aarch64"

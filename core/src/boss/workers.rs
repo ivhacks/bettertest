@@ -20,24 +20,36 @@ impl Boss {
             let freed = self.freed.notified();
             tokio::pin!(freed);
             freed.as_mut().enable();
-            let busy = {
+            let (busy, wake) = {
                 let db = self.db();
                 let mut workers = lock(&self.workers);
-                match pick_worker(&workers, named, labels)? {
+                let at = now();
+                match pick_worker(&workers, named, labels, at)? {
                     Pick::Worker(worker) => {
                         self.start_task_on(&db, &mut workers, run, task, &worker);
                         return Ok(worker);
                     }
-                    Pick::Busy(busy) => busy,
+                    // A worker waited for that is not back in time no longer is: look again then.
+                    Pick::Busy(busy) => {
+                        let wake = workers.values().filter_map(back_by).filter(|&by| by > at);
+                        (busy, wake.min().map(|by| Duration::from_millis(by - at)))
+                    }
                 }
             };
             if !said {
                 self.log(task, LogStream::Bettertest, format!("waiting: {busy}"));
                 said = true;
             }
+            let wake = async {
+                match wake {
+                    Some(wait) => sleep(wait).await,
+                    None => std::future::pending().await,
+                }
+            };
             let mut cancelled = Some(cancelled.clone());
             tokio::select! {
                 () = &mut freed => {}
+                () = wake => {}
                 reason = client::cancellation(&mut cancelled) => return Err(reason),
             }
         }
@@ -177,6 +189,26 @@ impl Boss {
         })
     }
 
+    /// Worker `url` is restarting, and takes its tasks and sandboxes with it. Every run with either
+    /// there stops, as a cancelled one does, then goes on from where it was (see resume).
+    pub(super) fn worker_stopping(&self, url: &str) {
+        let runs: BTreeSet<Uuid> = match lock(&self.workers).get(url) {
+            Some(watched) => watched.worker.tasks.iter().map(|t| t.run).collect(),
+            None => BTreeSet::new(),
+        };
+        for (id, going) in lock(&self.going).iter_mut() {
+            let sandbox_there = lock(&going.spanning)
+                .values()
+                .any(|up| worker_key(&up.worker) == url);
+            if (runs.contains(id) || sandbox_there) && going.cancel.borrow().is_none() {
+                going.interrupted = true;
+                going
+                    .cancel
+                    .send_replace(Some(format!("{url} is restarting")));
+            }
+        }
+    }
+
     /// Task `id` is over, so whichever worker it ran on no longer runs it.
     pub(super) fn task_ended(&self, id: Uuid) {
         let changed = self.change_workers(|_, workers| {
@@ -221,19 +253,24 @@ pub(super) enum Pick {
 /// the worker a sandbox of this run is already on: the task runs there. Otherwise, of the connected
 /// workers whose labels are a superset of `labels` and that have a free slot, any one, uniformly at
 /// random. Err says why no connected worker matches, for the task's log. A worker the task did not
-/// ask for is never returned.
+/// ask for is never returned. `now` is the time, for workers that went away (see back_by).
 pub(super) fn pick_worker(
     workers: &BTreeMap<String, Watched>,
     named: Option<&str>,
     labels: &[String],
+    now: u64,
 ) -> Result<Pick, String> {
     let full = |w: &Watched| {
         let capacity = w.worker.info.as_ref().map_or(0, |i| i.capacity as usize);
         w.worker.tasks.len() >= capacity
     };
-    // The boss's first try at reaching a worker is still under way (it takes at most QUIET): until
-    // it says how many tasks the worker takes, or why it cannot be reached, nothing is known.
-    let connecting = |w: &Watched| w.worker.info.is_none() && w.worker.problem.is_none();
+    // The boss's first try at reaching a worker is still under way (it takes at most QUIET), or the
+    // worker went away so recently it may be restarting: until it says how many tasks it takes, or
+    // why it cannot be reached, nothing is known.
+    let connecting = |w: &Watched| {
+        let waited_for = back_by(w).is_some_and(|by| now < by);
+        w.worker.info.is_none() && (w.worker.problem.is_none() || waited_for)
+    };
     if let Some(url) = named {
         // The pipedef named this worker, or the sandbox is already there. One the boss cannot
         // reach is tried anyway: the task then says what went wrong.
@@ -302,6 +339,17 @@ pub(super) fn pick_worker(
         similar.concat()
     ))
 }
+
+/// Until when tasks that need a worker that went away wait for it, if it has: it may be restarting
+/// (a deploy, say), so for COMEBACK after it was last heard from, the boss waits for it rather than
+/// fail them.
+pub(super) fn back_by(w: &Watched) -> Option<u64> {
+    let gone = w.worker.info.is_none() && w.worker.problem.is_some();
+    gone.then(|| w.worker.since.saturating_add(COMEBACK))
+}
+
+/// Milliseconds: a worker restarts in a few seconds, its machine in a minute or so.
+pub(super) const COMEBACK: u64 = 2 * 60 * 1000;
 
 /// Whether label `b` looks like a typo of `a`: the same but for case, or one or two letters off
 /// (one, for labels of three letters or fewer, where two would make most labels alike).
@@ -383,6 +431,11 @@ pub(super) async fn follow_worker(boss: &Boss, url: &str) -> String {
             eprintln!("could not record a heartbeat of {url}: {e}");
         }
         for (event, data) in decoder.feed(&chunk) {
+            if event == "stopping" {
+                // The worker waits for this hang-up before its tasks end.
+                boss.worker_stopping(url);
+                return format!("{url} is restarting");
+            }
             if event != "worker" {
                 continue;
             }

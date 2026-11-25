@@ -189,10 +189,11 @@ async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             // connects here, and the task calls the boss back at the address that connection came
             // from, on --boss-port, over HTTPS when the boss presented one.
             let local = worker::listen_url(worker_port);
-            tokio::try_join!(
-                worker::entry(vec![], 1, worker_port),
-                boss::entry(sources, tls, boss_port, Some(&local))
-            )?;
+            // The worker returns once a SIGTERM has stopped it, and the whole process stops with it.
+            tokio::select! {
+                stopped = worker::entry(vec![], 1, worker_port) => stopped?,
+                stopped = boss::entry(sources, tls, boss_port, Some(&local)) => stopped?,
+            }
         }
     }
     Ok(ExitCode::SUCCESS)

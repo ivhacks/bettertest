@@ -83,13 +83,19 @@ fn task_form(name: &str) -> reqwest::multipart::Form {
 }
 
 async fn worker(capacity: usize) -> String {
+    worker_stopping(capacity, watch::channel(false).0).await
+}
+
+/// A worker that says on /events that it is stopping once `stopping` is true.
+async fn worker_stopping(capacity: usize, stopping: watch::Sender<bool>) -> String {
     let shared = Shared {
         vms: Arc::new(vm::Vms::new(1)),
         slots: Arc::new(Semaphore::new(capacity)),
         ready: Arc::default(),
         capacity,
+        quit: watch::channel(false).1,
     };
-    let app = router(shared, vec!["x86".into()], capacity as u32);
+    let app = router(shared, vec!["x86".into()], capacity as u32, stopping);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -114,6 +120,32 @@ async fn until_exit(response: &mut reqwest::Response) -> String {
         }
     }
     panic!("no exit in {}", String::from_utf8_lossy(&buf));
+}
+
+/// What a restart (SIGTERM) does first: every boss hears it on /events, and the worker waits for
+/// each to hang up before its tasks end, so no boss takes their end for a failure.
+#[tokio::test]
+async fn a_stopping_worker_says_so_and_waits_for_the_boss_to_hang_up() {
+    let stopping = watch::channel(false).0;
+    let url = worker_stopping(1, stopping.clone()).await;
+    let mut events = reqwest::get(format!("{url}/events")).await.unwrap();
+    let mut decoder = client::SseDecoder::default();
+    let mut next = async || loop {
+        let chunk = timeout(Duration::from_secs(5), events.chunk()).await;
+        let decoded = decoder.feed(&chunk.unwrap().unwrap().unwrap());
+        if let Some((event, _)) = decoded.into_iter().next() {
+            return event;
+        }
+    };
+    assert_eq!(next().await, "worker");
+    stopping.send_replace(true);
+    assert_eq!(next().await, "stopping");
+    // The stream stays open, holding the worker, until the boss hangs up.
+    assert_eq!(stopping.receiver_count(), 1);
+    drop(events);
+    timeout(Duration::from_secs(5), stopping.closed())
+        .await
+        .expect("the hang-up reaches the worker");
 }
 
 #[tokio::test]

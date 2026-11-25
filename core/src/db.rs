@@ -814,35 +814,28 @@ impl Db {
             .optional()
     }
 
-    /// Runs still marked running when the boss starts were cut off when the previous boss process
-    /// stopped. Nothing will ever finish them, so fail them instead of leaving them spinning
-    /// forever. The boss's last heartbeat says when that was, so their tasks end then, and say so;
-    /// `now` stands in for a boss that never wrote one. Returns how many runs there were.
-    pub fn fail_abandoned_runs(&mut self, now: u64) -> rusqlite::Result<usize> {
-        let stopped = to_sql(self.last_heartbeat("boss")?.unwrap_or(now));
+    /// The runs not over, oldest first. When the boss starts, those are the ones the previous boss
+    /// process left going.
+    pub fn running_runs(&self) -> rusqlite::Result<Vec<Uuid>> {
+        self.conn
+            .prepare_cached("SELECT id FROM pl_runs WHERE state = 'running' ORDER BY rowid")?
+            .query_map([], |row| text(row, 0, uuid))?
+            .collect()
+    }
+
+    /// Puts a task back to pending, as if it had never run, but for its log: a resumed run runs it
+    /// again. Its artifacts' files are the caller's to delete.
+    pub fn rewind_task(&mut self, task: Uuid) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
+        let task = task.to_string();
+        tx.execute("DELETE FROM task_artifacts WHERE task_run_id = ?1", [&task])?;
         tx.execute(
-            "INSERT INTO log_lines (task_run_id, stream, line)
-             SELECT id, 'bettertest', 'the boss stopped while this task was running: its last \
-             heartbeat was at ' || strftime('%Y-%m-%d %H:%M:%S UTC', ?1 / 1000, 'unixepoch')
-             FROM task_runs WHERE state = 'running'",
-            [stopped],
+            "UPDATE task_runs SET state = 'pending', worker = NULL, started_at = NULL,
+             ended_at = NULL, carried_from = NULL, tests = NULL, tests_failed = NULL
+             WHERE id = ?1",
+            [&task],
         )?;
-        tx.execute(
-            "UPDATE task_runs SET state = 'fail', ended_at = max(?1, coalesce(started_at, ?1))
-             WHERE state = 'running'",
-            [stopped],
-        )?;
-        tx.execute(
-            "UPDATE task_runs SET state = 'skipped' WHERE state = 'pending'",
-            [],
-        )?;
-        let abandoned = tx.execute(
-            "UPDATE pl_runs SET state = 'fail' WHERE state = 'running'",
-            [],
-        )?;
-        tx.commit()?;
-        Ok(abandoned)
+        tx.commit()
     }
 }
 

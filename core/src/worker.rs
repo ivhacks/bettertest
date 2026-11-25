@@ -33,10 +33,15 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     net::TcpListener,
     process::{Child, Command},
+    signal::unix::{SignalKind, signal},
     spawn,
-    sync::{Semaphore, mpsc},
+    sync::{Semaphore, mpsc, watch},
+    time::{Duration, timeout},
 };
-use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tokio_stream::{
+    StreamExt,
+    wrappers::{ReceiverStream, WatchStream},
+};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -157,6 +162,8 @@ struct Shared {
     /// Pythons started before there was a task for them, at most one a slot (see ready_python).
     ready: Arc<Mutex<Vec<Child>>>,
     capacity: usize,
+    /// True once the worker is stopping and its tasks have to end.
+    quit: watch::Receiver<bool>,
 }
 
 impl FromRef<Shared> for Arc<vm::Vms> {
@@ -194,26 +201,52 @@ pub async fn entry(labels: Vec<String>, capacity: u32, port: u16) -> Result<(), 
         eprintln!("{e}");
     }
 
+    let mut terminate = signal(SignalKind::terminate())?;
+    let (stopping, _) = watch::channel(false);
+    let (quit, quitting) = watch::channel(false);
     let shared = Shared {
         vms: Arc::new(vm::Vms::new(port)),
         slots: Arc::new(Semaphore::new(capacity as usize)),
         ready: Arc::default(),
         capacity: capacity as usize,
+        quit: quitting,
     };
-    let router = router(shared, labels, capacity);
+    let router = router(shared.clone(), labels, capacity, stopping.clone());
 
     println!("worker listening on {}", listen_url(port));
     let listener = TcpListener::bind(("::", port)).await?;
     // start-task learns the boss's address from the connection it arrives on.
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener.tap_io(crate::no_delay), service).await?;
+    tokio::select! {
+        served = axum::serve(listener.tap_io(crate::no_delay), service) => served?,
+        _ = terminate.recv() => {}
+    }
+    // A restart (SIGTERM, as systemctl and docker send) ends the tasks it cuts short, but they did
+    // not fail: they run again once the worker is back. Each boss hears that on /events and hangs
+    // up once it has taken note. Only then do the tasks end, so no boss takes that for a failure.
+    stopping.send_replace(true);
+    let _ = timeout(GOODBYE, stopping.closed()).await;
+    quit.send_replace(true);
+    let _ = timeout(GOODBYE, shared.slots.acquire_many(capacity)).await;
     Ok(())
 }
 
-fn router(shared: Shared, labels: Vec<String>, capacity: u32) -> Router {
+/// How long a stopping worker waits for its bosses to hang up, then for its tasks to end. Docker
+/// kills what is still running 10 s after asking it to stop.
+const GOODBYE: Duration = Duration::from_secs(3);
+
+fn router(
+    shared: Shared,
+    labels: Vec<String>,
+    capacity: u32,
+    stopping: watch::Sender<bool>,
+) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/events", get(move || events(labels.clone(), capacity)))
+        .route(
+            "/events",
+            get(move || events(labels.clone(), capacity, stopping.subscribe())),
+        )
         .route("/start-container", post(start_container))
         .route("/container/{id}", delete(delete_container))
         .route("/start-vm", post(start_vm))
@@ -231,8 +264,13 @@ async fn health() -> &'static str {
 }
 
 /// For the boss: what this worker is, then nothing but keep-alives for as long as it is up. The boss
-/// counts the worker as connected while this stream lasts.
-async fn events(labels: Vec<String>, capacity: u32) -> impl IntoResponse {
+/// counts the worker as connected while this stream lasts. A worker that is stopping says
+/// `stopping`, and waits for the boss to hang up.
+async fn events(
+    labels: Vec<String>,
+    capacity: u32,
+    stopping: watch::Receiver<bool>,
+) -> impl IntoResponse {
     let info = WorkerInfo {
         // Only for people to read, so a machine without one is fine.
         hostname: fs::read_to_string("/proc/sys/kernel/hostname")
@@ -246,7 +284,11 @@ async fn events(labels: Vec<String>, capacity: u32) -> impl IntoResponse {
     let hello = Event::default()
         .event("worker")
         .data(serde_json::to_string(&info).unwrap_or_default());
-    let stream = tokio_stream::once(hello).chain(tokio_stream::pending());
+    // Holding the receiver until the boss hangs up, which is what the stopping worker waits for.
+    let stopping = WatchStream::from_changes(stopping)
+        .filter(|stopping| *stopping)
+        .map(|_| Event::default().event("stopping").data("restarting"));
+    let stream = tokio_stream::once(hello).chain(stopping);
     Sse::new(stream.map(Ok::<_, Infallible>)).keep_alive(KeepAlive::default())
 }
 
@@ -640,6 +682,7 @@ async fn start_task(
     let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src), None);
 
     let (tx, rx) = mpsc::channel::<Event>(64);
+    let mut quit = shared.quit;
     spawn(async move {
         let _group = group;
         let slot = slot;
@@ -656,6 +699,7 @@ async fn start_task(
         // Returning early drops `child`, which kills the task, and `slot`.
         let status = tokio::select! {
             _ = tx.closed() => return, // The caller hung up.
+            Ok(_) = quit.wait_for(|quit| *quit) => return, // The worker is stopping.
             status = finished => status,
         };
         // The task is no longer running. Free the slot before the caller hears that, so it can

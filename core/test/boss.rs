@@ -2,7 +2,10 @@
 // reach what it keeps private.
 
 use super::*;
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 fn task(name: &str) -> Task {
     Task {
@@ -223,6 +226,45 @@ fn restarting_a_stage_that_uses_a_spanning_sandbox_restarts_from_its_first_stage
 }
 
 #[test]
+fn an_interrupted_run_goes_on_from_its_first_stage_not_passed() {
+    use TaskState::{Pending, Running};
+    let interrupted = run(&[
+        ("Build", &[("compile", Pass)]),
+        ("Test", &[("unit", Pass), ("e2e", Running)]),
+        ("Deploy", &[("push", Pending), ("smoke", Pending)]),
+    ]);
+    assert_eq!(resume_from(&interrupted, &pipeline()), Some(1));
+    // Cut short, its tasks were skipped: the same.
+    let interrupted = run(&[
+        ("Build", &[("compile", Pass)]),
+        ("Test", &[("unit", Skipped), ("e2e", Skipped)]),
+        ("Deploy", &[("push", Skipped), ("smoke", Skipped)]),
+    ]);
+    assert_eq!(resume_from(&interrupted, &pipeline()), Some(1));
+    // A failed task failed the run, restart or not. Every task passed: nothing is left to run.
+    let failed = run(&[
+        ("Build", &[("compile", Pass)]),
+        ("Test", &[("unit", Fail), ("e2e", Running)]),
+        ("Deploy", &[("push", Pending), ("smoke", Pending)]),
+    ]);
+    assert_eq!(resume_from(&failed, &pipeline()), None);
+    let passed = run(&[
+        ("Build", &[("compile", Pass)]),
+        ("Test", &[("unit", Pass), ("e2e", Pass)]),
+        ("Deploy", &[("push", Pass), ("smoke", Pass)]),
+    ]);
+    assert_eq!(resume_from(&passed, &pipeline()), None);
+    // Reboot needs DEBIAN and FEDORA as Install left them, gone with the restart: from Install.
+    let interrupted = run(&[
+        ("Build", &[("compile", Pass)]),
+        ("Install", &[("debian", Pass), ("fedora", Pass)]),
+        ("Reboot", &[("debian", Pass), ("fedora", Running)]),
+        ("Check", &[("web", Pending)]),
+    ]);
+    assert_eq!(resume_from(&interrupted, &spanning_pipeline()), Some(1));
+}
+
+#[test]
 fn tasks_the_pipedef_gained_since_run() {
     // The earlier run predates Test.e2e.
     let earlier = run(&[
@@ -273,7 +315,7 @@ fn picked(up: &BTreeMap<String, Watched>, labels: &[&str]) -> String {
 
 fn picked_on(up: &BTreeMap<String, Watched>, named: Option<&str>, labels: &[&str]) -> String {
     let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
-    match pick_worker(up, named, &labels) {
+    match pick_worker(up, named, &labels, now()) {
         Ok(Pick::Worker(url)) => url,
         Ok(Pick::Busy(why)) => format!("busy: {why}"),
         Err(why) => format!("none: {why}"),
@@ -379,6 +421,44 @@ fn a_full_worker_gets_no_more_tasks() {
         "{got}"
     );
     assert!(!got.starts_with("http://"), "{got}");
+}
+
+#[test]
+fn a_worker_that_just_went_away_is_waited_for() {
+    // d was last heard from a moment ago and may be restarting: tasks wait for it rather than fail.
+    let mut up = workers(&[("http://arm", &["arm"], 0, 1)]);
+    let gone = Worker {
+        url: "http://d".into(),
+        info: None,
+        since: now() - 10_000,
+        problem: Some("http://d is restarting".into()),
+        tasks: vec![],
+    };
+    let watched = Watched {
+        worker: gone,
+        watcher: None,
+    };
+    up.insert("http://d".into(), watched);
+    assert_eq!(
+        picked(&up, &["x86"]),
+        "busy: no connected worker has labels x86 yet, and some are still connecting"
+    );
+    assert_eq!(
+        picked_on(&up, Some("http://d"), &[]),
+        "busy: http://d is connecting"
+    );
+    // Until COMEBACK after that. Then it is gone for good, as far as tasks are concerned.
+    let d = up.get("http://d").expect("d");
+    assert_eq!(back_by(d), Some(d.worker.since + COMEBACK));
+    if let Some(d) = up.get_mut("http://d") {
+        d.worker.since = now() - COMEBACK;
+    }
+    let got = picked(&up, &["x86"]);
+    assert!(
+        got.starts_with("none: no connected worker has labels x86"),
+        "{got}"
+    );
+    assert_eq!(picked_on(&up, Some("http://d"), &[]), "http://d");
 }
 
 #[test]
@@ -758,6 +838,142 @@ async fn test_counts_a_task_reports_are_kept_and_sent_live() {
     let kept = boss.db().run(run.id).unwrap().unwrap();
     assert_eq!(kept.stages[0].tasks[0].tests, Some(tests));
     assert_eq!(kept.stages[0].tasks[0].state, Fail);
+}
+
+/// A worker whose `hang`th start-task (counting from 1) prints "first try" and then never ends.
+/// The rest exit 0 at once. `calls` counts them all.
+async fn worker_hanging_once(hang: usize, calls: Arc<AtomicUsize>) -> String {
+    let start_task = move || async move {
+        let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let body = if call == hang {
+            let line = Ok::<_, Infallible>("event: stdout\ndata: first try\n\n");
+            Body::from_stream(tokio_stream::StreamExt::chain(
+                tokio_stream::once(line),
+                tokio_stream::pending(),
+            ))
+        } else {
+            Body::from("event: exit\ndata: 0\n\n")
+        };
+        ([(header::CONTENT_TYPE, "text/event-stream")], body)
+    };
+    let app = Router::new().route("/start-task", post(start_task));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// A boss that knows the worker at `url`, and pipeline app: stage First (task once), then Second
+/// (task twice), both on that worker. With the pipeline, parsed.
+async fn two_stages_on(url: &str) -> (Shared, Pipeline, String) {
+    let source = format!(
+        "from bettertest import Stage, task\n\n\nclass First(Stage):\n    worker = \"{url}\"\n\n    \
+         @task()\n    def once():\n        pass\n\n\nclass Second(Stage):\n    worker = \"{url}\"\n\n    \
+         @task()\n    def twice():\n        pass\n"
+    );
+    let file = std::env::temp_dir().join(format!("app-{}.py", Uuid::new_v4()));
+    std::fs::write(&file, &source).expect("write pipedef");
+    let boss = boss(workers(&[(url, &["x86"], 0, 1)]));
+    lock(&boss.pipedefs).insert("app".into(), Pipedef::File(file));
+    let (source, pipeline) = runs::load_pipeline(&boss, "app", None).await.expect("load");
+    (boss, pipeline.expect("parses"), source)
+}
+
+/// The state run `id` ends in, from `events`.
+async fn finished(events: &mut broadcast::Receiver<Event>, id: Uuid) -> RunState {
+    let ended = async {
+        loop {
+            if let Ok(Event::RunFinished { run, state, .. }) = events.recv().await
+                && run == id
+            {
+                return state;
+            }
+        }
+    };
+    timeout(Duration::from_secs(20), ended)
+        .await
+        .expect("the run ends")
+}
+
+fn log_text(boss: &Boss, task: Uuid) -> Vec<String> {
+    let log = boss.db().log(task).expect("log");
+    log.into_iter().map(|line| line.line).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_cut_short_by_a_restarting_worker_goes_on_and_passes() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = worker_hanging_once(2, calls.clone()).await;
+    let (boss, pipeline, source) = two_stages_on(&url).await;
+    let mut events = boss.events.subscribe();
+    let none = BTreeMap::new();
+    let run = begin_run(&boss, "app", pipeline, source, None, None, &none).expect("run");
+    // Second.twice is running when the worker says it is stopping.
+    let running = async {
+        loop {
+            if let Ok(Event::Log { line, .. }) = events.recv().await
+                && line.line == "first try"
+            {
+                return;
+            }
+        }
+    };
+    timeout(Duration::from_secs(20), running)
+        .await
+        .expect("twice runs");
+    boss.worker_stopping(&url);
+    assert_eq!(finished(&mut events, run.id).await, RunState::Pass);
+    // First.once ran once. Second.twice was cut short, and ran again.
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let twice = run.stages[1].tasks[0].id;
+    let restarting = format!("{url} is restarting");
+    assert_eq!(
+        log_text(&boss, twice),
+        [
+            "first try",
+            &restarting,
+            &format!("{restarting}: running this again"),
+            "exit code 0"
+        ]
+    );
+    let kept = boss.db().run(run.id).expect("db").expect("run");
+    assert_eq!(kept.state, RunState::Pass);
+    let states: Vec<TaskState> = kept.stages.iter().map(|s| s.tasks[0].state).collect();
+    assert_eq!(states, [Pass, Pass]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_the_previous_boss_left_going_goes_on_and_passes() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = worker_hanging_once(0, calls.clone()).await;
+    let (boss, pipeline, _) = two_stages_on(&url).await;
+    // As a boss that stopped while Second.twice ran left it.
+    let run = boss
+        .db()
+        .insert_run("app", &pipeline, None, &BTreeMap::new())
+        .expect("run");
+    let (once, twice) = (run.stages[0].tasks[0].id, run.stages[1].tasks[0].id);
+    {
+        let db = boss.db();
+        db.start_task(once, &url, 1).expect("start");
+        db.set_task_state(once, Pass, 2).expect("pass");
+        db.start_task(twice, &url, 3).expect("start");
+    }
+    assert_eq!(boss.db().running_runs().expect("db"), [run.id]);
+    let mut events = boss.events.subscribe();
+    spawn(resume(
+        boss.clone(),
+        run.id,
+        "the boss restarted".into(),
+        None,
+    ));
+    assert_eq!(finished(&mut events, run.id).await, RunState::Pass);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "only Second.twice ran");
+    assert_eq!(
+        log_text(&boss, twice),
+        ["the boss restarted: running this again", "exit code 0"]
+    );
+    assert!(boss.db().running_runs().expect("db").is_empty());
 }
 
 #[tokio::test]

@@ -67,11 +67,11 @@ CREATE TABLE workers (
     url              TEXT PRIMARY KEY
 );
 
--- When the boss, and each worker, was last known to be alive. The boss writes its own every 15
--- seconds, and a worker's whenever the worker's /events stream says anything (its keep-alives come
--- every 15 seconds). Once one is gone, this says when it went.
+-- When each worker was last known to be alive. The boss writes it whenever the worker's /events
+-- stream says anything (its keep-alives come every 15 seconds). Once one is gone, this says when it
+-- went.
 CREATE TABLE heartbeats (
-    who              TEXT PRIMARY KEY,   -- 'boss', or a worker's url
+    who              TEXT PRIMARY KEY,   -- a worker's url
     at               INTEGER NOT NULL
 );
 
