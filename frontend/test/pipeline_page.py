@@ -11,7 +11,8 @@ and a dozen tabs:
   within SWITCH_MS of the tab's click.
 - switching tabs, and going back and forward, never paints an intermediate frame: the grid does
   not empty, no skeleton appears, and the other pipeline is not shown half-drawn. The snapshot
-  is held back so the wait is real. Chromium and WebKit, at 390 and 1280.
+  is held back so the wait is real. Chromium (on a CPU slowed 20 times) and WebKit, at 390 and
+  1280.
 
 The boss is shell.py's stand-in: frontend/dist, plus this pipeline's snapshot. Like shell.py, it
 runs in Playwright's image (see shell_nav.rs, which runs both in cargo test).
@@ -311,6 +312,8 @@ BLUE_STAGES = [("Blue", ["boot"]), ("Bay", ["probe"]), ("Bolt", ["ship"])]
 TABS = ["red", "blue"]
 # The stand-in holds the snapshot this long, inside the 500–1000ms the wait has to be real for.
 SNAPSHOT_DELAY = 0.8
+# How many times slower than this machine Chromium runs the switches.
+CPU_SLOWDOWN = 20
 
 
 def flicker_pipeline(name, stages, runs):
@@ -352,8 +355,9 @@ def flicker_pipeline(name, stages, runs):
                 )
                 n += 1
             stages_out.append({"name": stage, "tasks": row})
+        # Run ids are uuids, so no two pipelines share one.
         return {
-            "id": f"{number:08x}-1111-4000-8000-000000000000",
+            "id": f"{number:08x}-{TABS.index(name) + 1:04x}-4000-8000-000000000000",
             "pipeline": name,
             "state": "pass",
             "commit": None,
@@ -573,6 +577,12 @@ def switching_tabs_never_flickers(chromium, webkit, base):
                     has_touch=mobile,
                 )
                 page = context.new_page()
+                if browser_name == "chromium":
+                    # Yew lets the browser paint once its work has taken 16ms. On a slow CPU every
+                    # switch takes that long, so a frame painted half-done shows every time, not
+                    # only when the machine happens to be busy.
+                    cdp = context.new_cdp_session(page)
+                    cdp.send("Emulation.setCPUThrottlingRate", {"rate": CPU_SLOWDOWN})
                 try:
                     page.goto(f"{base}/pipeline/red", wait_until="domcontentloaded")
                     page.wait_for_selector(".grid tbody td")

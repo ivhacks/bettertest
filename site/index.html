@@ -31,9 +31,9 @@ html,body{background:var(--bt-black);color:var(--bt-white)}
 body{font:400 17px/1.55 var(--bt-font);font-stretch:80%;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
 a{color:inherit}
 .wrap{width:100%;max-width:1200px;margin:0 auto;padding:0 clamp(20px,5vw,56px)}
-header{padding:28px 0}
+header{padding:20px 0}
 header .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px}
-.brand{display:flex;align-items:center;gap:10px;text-decoration:none}
+.brand{display:flex;align-items:center;gap:10px;min-height:44px;text-decoration:none}
 .brand img{height:28px;width:auto}
 .brand span{font:700 22px/1 var(--bt-font);font-stretch:62%;text-transform:uppercase;letter-spacing:0}
 .nav{display:flex;align-items:center;gap:18px}
@@ -41,7 +41,7 @@ header .wrap{display:flex;align-items:center;justify-content:space-between;gap:1
 .nav a:hover{color:var(--bt-white)}
 .bt-label{font:500 12px/1.2 var(--bt-font);font-stretch:62%;text-transform:uppercase;letter-spacing:.08em;color:var(--bt-dim)}
 main{flex:1;display:flex;align-items:center}
-.hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:clamp(32px,6vw,96px);align-items:center;padding:clamp(24px,5vh,64px) 0}
+.hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:clamp(32px,6vw,96px);align-items:center;padding-block:clamp(24px,5vh,64px)}
 .eyebrow{font:600 13px/1 var(--bt-font);font-stretch:80%;letter-spacing:.3em;text-transform:uppercase;color:var(--bt-orange);margin-bottom:20px}
 .mark{width:clamp(88px,9vw,128px);height:auto;display:block;margin-bottom:clamp(24px,3vw,36px)}
 h1{font:700 clamp(44px,6.4vw,92px)/.9 var(--bt-font);font-stretch:62%;text-transform:uppercase;letter-spacing:0}
@@ -85,9 +85,9 @@ pre{font:400 13px/1.6 var(--bt-mono);font-stretch:75%;padding:18px 16px;overflow
 .grid i{display:block;height:18px;background:var(--bt-pass)}
 .grid i.x{background:var(--bt-fail)}
 .grid i.n{background:#111}
-footer{padding:28px 0;border-top:1px solid #111}
+footer{padding:16px 0;border-top:1px solid #111}
 footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center}
-footer a{color:var(--bt-dim);text-decoration:none}
+footer a{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;color:var(--bt-dim);text-decoration:none}
 footer a:hover{color:var(--bt-white)}
 @media (max-width:900px){.hero{grid-template-columns:1fr}.side{max-width:560px}.nav a:not(.btn){display:none}}
 @media (max-width:480px){.grid i{height:14px}.grid .tn{height:70px}}
@@ -158,7 +158,7 @@ footer a:hover{color:var(--bt-white)}
 </div></main>
 <footer><div class="wrap">
  <span class="bt-label">© 2026 bettertest</span>
- <a class="bt-label" href="https://github.com/ivhacks/bettertest/releases/tag/v0.1.0">v0.1.0</a>
+ <a class="bt-label" href="https://github.com/ivhacks/bettertest/releases/tag/v0.2.0">v0.2.0</a>
 </div></footer>
 <script>
 (function () {

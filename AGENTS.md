@@ -41,7 +41,7 @@ bettertest was a learning project; it is now a product we are trying to launch. 
 - **Workers know the boss's address and can call boss APIs.** A worker learns it from the incoming API call: the boss's IP is the peer address of the `start-task` connection, and the boss port is `--boss-port` (7357 unless told otherwise), sent in that same form because TCP's source port is not the listen port. Those details persist on the worker for as long as that task runs, so the task calls the boss directly (e.g. `get_artifact()` is one GET). Never relay worker→boss requests through the task's SSE stream or invent callback schemes.
 - **No environment variables.** Config is, in order of preference: nothing, code, the db, a URL, a cookie, a CLI arg. Never `std::env`, `os.environ`, `$FOO`.
 - **Rootless.** Nothing needs sudo: no `/opt`, no `/etc`, no systemd units, no ports below 1024, no registry daemon config, no network bridges. The .deb is an extra for machines where root is available, never a requirement.
-- **UI:** as few pages as possible (pipeline grid, task log, workers, settings, users). Fast enough that latency is never noticed. Keyboard navigable. The page never scrolls, not even sideways on a 320px phone; only content regions do. On touch screens everything outside the grid is a 44px target. Sharp square corners. Green good, red bad.
+- **UI:** as few pages as possible (pipeline grid, task log, workers, settings, users). Fast enough that latency is never noticed. Keyboard navigable. The page never scrolls, not even sideways on a 320px phone; only content regions do. On touch screens every link, button and field takes a tap anywhere in 44×44px; a grid cell is 44px tall and takes taps across its whole column, which on a phone is often narrower than that. Sharp square corners. Green good, red bad.
 - **Builds cache, tests don't.**
 - **Dev workflow:** a developer reserves a worker and runs `bettertest dispatch` from their laptop against it. Same code path as the boss, no daemon, no UI, no db. The worker can't tell the difference.
 
@@ -131,6 +131,7 @@ frontend/               bettertest-frontend: Yew/wasm, built by trunk, embedded 
   test/shell.py         playwright: the document burst, the shell staying put, Syeve beside it
   test/narrow.py        every page at phone widths in Playwright, against long_names.py's pipeline
   test/pipeline_page.py playwright: the pipeline page never scrolls sideways; how grid cells answer
+  test/tap_targets.py   playwright: every page's hit areas at 320 and 390px, Chromium and WebKit
   test/speed.py         Chromium timing the five pages against a real binary (cold, tabs, navigation);
                         the CI's Check stage runs it and charts each time against its limit
   style.css             the brand guide's tokens, type and cut corners
@@ -141,7 +142,8 @@ brand/                  the brand guide: style_guide.typ (Typst source), style_g
 pylib/src/bettertest/   the python library pipedefs import (Stage, task, run, copy, reboot, view)
 pipedefs/               sample pipelines: helloworld (shipped in the .deb), random_time, weather,
                         artifact, vm, views
-site/index.html         the homepage at bettertest.dev: Try now shows the install command
+site/index.html         the homepage at bettertest.dev: Try now shows the install command; site/phone.py
+                        holds it to phones and its footer to core/Cargo.toml's version
 .bettertest/            bettertest's own CI pipeline (bettertest.py) and the container its packages build in
 packaging/              systemd units and sysusers.d entry, shared by both packages
   deb/                  control file and maintainer scripts
@@ -495,7 +497,7 @@ dist/0.2.0/  bettertest-0.2.0-x86_64-linux  bettertest-0.2.0-aarch64-linux
              bettertest-0.2.0-1.x86_64.rpm  bettertest-0.2.0-1.aarch64.rpm   SHA256SUMS
 ```
 
-To release: bump the version in `core/Cargo.toml` in a PR, merge it, tag the merge commit, run `release.sh`, and create the release on GitHub with the files.
+To release: bump the version in `core/Cargo.toml` and the homepage's footer (`site/phone.py` fails until they agree) in a PR, merge it, tag the merge commit, run `release.sh`, and create the release on GitHub with the files.
 
 ### Verification toolkit
 

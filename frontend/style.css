@@ -858,12 +858,12 @@ main > .add {
     }
 
     /* The red square stays 18px, drawn by ::before. The clear 44px button around it is what a
-       finger hits, in no more room than the square takes. Rows sit further apart so that pad
-       stays off the next run's id. */
+       finger hits, no taller than the square. It ends where the run's id starts, so neither
+       takes the other's taps. Rows sit further apart so that pad stays off the next run's id. */
     button.cancel {
         width: 44px;
         height: 44px;
-        margin: -13px -7px -13px -13px;
+        margin: -13px 0 -13px -13px;
         background: none;
         clip-path: none;
         animation: none;
@@ -889,13 +889,13 @@ main > .add {
     }
 }
 
-/* A finger needs 44px to hit what it aims at. The grid's rows stay small: 44px tall, a screen would
-   hold a dozen runs. */
+/* A finger needs 44px to hit what it aims at. */
 @media (pointer: coarse) {
     header a,
     .tab,
     .artifacts a,
     .results a,
+    .grid .run a,
     .workers .tasks a,
     button:not(.grid button),
     input,
@@ -907,7 +907,8 @@ main > .add {
     header a,
     .tab,
     .artifacts a,
-    .results a {
+    .results a,
+    .grid .run a {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -915,5 +916,23 @@ main > .add {
 
     .results td {
         vertical-align: middle;
+    }
+
+    /* A grid row is 44px tall with its color in the middle half, and a cell's link takes taps
+       anywhere in its cell, the gap before it too. A column narrower than a finger can give no
+       more: wider would land taps on the neighbour, and the grid never scrolls sideways. */
+    .grid {
+        row-gap: 0;
+    }
+
+    .grid .cell {
+        position: relative;
+        padding-block: 11px;
+    }
+
+    .cell a::after {
+        content: "";
+        position: absolute;
+        inset: 0;
     }
 }

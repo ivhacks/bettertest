@@ -301,6 +301,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == f"/api/run/{RUN}/views":
             self._json(VIEWS)
             return
+        if path.startswith("/api/run/") and path.endswith("/views"):
+            # Other runs' pipedefs have no views. A 404 would put a notice on the page whenever
+            # it arrived, moving everything below it.
+            self._json(b"[]")
+            return
         if path == f"/api/run/{RUN}/artifact/Test/e2e/report.html":
             # As the boss serves an HTML artifact.
             self.send_response(200)
