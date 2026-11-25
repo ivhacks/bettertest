@@ -23,13 +23,26 @@ fn pipeline_page_fits_and_its_cells_answer() {
 }
 
 #[test]
+fn tap_targets_take_a_finger() {
+    playwright("test/tap_targets.py");
+}
+
+#[test]
 fn try_now_panel_follows_the_architecture() {
+    playwright_at(&repo(), "/repo", "site/try_now.py");
+}
+
+#[test]
+fn homepage_fits_a_phone() {
+    playwright_at(&repo(), "/repo", "site/phone.py");
+}
+
+fn repo() -> String {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .canonicalize()
         .expect("repo root");
-    let repo = repo.to_str().expect("repo path");
-    playwright_at(repo, "/repo", "site/try_now.py");
+    repo.to_str().expect("repo path").to_string()
 }
 
 /// Runs `script` in Playwright's image against the built frontend.

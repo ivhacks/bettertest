@@ -496,10 +496,10 @@ impl Component for Figure {
 
 /// One run's row of the grid. A live event changes one run, so only its row renders again: with
 /// thousands of tasks, rendering every row for every event kept the browser busy. Its cells are
-/// HTML that run_row builds, set in one go once the row is in the page.
-struct RunRow {
-    row: NodeRef,
-}
+/// HTML that run_row builds, set in one go. That happens while rendering, not in `rendered`:
+/// Yew may give the browser a frame before calling `rendered`, which painted the next pipeline's
+/// header over the previous one's rows.
+struct RunRow;
 
 #[derive(Properties)]
 struct RunRowProps {
@@ -519,20 +519,16 @@ impl Component for RunRow {
     type Properties = RunRowProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
-        Self {
-            row: NodeRef::default(),
-        }
+        Self
     }
 
-    fn view(&self, _ctx: &Context<Self>) -> Html {
-        html! { <tr ref={self.row.clone()}></tr> }
-    }
-
-    /// Only after a render, which only a changed run causes: the row's cells are this run's now.
-    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
-        if let Some(row) = self.row.cast::<Element>() {
-            let props = ctx.props();
-            row.set_inner_html(&view::run_row(&props.pipeline, &props.run));
-        }
+    /// Only a changed run renders: the row's cells are this run's now.
+    fn view(&self, ctx: &Context<Self>) -> Html {
+        let Ok(row) = gloo::utils::document().create_element("tr") else {
+            return html! {};
+        };
+        let props = ctx.props();
+        row.set_inner_html(&view::run_row(&props.pipeline, &props.run));
+        Html::VRef(row.into())
     }
 }
