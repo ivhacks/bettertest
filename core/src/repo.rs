@@ -197,21 +197,9 @@ impl Repo {
         )?;
         // The token stays out of the url, which is what a failure logs.
         let token = credential(&self.url);
-        let response = status_request(
-            http,
-            &call,
-            token.as_deref(),
-            self.url.username(),
-            self.url.password(),
-        )
-        .send()
-        .await
-        .map_err(|e| format!("could not reach {}: {}", call.url, client::why(&e)))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(format!("{} said {status}: {text}", call.url));
-        }
+        let (user, password) = (self.url.username(), self.url.password());
+        let request = status_request(http, &call, token.as_deref(), user, password);
+        client::check(call.url.as_str(), request.send().await).await?;
         Ok(())
     }
 }
@@ -277,31 +265,20 @@ fn status_call(
 ) -> Result<StatusCall, String> {
     let sha = checked(sha)?;
     let github = is_github(repo);
-    let mut url = if github {
-        Url::parse("https://api.github.com/").map_err(|e| e.to_string())?
+    let (mut url, path, state, description) = if github {
+        let url = Url::parse("https://api.github.com/").map_err(|e| e.to_string())?;
+        let path = format!("/repos/{full_name}/statuses/{sha}");
+        // A cancelled run is `warning` on Forgejo and Gitea. GitHub would reject that state.
+        let state = if state == "warning" { "failure" } else { state };
+        (url, path, state, description.chars().take(140).collect())
     } else {
         let mut url = repo.clone();
         let _ = url.set_username("");
         let _ = url.set_password(None);
-        url
-    };
-    let path = if github {
-        format!("/repos/{full_name}/statuses/{sha}")
-    } else {
-        format!("/api/v1/repos/{full_name}/statuses/{sha}")
+        let path = format!("/api/v1/repos/{full_name}/statuses/{sha}");
+        (url, path, state, description.to_string())
     };
     url.set_path(&path);
-    // A cancelled run is `warning` on Forgejo and Gitea. GitHub would reject that state.
-    let state = if github && state == "warning" {
-        "failure"
-    } else {
-        state
-    };
-    let description = if github {
-        description.chars().take(140).collect::<String>()
-    } else {
-        description.to_string()
-    };
     let mut body = serde_json::json!({
         "state": state,
         "context": format!("bettertest/{context}"),

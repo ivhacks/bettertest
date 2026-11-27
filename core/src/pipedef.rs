@@ -65,14 +65,8 @@ pub async fn parse(pipedef: &str) -> Result<Pipeline, String> {
         return Err("python3 has no stdin".into());
     };
     let mut input = library_line();
-    input.extend(glue_stdin(
-        pipedef,
-        Value::Null,
-        Value::Null,
-        None,
-        None,
-        None,
-    ));
+    let line = glue_stdin(pipedef, Value::Null, Value::Null, None, None, None);
+    input.extend(line);
     stdin
         .write_all(&input)
         .await
@@ -113,14 +107,8 @@ pub async fn views(
         return Err("python3 has no pipes".into());
     };
     let mut input = library_line();
-    input.extend(glue_stdin(
-        pipedef,
-        Value::Null,
-        Value::Null,
-        None,
-        None,
-        Some(run),
-    ));
+    let line = glue_stdin(pipedef, Value::Null, Value::Null, None, None, Some(run));
+    input.extend(line);
     // Owning stdin, this closes it once done, which ends a python still waiting for an answer.
     let talk = async move {
         let failed = |e: std::io::Error| format!("python3 failed: {e}");
