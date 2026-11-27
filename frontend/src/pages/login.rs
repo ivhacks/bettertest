@@ -1,9 +1,8 @@
 // The login page: a name and password, or a passkey.
 
-use crate::{account, passkey, post_json, view};
+use crate::{account, passkey, post_json, value, view};
 use gloo::utils::window;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 pub struct LoginPage {
@@ -56,12 +55,6 @@ impl Component for LoginPage {
                 true
             }
             LoginMsg::Submit => {
-                let value = |input: &NodeRef| {
-                    input
-                        .cast::<HtmlInputElement>()
-                        .map(|i| i.value())
-                        .unwrap_or_default()
-                };
                 let body = serde_json::json!({ "name": value(&self.name), "password": value(&self.password) });
                 let link = ctx.link().clone();
                 spawn_local(async move {

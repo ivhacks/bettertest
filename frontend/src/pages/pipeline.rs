@@ -4,13 +4,12 @@
 // the next snapshot arrived, and painting that snapshot before its columns were measured would
 // paint the header alone. The next grid is measured off-screen, then replaces this one.
 
-use crate::{account, cancel_run, fetch, follow, send, view};
+use crate::{account, act, cancel_run, follow, load, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement};
 use yew::prelude::*;
 
@@ -206,16 +205,9 @@ impl Component for PipelinePage {
                 return false;
             }
             PipelineMsg::StartRun => {
-                let url = format!("/api/start-run/{}", ctx.props().id);
-                let link = ctx.link().clone();
-                // The new run shows up through the live stream like any other change.
-                spawn_local(async move {
-                    if let Err(e) = send(Request::post(&url).build()).await {
-                        link.send_message(PipelineMsg::Notice(format!(
-                            "could not start a run: {e}"
-                        )));
-                    }
-                });
+                let request = Request::post(&format!("/api/start-run/{}", ctx.props().id)).build();
+                let notice = ctx.link().callback(PipelineMsg::Notice);
+                act(request, "could not start a run", notice);
                 return false;
             }
         }
@@ -392,14 +384,11 @@ fn measure_grid(root: &Element, pipeline: &Pipeline) -> view::GridLayout {
 
 /// Has the boss draw the views of `run` for its results.
 fn draw_views(ctx: &Context<PipelinePage>, run: &str) {
-    let url = format!("/api/run/{run}/views");
-    let link = ctx.link().clone();
+    let request = Request::get(&format!("/api/run/{run}/views")).build();
     let run = run.to_string();
-    spawn_local(async move {
-        match fetch(Request::get(&url).build()).await {
-            Ok(views) => link.send_message(PipelineMsg::Views(run, views)),
-            Err(e) => link.send_message(PipelineMsg::Notice(format!("no views: {e}"))),
-        }
+    let drawn = move |views| PipelineMsg::Views(run, views);
+    load(ctx.link(), request, drawn, |e| {
+        PipelineMsg::Notice(format!("no views: {e}"))
     });
 }
 
