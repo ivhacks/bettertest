@@ -90,6 +90,18 @@ class Test(Stage):
         run("tar -xf /tmp/app.tar -C /opt && /opt/app/bin/app --version")
 ```
 
+For IDE support (completion, types, no red squiggles under `from bettertest import ...`), install
+the library from the repo into a venv, editable, once after cloning:
+
+```sh
+uv sync                  # .venv at the repo root, with pylib/ installed editable
+# or, without uv:
+python3 -m venv .venv && .venv/bin/pip install -e pylib
+```
+
+Editors find `.venv` at the repo root by themselves (Zed, VS Code, PyCharm). On a worker nothing
+is installed: the binary carries the library.
+
 A stage is a step, not a group: put each task in the first stage after everything it needs, and
 it runs as soon as it can.
 
