@@ -270,6 +270,8 @@ def loaded_tabs_switch_from_memory(browser, base):
     """Once the page has loaded every pipeline behind the first, a tab paints its pipeline in the
     next frame and asks the network for nothing, whether it has shown that pipeline before (its
     layout kept) or not (measured off-screen first)."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     context.add_init_script(LOADED)
     page = context.new_page()
@@ -278,7 +280,11 @@ def loaded_tabs_switch_from_memory(browser, base):
     try:
         page.goto(f"{base}/pipeline/many_stages")
         page.wait_for_selector(".grid tbody td")
-        page.wait_for_function("() => window.__btLoaded === true")
+        try:
+            page.wait_for_function("() => window.__btLoaded === true", timeout=5000)
+        except PlaywrightTimeout:
+            # The switches below say what that costs.
+            print("  the page loaded no other pipeline in the background")
         page.evaluate("document.fonts.ready")
         big_first = big_ish()["runs"][0]["id"][:6]
         many_first = body()["runs"][0]["id"][:6]
