@@ -349,13 +349,6 @@ async fn get_settings(State(boss): State<Shared>) -> Result<Json<Settings>, Fail
     boss.db().settings().map(Json).map_err(internal)
 }
 
-#[derive(Serialize)]
-struct Swept {
-    // How many tasks lost their log and their artifacts to the new settings.
-    logs: usize,
-    artifacts: usize,
-}
-
 /// Saves the settings and applies them at once, so what they no longer keep is gone by the time
 /// this returns.
 async fn put_settings(
@@ -392,8 +385,7 @@ fn live<S: Serialize + Send + 'static>(
     let Some(mut current) = current else {
         return Err((StatusCode::NOT_FOUND, "not found".into()));
     };
-    let accepted = headers.get(header::ACCEPT_ENCODING);
-    let gzip = accepts_gzip(accepted.and_then(|v| v.to_str().ok()).unwrap_or_default());
+    let gzip = accepts_gzip(text_header(headers, header::ACCEPT_ENCODING));
     let mut wire = Wire::new(gzip);
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
@@ -437,22 +429,13 @@ fn live<S: Serialize + Send + 'static>(
     });
 
     let body = Body::from_stream(ReceiverStream::new(rx).map(Ok::<_, Infallible>));
-    let mut response = (
-        [
-            (header::CONTENT_TYPE, "text/event-stream"),
-            (header::CACHE_CONTROL, "no-cache"),
-            (header::VARY, "accept-encoding"),
-        ],
-        body,
-    )
-        .into_response();
-    if gzip {
-        let gzip = header::HeaderValue::from_static("gzip");
-        response
-            .headers_mut()
-            .insert(header::CONTENT_ENCODING, gzip);
-    }
-    Ok(response)
+    let sse = [
+        (header::CONTENT_TYPE, "text/event-stream"),
+        (header::CACHE_CONTROL, "no-cache"),
+        (header::VARY, "accept-encoding"),
+    ];
+    let encoded = gzip.then_some([(header::CONTENT_ENCODING, "gzip")]);
+    Ok((sse, encoded, body).into_response())
 }
 
 /// Sends `message` down a live stream, through `wire`. False once the browser is gone.
@@ -509,8 +492,7 @@ fn valid_pipeline_name(name: &str) -> bool {
 /// A browser that could not start the web ui says why, and the boss logs it: the page alone would
 /// show it only to whoever is holding that browser.
 async fn startup_error(headers: HeaderMap, body: String) {
-    let agent = headers.get(header::USER_AGENT);
-    let agent = agent.and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let agent = text_header(&headers, header::USER_AGENT);
     let said: String = body.chars().take(2000).collect();
     println!("a browser could not start the web ui ({agent}): {said:?}");
 }
@@ -596,10 +578,7 @@ async fn install_sh(State(boss): State<Shared>, headers: HeaderMap, uri: Uri) ->
         Ok(arch) => arch,
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+    let host = text_header(&headers, header::HOST);
     let Some(origin) = public_origin(boss.tls.is_some(), host) else {
         return (StatusCode::BAD_REQUEST, "need a plain host header").into_response();
     };
@@ -656,29 +635,26 @@ async fn home(headers: HeaderMap, State(boss): State<Shared>) -> Response {
 /// The HTML document. Gzipped when the browser asks and that is smaller.
 fn document(headers: &HeaderMap, html: String) -> Response {
     let plain = html.into_bytes();
-    let accepted = headers
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let gzip = accepts_gzip(accepted)
+    let gzip = accepts_gzip(text_header(headers, header::ACCEPT_ENCODING))
         .then(|| gzip_smaller(&plain))
         .flatten();
     let common = [
         (header::CONTENT_TYPE, "text/html; charset=utf-8"),
         (header::CACHE_CONTROL, "no-cache"),
     ];
-    match gzip {
-        Some(body) => (
-            common,
-            [
-                (header::VARY, "accept-encoding"),
-                (header::CONTENT_ENCODING, "gzip"),
-            ],
-            body,
-        )
-            .into_response(),
-        None => (common, plain).into_response(),
-    }
+    let encoded = gzip.is_some().then_some([
+        (header::VARY, "accept-encoding"),
+        (header::CONTENT_ENCODING, "gzip"),
+    ]);
+    (common, encoded, gzip.unwrap_or(plain)).into_response()
+}
+
+/// Header `name` as text, or "" without one.
+fn text_header(headers: &HeaderMap, name: header::HeaderName) -> &str {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
 }
 
 /// Gzip of `plain` when it is actually smaller. None leaves the caller sending `plain`: the
@@ -713,8 +689,7 @@ fn embedded<Files: rust_embed::RustEmbed>(headers: &HeaderMap, path: &str) -> Re
     let vary = gzip
         .is_some()
         .then_some([(header::VARY, "accept-encoding")]);
-    let accepted = headers.get(header::ACCEPT_ENCODING);
-    let accepted = accepted.and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let accepted = text_header(headers, header::ACCEPT_ENCODING);
     // index.html names the hashed shell, so a browser has to recheck it, and so do wasm-bindgen's
     // snippets, whose names stay the same when their code changes. Everything else has a content
     // hash or, under assets/, a version in its name, and can be kept forever.
@@ -726,16 +701,11 @@ fn embedded<Files: rust_embed::RustEmbed>(headers: &HeaderMap, path: &str) -> Re
         (header::CONTENT_TYPE, file.metadata.mimetype()),
         (header::CACHE_CONTROL, cache),
     ];
-    match gzip.filter(|_| accepts_gzip(accepted)) {
-        Some(gzip) => (
-            headers,
-            vary,
-            [(header::CONTENT_ENCODING, "gzip")],
-            gzip.data,
-        )
-            .into_response(),
-        None => (headers, vary, file.data).into_response(),
-    }
+    let gzip = gzip.filter(|_| accepts_gzip(accepted));
+    let encoded = gzip
+        .is_some()
+        .then_some([(header::CONTENT_ENCODING, "gzip")]);
+    (headers, vary, encoded, gzip.map_or(file.data, |g| g.data)).into_response()
 }
 
 /// `gzip;q=0` refuses gzip. Names are matched case-insensitively, as the spec says.

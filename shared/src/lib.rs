@@ -261,6 +261,13 @@ pub struct Settings {
     pub log_days: Option<u32>,
 }
 
+/// What saving the settings deleted right away: how many tasks lost their log and their artifacts.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Swept {
+    pub logs: usize,
+    pub artifacts: usize,
+}
+
 /// What a user may do, each role everything the one before it may. The logged-out user has one too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

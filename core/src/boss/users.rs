@@ -64,16 +64,8 @@ pub(super) struct Pending {
 pub(super) const MOST_CEREMONIES: usize = 10_000;
 
 /// Who the request is: its session's user, or the logged-out user. Its role is the higher of the two,
-/// so logging in never takes anything away. Extends a session that is in use.
-pub(super) fn whoami(
-    boss: &Boss,
-    headers: &HeaderMap,
-    peer: Option<&tls::Peer>,
-) -> Result<Me, Failure> {
-    who(boss, headers, peer).map(|(me, _)| me)
-}
-
-/// whoami, and the id of its user when it is one (not logged out, not a running task).
+/// so logging in never takes anything away. Extends a session that is in use. With it, the id of
+/// its user when it is one (not logged out, not a running task).
 pub(super) fn who(
     boss: &Boss,
     headers: &HeaderMap,
@@ -133,14 +125,6 @@ pub(super) fn who(
     Ok((logged_out, None))
 }
 
-/// Header `name` as text, or "" without one.
-fn text_header(headers: &HeaderMap, name: header::HeaderName) -> &str {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-}
-
 /// Lets a request through if who sent it may do what it asks (see auth::needed). Otherwise 401 or
 /// 403, with what to do about it.
 pub(super) async fn guard(
@@ -155,8 +139,8 @@ pub(super) async fn guard(
         .extensions()
         .get::<ConnectInfo<tls::Peer>>()
         .map(|c| &c.0);
-    let me = match whoami(&boss, request.headers(), peer) {
-        Ok(me) => me,
+    let me = match who(&boss, request.headers(), peer) {
+        Ok((me, _)) => me,
         Err(failure) => return failure.into_response(),
     };
     if me.role >= needed {
@@ -185,7 +169,7 @@ pub(super) async fn get_me(
     ConnectInfo(peer): ConnectInfo<tls::Peer>,
     headers: HeaderMap,
 ) -> Result<Json<Me>, Failure> {
-    whoami(&boss, &headers, Some(&peer)).map(Json)
+    who(&boss, &headers, Some(&peer)).map(|(me, _)| Json(me))
 }
 
 #[derive(Deserialize)]
@@ -357,14 +341,15 @@ pub(super) async fn set_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// A user, or a credential, by id.
 #[derive(Deserialize)]
-pub(super) struct UserId {
+pub(super) struct Id {
     pub(super) id: i64,
 }
 
 pub(super) async fn remove_user(
     State(boss): State<Shared>,
-    Json(user): Json<UserId>,
+    Json(user): Json<Id>,
 ) -> Result<StatusCode, Failure> {
     if user.id == 0 {
         return Err((
@@ -381,7 +366,7 @@ pub(super) async fn remove_user(
 /// its hash.
 pub(super) async fn new_token(
     State(boss): State<Shared>,
-    Json(user): Json<UserId>,
+    Json(user): Json<Id>,
 ) -> Result<Json<NewToken>, Failure> {
     if user.id == 0 {
         return Err((StatusCode::BAD_REQUEST, "logged out needs no token".into()));
@@ -393,7 +378,7 @@ pub(super) async fn new_token(
 
 pub(super) async fn revoke_tokens(
     State(boss): State<Shared>,
-    Json(user): Json<UserId>,
+    Json(user): Json<Id>,
 ) -> Result<StatusCode, Failure> {
     boss.db().revoke_api_tokens(user.id).map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
@@ -403,7 +388,7 @@ pub(super) async fn revoke_tokens(
 /// HTTPS and is that user. The boss keeps only its fingerprint; key and file leave with this answer.
 pub(super) async fn new_certificate(
     State(boss): State<Shared>,
-    Json(user): Json<UserId>,
+    Json(user): Json<Id>,
 ) -> Result<Json<NewCertificate>, Failure> {
     if boss.tls.is_none() {
         return Err((
@@ -441,15 +426,10 @@ pub(super) async fn new_certificate(
     }))
 }
 
-#[derive(Deserialize)]
-pub(super) struct CredentialId {
-    pub(super) id: i64,
-}
-
 /// Revokes a client certificate or a passkey.
 pub(super) async fn revoke_credential(
     State(boss): State<Shared>,
-    Json(credential): Json<CredentialId>,
+    Json(credential): Json<Id>,
 ) -> Result<StatusCode, Failure> {
     check_lockout(&boss, |users| {
         for u in users.iter_mut() {
@@ -467,18 +447,6 @@ pub(super) async fn revoke_credential(
         .revoke_credential(credential.id)
         .map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// A user's passkeys, as webauthn-rs keeps them.
-pub(super) fn user_passkeys(
-    boss: &Boss,
-    user: i64,
-) -> Result<Vec<webauthn_rs::prelude::Passkey>, Failure> {
-    let records = boss.db().user_passkeys(user).map_err(internal)?;
-    records
-        .iter()
-        .map(|r| serde_json::from_str(r).map_err(internal))
-        .collect()
 }
 
 #[derive(Deserialize)]
@@ -516,7 +484,12 @@ pub(super) async fn new_passkey_options(
     };
     let name = boss.db().user_name(user).map_err(internal)?;
     let name = name.ok_or_else(|| not_found(format!("user {user}")))?;
-    let existing = user_passkeys(&boss, user)?;
+    // The user's passkeys, as webauthn-rs keeps them.
+    let records = boss.db().user_passkeys(user).map_err(internal)?;
+    let existing: Vec<webauthn_rs::prelude::Passkey> = records
+        .iter()
+        .map(|r| serde_json::from_str(r).map_err(internal))
+        .collect::<Result<_, Failure>>()?;
     room_for_passkey(&name, existing.len())?;
     // An authenticator that already holds one of the user's passkeys says so instead of making
     // another.
@@ -553,17 +526,12 @@ pub(super) struct Finish<T> {
     pub(super) credential: T,
 }
 
-#[derive(Serialize)]
-pub(super) struct PasskeyAdded {
-    pub(super) label: String,
-}
-
 /// Finishes adding a passkey, once webauthn-rs finds that what the authenticator made checks out.
 pub(super) async fn new_passkey(
     State(boss): State<Shared>,
     headers: HeaderMap,
     Json(finish): Json<Finish<RegisterPublicKeyCredential>>,
-) -> Result<Json<PasskeyAdded>, Failure> {
+) -> Result<Json<serde_json::Value>, Failure> {
     let bad = |why: String| (StatusCode::BAD_REQUEST, why);
     let Ceremony::Register { user, state } = boss.end_ceremony(&finish.ceremony)? else {
         return Err(bad("that ceremony was for logging in".into()));
@@ -586,7 +554,7 @@ pub(super) async fn new_passkey(
     let label = next_label(&name, keys.iter().map(|k| &k.label));
     db.add_passkey(user, &label, &credential, &record)
         .map_err(internal)?;
-    Ok(Json(PasskeyAdded { label }))
+    Ok(Json(serde_json::json!({ "label": label })))
 }
 
 /// Starts logging in with a passkey: the options for navigator.credentials.get(), and the

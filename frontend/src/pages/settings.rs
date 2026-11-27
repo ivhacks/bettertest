@@ -24,13 +24,6 @@ pub enum SettingsMsg {
     Saved(Settings, Swept),
 }
 
-/// What saving the settings deleted right away.
-#[derive(serde::Deserialize)]
-pub struct Swept {
-    logs: usize,
-    artifacts: usize,
-}
-
 impl Component for SettingsPage {
     type Message = SettingsMsg;
     type Properties = ();

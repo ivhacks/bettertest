@@ -461,7 +461,7 @@ pub(super) async fn cancel_run(
     headers: HeaderMap,
 ) -> Result<StatusCode, Failure> {
     let id = Uuid::parse_str(&run).map_err(|_| not_found(format!("run {run}")))?;
-    let me = whoami(&boss, &headers, Some(&peer))?;
+    let (me, _) = who(&boss, &headers, Some(&peer))?;
     let reason = match me.logged_in {
         true => format!("cancelled by {}", me.name),
         false => "cancelled from the web ui".to_string(),

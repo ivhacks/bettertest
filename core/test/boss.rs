@@ -652,6 +652,8 @@ async fn the_home_document_is_gzipped_when_the_browser_takes_gzip() {
     headers.insert(header::ACCEPT_ENCODING, "gzip;q=0".parse().unwrap());
     let plain = document(&headers, html.clone());
     assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+    assert!(plain.headers().get(header::VARY).is_none());
+    assert_eq!(plain.headers()[header::CACHE_CONTROL], "no-cache");
     let body = axum::body::to_bytes(plain.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -1064,6 +1066,26 @@ async fn first_snapshot(boss: &Shared, name: &str) -> (Duration, usize, Pipeline
     match serde_json::from_str(data).expect("json") {
         Live::Snapshot(snapshot) => (took, wire, snapshot),
         Live::Event(event) => panic!("expected a snapshot first, got {event:?}"),
+    }
+}
+
+/// A live stream is gzipped only for a browser that takes gzip, and says so either way it varies.
+#[tokio::test]
+async fn a_live_stream_is_gzipped_only_when_the_browser_takes_gzip() {
+    let boss = boss(BTreeMap::new());
+    for (accept, encoding) in [(Some("gzip, br"), Some("gzip")), (None, None)] {
+        let mut headers = HeaderMap::new();
+        if let Some(accept) = accept {
+            headers.insert(header::ACCEPT_ENCODING, accept.parse().unwrap());
+        }
+        let response = workers::workers_events(State(boss.clone()), headers)
+            .await
+            .expect("events");
+        let got = |name| response.headers().get(name).map(|v| v.to_str().unwrap());
+        assert_eq!(got(header::CONTENT_TYPE), Some("text/event-stream"));
+        assert_eq!(got(header::CACHE_CONTROL), Some("no-cache"));
+        assert_eq!(got(header::VARY), Some("accept-encoding"));
+        assert_eq!(got(header::CONTENT_ENCODING), encoding);
     }
 }
 
