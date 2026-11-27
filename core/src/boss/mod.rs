@@ -601,11 +601,11 @@ async fn download_binary(AxumPath(name): AxumPath<String>) -> Response {
         Err(e) if e.kind() == ErrorKind::NotFound => {
             return (StatusCode::NOT_FOUND, format!("no {name} in {DL_DIR}")).into_response();
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal(e).into_response(),
     };
     let length = match file.metadata().await {
         Ok(meta) => meta.len(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal(e).into_response(),
     };
     (
         [
@@ -799,13 +799,10 @@ impl Boss {
 
     /// Tells the forge how a run of a pipeline in a repo is doing on its commit.
     async fn report(&self, run: &Run, state: &str, description: &str, link: Option<&str>) {
-        let Some(commit) = &run.commit else {
-            return;
-        };
         let Some(Pipedef::Repo { repo, .. }) = self.pipedef(&run.pipeline) else {
             return;
         };
-        let Some(repo) = self.repos.get(repo) else {
+        let (Some(commit), Some(repo)) = (&run.commit, self.repos.get(repo)) else {
             return;
         };
         let reported = repo
