@@ -176,7 +176,8 @@ impl Component for PipelinePage {
             }
             PipelineMsg::Resized => {
                 // The others were measured at the old size: each is measured again before it shows.
-                self.layouts.retain(|name, _| Some(name) == self.shown.as_ref());
+                self.layouts
+                    .retain(|name, _| Some(name) == self.shown.as_ref());
             }
             PipelineMsg::Cancel(run) => {
                 cancel_run(run, ctx.link().callback(PipelineMsg::Notice));
@@ -233,7 +234,10 @@ impl Component for PipelinePage {
         let start = html! {
             <button class="primary" onclick={ctx.link().callback(|_| PipelineMsg::StartRun)}>{ "New Run" }</button>
         };
-        let shown = self.shown.as_ref().and_then(|name| self.pipelines.get(name));
+        let shown = self
+            .shown
+            .as_ref()
+            .and_then(|name| self.pipelines.get(name));
         let tabs = match shown {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},

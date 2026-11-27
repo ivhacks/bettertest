@@ -1210,7 +1210,9 @@ async fn every_pipeline_loads_in_one_stream_with_the_events_of_all() {
         lock(&boss.pipedefs).insert(name.into(), Pipedef::File(file.clone()));
         files.push(file);
     }
-    let (_, second) = runs::load_pipeline(&boss, "second", None).await.expect("load");
+    let (_, second) = runs::load_pipeline(&boss, "second", None)
+        .await
+        .expect("load");
     let second = second.expect("parses");
     let start = |boss: &Shared| {
         boss.record(|db| {
@@ -1247,12 +1249,17 @@ async fn every_pipeline_loads_in_one_stream_with_the_events_of_all() {
     let runs = |s: &PipelineSnapshot| s.runs.iter().map(|run| run.id).collect::<Vec<_>>();
     let (first_snapshot, second_snapshot) = (&snapshots[0], &snapshots[1]);
     assert_eq!((stages(first_snapshot), runs(first_snapshot)), (1, vec![]));
-    assert_eq!((stages(second_snapshot), runs(second_snapshot)), (2, vec![old.id]));
+    assert_eq!(
+        (stages(second_snapshot), runs(second_snapshot)),
+        (2, vec![old.id])
+    );
     assert!(snapshots.iter().all(|s| s.pipelines == ["first", "second"]));
 
     let new = start(&boss);
     match next().await {
-        Live::Event(Event::RunStarted(run)) => assert_eq!((run.pipeline.as_str(), run.id), ("second", new.id)),
+        Live::Event(Event::RunStarted(run)) => {
+            assert_eq!((run.pipeline.as_str(), run.id), ("second", new.id))
+        }
         other => panic!("expected the second pipeline's new run, got {other:?}"),
     }
     for file in files {

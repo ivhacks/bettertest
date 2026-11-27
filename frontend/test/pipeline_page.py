@@ -9,10 +9,12 @@ and a dozen tabs:
 - run ids are muted text, not link-colored;
 - switching to a big-ish pipeline (5 stages of 10 tasks, 50 runs: 2 500 cells) draws all its runs
   within SWITCH_MS of the tab's click.
+- once the page has loaded every pipeline behind the first, a tab paints its pipeline in the next
+  frame and fetches nothing;
 - switching tabs, and going back and forward, never paints an intermediate frame: the grid does
-  not empty, no skeleton appears, and the other pipeline is not shown half-drawn. The snapshot
-  is held back so the wait is real. Chromium (on a CPU slowed 20 times) and WebKit, at 390 and
-  1280.
+  not empty, no skeleton appears, and the other pipeline is not shown half-drawn. The first
+  switch is to a pipeline the stand-in holds back, so the wait is real. Chromium (on a CPU slowed
+  20 times) and WebKit, at 390 and 1280.
 
 The boss is shell.py's stand-in: frontend/dist, plus this pipeline's snapshot. Like shell.py, it
 runs in Playwright's image (see shell_nav.rs, which runs both in cargo test).
