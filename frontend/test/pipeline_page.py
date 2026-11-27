@@ -21,6 +21,7 @@ runs in Playwright's image (see shell_nav.rs, which runs both in cargo test).
 import os
 import re
 import sys
+import threading
 
 import shell
 
@@ -223,6 +224,79 @@ def switching_pipelines_draws_at_once(browser, base):
         page.close()
 
 
+# Sets window.__btLoaded once the stream of every pipeline has handed the page its snapshot. The
+# app's own listener runs in the same dispatch, and its work in microtasks after it: this timeout
+# comes later still.
+LOADED = """(() => {
+    const Original = window.EventSource;
+    window.EventSource = class extends Original {
+        constructor(url, options) {
+            super(url, options);
+            if (String(url).endsWith('/api/pipelines/events')) {
+                this.addEventListener('message', () => setTimeout(() => { window.__btLoaded = true; }));
+            }
+        }
+    };
+})()"""
+
+# Clicks pipeline `name`'s tab, then looks at every frame until its grid shows: which frame that was,
+# and what it showed.
+SWITCH_FRAMES = """(name) => new Promise(done => {
+    [...document.querySelectorAll('nav.tabs a.tab')].find(a => a.textContent === name).click();
+    let frames = 0;
+    const look = () => {
+        frames += 1;
+        const current = document.querySelector('nav.tabs a.tab.current');
+        const rows = [...document.querySelectorAll('main .grid tbody tr')];
+        if ((current && current.textContent === name && rows.length) || frames === 120) {
+            done({
+                frames,
+                current: current && current.textContent,
+                stage: document.querySelector('main .grid th.stage span')?.textContent,
+                rows: rows.length,
+                first: rows[0]?.querySelector('th.run')?.textContent,
+            });
+        } else {
+            requestAnimationFrame(look);
+        }
+    };
+    requestAnimationFrame(look);
+})"""
+
+
+def loaded_tabs_switch_from_memory(browser, base):
+    """Once the page has loaded every pipeline behind the first, a tab paints its pipeline in the
+    next frame and asks the network for nothing, whether it has shown that pipeline before (its
+    layout kept) or not (measured off-screen first)."""
+    context = browser.new_context(viewport={"width": 1440, "height": 900})
+    context.add_init_script(LOADED)
+    page = context.new_page()
+    fetched = []
+    page.on("request", lambda request: fetched.append(request.url))
+    try:
+        page.goto(f"{base}/pipeline/many_stages")
+        page.wait_for_selector(".grid tbody td")
+        page.wait_for_function("() => window.__btLoaded === true")
+        page.evaluate("document.fonts.ready")
+        big_first = big_ish()["runs"][0]["id"][:6]
+        many_first = body()["runs"][0]["id"][:6]
+        for name, stage, rows, first in [
+            ("big_ish", "Step0", BIG_RUNS, big_first),
+            ("many_stages", stage_name(0), 3, many_first),
+            ("big_ish", "Step0", BIG_RUNS, big_first),
+        ]:
+            fetched.clear()
+            shown = page.evaluate(SWITCH_FRAMES, name)
+            page.wait_for_timeout(300)
+            print(f"  -> {name}: {shown}, fetched {fetched}")
+            assert not fetched, f"switching to {name} fetched {fetched}"
+            want = {"frames": 1, "current": name, "stage": stage, "rows": rows, "first": first}
+            assert shown == want, f"switching to {name} showed {shown}, not {want}"
+            assert page.url.endswith(f"/pipeline/{name}"), page.url
+    finally:
+        context.close()
+
+
 def settle(page, url, ready):
     page.goto(url)
     page.wait_for_selector(ready)
@@ -310,8 +384,9 @@ def cells_answer_like_buttons(browser, base):
 RED_STAGES = [("Red", ["build", "test"]), ("Rose", ["lint", "pack"])]
 BLUE_STAGES = [("Blue", ["boot"]), ("Bay", ["probe"]), ("Bolt", ["ship"])]
 TABS = ["red", "blue"]
-# The stand-in holds the snapshot this long, inside the 500–1000ms the wait has to be real for.
-SNAPSHOT_DELAY = 0.8
+# The stand-in holds back the other pipelines this long after the tab's click, inside the
+# 500–1000ms the wait has to be real for.
+HOLD = 0.8
 # How many times slower than this machine Chromium runs the switches.
 CPU_SLOWDOWN = 20
 
@@ -489,7 +564,7 @@ def summarize(sample):
     )
 
 
-def assert_no_flicker(samples, before, after, action_at):
+def assert_no_flicker(samples, before, after, action_at, waits):
     bad = []
     seen_before = False
     seen_after = False
@@ -527,24 +602,29 @@ def assert_no_flicker(samples, before, after, action_at):
             header = sample["header"]
         if problems:
             bad.append(f"{summarize(sample)} :: {', '.join(problems)}")
-    assert seen_before, "the switch never showed the pipeline it left"
     assert not bad, f"{len(bad)} intermediate frame(s):\n" + "\n".join(bad[:12])
     assert seen_after, "the pipeline switched to never arrived"
-    assert held is not None and held >= 500, (
-        f"the new pipeline showed {held}ms after the switch; "
-        f"the snapshot is held {int(SNAPSHOT_DELAY * 1000)}ms, so this did not wait"
-    )
+    if waits:
+        assert seen_before, "the switch never showed the pipeline it left"
+        assert held is not None and held >= 500, (
+            f"the new pipeline showed {held}ms after the switch; "
+            f"its snapshot is held {int(HOLD * 1000)}ms, so this did not wait"
+        )
     return held
 
 
 def switch(page, how, name, before, after, shots, width):
+    """`click` switches to a pipeline the page has not loaded yet, which the stand-in holds back
+    for HOLD seconds; back and forward to ones it has shown already."""
     page.evaluate(WATCH, after)
     page.wait_for_timeout(50)
     action_at = page.evaluate(
         "() => { window.__bt.action = performance.now() - window.__bt.t0; return window.__bt.action; }"
     )
+    waits = how == "click"
     if how == "click":
         page.locator("nav.tabs a.tab", has_text=re.compile(rf"^{re.escape(name)}$")).click()
+        threading.Timer(HOLD, shell.RELEASED.set).start()
     elif how == "back":
         page.go_back(wait_until="commit")
     else:
@@ -558,7 +638,7 @@ def switch(page, how, name, before, after, shots, width):
     samples = page.evaluate("() => window.__bt.samples")
     page.evaluate("() => window.__btStop()")
     assert page.url.endswith(f"/pipeline/{name}"), page.url
-    held = assert_no_flicker(samples, before, after, action_at)
+    held = assert_no_flicker(samples, before, after, action_at, waits)
     print(f"  {how} -> {name} held the previous pipeline {held}ms across {len(samples)} samples")
 
 
@@ -566,7 +646,6 @@ def switching_tabs_never_flickers(chromium, webkit, base):
     """Clicking a pipeline tab, and the browser's back and forward, paints no intermediate frame."""
     shell.PIPELINES["red"] = shell.snapshot(flicker_pipeline("red", RED_STAGES, 3))
     shell.PIPELINES["blue"] = shell.snapshot(flicker_pipeline("blue", BLUE_STAGES, 1))
-    shell.SNAPSHOT_DELAY = SNAPSHOT_DELAY
     shots = os.environ.get("BT_SHOTS")
     try:
         for browser_name, browser in (("chromium", chromium), ("webkit", webkit)):
@@ -584,6 +663,7 @@ def switching_tabs_never_flickers(chromium, webkit, base):
                     cdp = context.new_cdp_session(page)
                     cdp.send("Emulation.setCPUThrottlingRate", {"rate": CPU_SLOWDOWN})
                 try:
+                    shell.RELEASED.clear()
                     page.goto(f"{base}/pipeline/red", wait_until="domcontentloaded")
                     page.wait_for_selector(".grid tbody td")
                     page.evaluate("() => document.fonts.ready")
@@ -595,7 +675,7 @@ def switching_tabs_never_flickers(chromium, webkit, base):
                 finally:
                     context.close()
     finally:
-        shell.SNAPSHOT_DELAY = 0.0
+        shell.RELEASED.set()
 
 
 def main():
@@ -624,6 +704,7 @@ def main():
                 nothing_scrolls_sideways,
                 cells_answer_like_buttons,
                 switching_pipelines_draws_at_once,
+                loaded_tabs_switch_from_memory,
                 tabs_never_flicker,
             ]
             for test in tests:

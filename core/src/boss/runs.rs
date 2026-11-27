@@ -123,31 +123,72 @@ pub(super) async fn pipeline_events(
     headers: HeaderMap,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, Failure> {
-    let pipeline = shown_pipeline(&boss, &name).await?;
-    if let Ok(pipeline) = &pipeline {
-        for url in pipeline.workers() {
-            boss.enroll(url);
-        }
-    }
+    let pipeline = shown_and_enrolled(&boss, &name).await?;
     let pipelines = boss.pipelines();
-    let snapshot = move |db: &Db| {
-        Ok(Some(PipelineSnapshot {
-            name: name.clone(),
-            pipelines: pipelines.clone(),
-            pipeline: pipeline.clone().map(Arc::new),
-            runs: db
-                .runs(&name, RECENT_RUNS as i64)?
-                .into_iter()
-                .map(Arc::new)
-                .collect(),
-        }))
-    };
+    let snapshot = move |db: &Db| pipeline_snapshot(db, &name, &pipelines, &pipeline).map(Some);
     let wanted = |snapshot: &PipelineSnapshot, event: &Event| {
         event
             .run()
             .is_some_and(|(pipeline, _)| pipeline == snapshot.name)
     };
     live(boss, &headers, snapshot, wanted)
+}
+
+/// Every pipeline's snapshot, then the events of all their runs: what the pipeline page holds so a
+/// tab paints from memory. One stream for them all, because over HTTP/1.1 a browser opens at most
+/// six connections to the boss, and a stream per pipeline would take every one of them.
+pub(super) async fn pipelines_events(
+    State(boss): State<Shared>,
+    headers: HeaderMap,
+) -> Result<Response, Failure> {
+    let pipelines = boss.pipelines();
+    let mut parsed = vec![];
+    for name in &pipelines {
+        // One the boss cannot read shows why in place of its grid, as a broken pipedef does.
+        let pipeline = shown_and_enrolled(&boss, name).await;
+        parsed.push((name.clone(), pipeline.unwrap_or_else(|(_, why)| Err(why))));
+    }
+    let snapshot = move |db: &Db| {
+        let snapshots = parsed
+            .iter()
+            .map(|(name, pipeline)| pipeline_snapshot(db, name, &pipelines, pipeline))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(snapshots))
+    };
+    live(boss, &headers, snapshot, |_, event| event.run().is_some())
+}
+
+/// Pipeline `name` as its page shows it. Showing it enrolls the workers it names.
+async fn shown_and_enrolled(
+    boss: &Shared,
+    name: &str,
+) -> Result<Result<Arc<Pipeline>, String>, Failure> {
+    let pipeline = shown_pipeline(boss, name).await?;
+    if let Ok(pipeline) = &pipeline {
+        for url in pipeline.workers() {
+            boss.enroll(url);
+        }
+    }
+    Ok(pipeline.map(Arc::new))
+}
+
+/// What pipeline `name`'s page starts from: its pipedef as shown, and its newest runs.
+fn pipeline_snapshot(
+    db: &Db,
+    name: &str,
+    pipelines: &[String],
+    pipeline: &Result<Arc<Pipeline>, String>,
+) -> rusqlite::Result<PipelineSnapshot> {
+    Ok(PipelineSnapshot {
+        name: name.to_string(),
+        pipelines: pipelines.to_vec(),
+        pipeline: pipeline.clone(),
+        runs: db
+            .runs(name, RECENT_RUNS as i64)?
+            .into_iter()
+            .map(Arc::new)
+            .collect(),
+    })
 }
 
 /// Starts a run of `name`. A pipeline in a repo runs at the newest commit of the default branch.

@@ -1,14 +1,15 @@
 // The pipeline page: the run grid, newest run on top, with New Run and the pipeline tabs. With
 // ?run=<id>, what the tasks of that run came to instead of the grid, under the pipedef's views.
-// One page stays mounted across pipelines. Destroying it on a tab would paint an empty grid until
-// the next snapshot arrived, and painting that snapshot before its columns were measured would
-// paint the header alone. The next grid is measured off-screen, then replaces this one.
+// One page stays mounted across pipelines and holds them all, kept live: it opens on the one the
+// URL names, then loads every pipeline in one stream behind it, so a tab paints from memory. A
+// pipeline shown for the first time is measured off-screen while the grid that is up stays:
+// painting it before its columns were measured would paint the header alone.
 
 use crate::{account, act, cancel_run, follow, load, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use wasm_bindgen::prelude::*;
 use web_sys::{Element, HtmlElement};
 use yew::prelude::*;
@@ -21,44 +22,44 @@ pub struct PipelineProps {
 }
 
 pub struct PipelinePage {
-    snapshot: Option<PipelineSnapshot>,
-    // The pipeline a tab switched to, measured off-screen before it replaces `snapshot`.
-    pending: Option<PipelineSnapshot>,
+    // Every pipeline loaded so far, by name.
+    pipelines: HashMap<String, PipelineSnapshot>,
+    // How each pipeline's grid lays out at the width it has now, once measured. Until the one on
+    // screen is, its grid is only its header: the rows go in after, laid out once, rather than
+    // laid out and then restyled for the measured layout.
+    layouts: HashMap<String, view::GridLayout>,
+    // The pipeline on screen. Behind the URL while the one a tab chose loads or is measured.
+    shown: Option<String>,
     notice: Option<String>,
     // The views of the run whose results show, once the boss has drawn them.
     views: Vec<view::View>,
-    // Measured after each render, from the columns and names as the browser lays them out.
-    layout: view::GridLayout,
     // A live event moves no column, so only a render after anything else measures again.
     measure: bool,
-    // Whether the names have been measured once. Until then the grid is only its header: the rows
-    // go in after, laid out once, rather than laid out and then restyled for the measured layout.
-    measured: bool,
     main: NodeRef,
-    // The off-screen grid `pending` is measured in.
+    // The off-screen grid a pipeline is measured in before it shows.
     staging: NodeRef,
     // Made once: a new callback would differ from the old one, and render every row again.
     cancel: Callback<String>,
     // The run whose results show instead of the grid.
     run: Option<String>,
-    // Which stream this page is following. A message from an older one is dropped.
-    generation: u32,
     _resize: EventListener,
     _fonts: EventListener,
-    _stream: crate::Followed,
+    // The stream of the pipeline the page opened on, until `all`'s snapshot has it too.
+    first: Option<crate::Followed>,
+    // Every pipeline's, opened once the first snapshot is in.
+    all: Option<crate::Followed>,
 }
 
 pub enum PipelineMsg {
-    Live(u32, Live<PipelineSnapshot>),
+    First(Live<PipelineSnapshot>),
+    All(Live<Vec<PipelineSnapshot>>),
     Notice(String),
-    StreamNotice(u32, String),
     // The run the views were drawn for, so a late reply cannot land on another.
     Views(String, Vec<view::View>),
     StartRun,
     Cancel(String),
-    Layout(view::GridLayout),
-    // `pending` has been measured and can replace the grid on screen.
-    Commit(view::GridLayout),
+    // How the named pipeline's grid lays out, measured on screen or off.
+    Measured(String, view::GridLayout),
     Resized,
 }
 
@@ -74,36 +75,35 @@ impl Component for PipelinePage {
         let fonts = gloo::utils::document().fonts();
         let run = ctx.props().run.clone();
         draw_views(ctx, run.as_deref());
-        // The stream stops when the page is destroyed, which leaving it for another page does too.
-        let generation = 1;
+        // The streams stop when the page is destroyed, which leaving it for another page does too.
+        let url = format!("/api/pipeline/{}/events", ctx.props().id);
+        let first = follow(
+            &url,
+            link.callback(PipelineMsg::First),
+            link.callback(PipelineMsg::Notice),
+        );
         Self {
-            snapshot: None,
-            pending: None,
+            pipelines: HashMap::new(),
+            layouts: HashMap::new(),
+            shown: None,
             notice: None,
             views: vec![],
-            layout: view::GridLayout::default(),
             measure: true,
-            measured: false,
             main: NodeRef::default(),
             staging: NodeRef::default(),
             cancel: link.callback(PipelineMsg::Cancel),
             run,
-            generation,
             _resize: EventListener::new(&window(), "resize", move |_| resized.emit(())),
             _fonts: EventListener::new(&fonts, "loadingdone", move |_| fonts_loaded.emit(())),
-            _stream: follow_pipeline(ctx, generation),
+            first: Some(first),
+            all: None,
         }
     }
 
     fn changed(&mut self, ctx: &Context<Self>, old: &Self::Properties) -> bool {
         if ctx.props().id != old.id {
-            self.run = ctx.props().run.clone();
-            self.generation = self.generation.wrapping_add(1);
-            // A measurement already under way belongs to the pipeline we just left.
-            self.pending = None;
-            self._stream = follow_pipeline(ctx, self.generation);
-            // Keep the grid that is up. The new snapshot replaces it once it has been measured.
-            return false;
+            self.settle(ctx);
+            return true;
         }
         if ctx.props().run != old.run {
             self.run = ctx.props().run.clone();
@@ -116,52 +116,45 @@ impl Component for PipelinePage {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            PipelineMsg::Live(ticket, _) | PipelineMsg::StreamNotice(ticket, _)
-                if ticket != self.generation =>
-            {
-                return false;
-            }
-            PipelineMsg::Live(_, Live::Snapshot(snapshot)) => {
-                let switching = self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|shown| shown.name != snapshot.name);
-                // The first snapshot has nothing to keep on screen. A pipedef that does not parse
-                // has no columns to measure, so it replaces the grid directly.
-                if switching && snapshot.pipeline.is_ok() {
-                    self.pending = Some(snapshot);
-                } else {
-                    if switching {
-                        self.measured = false;
-                        self.layout = view::GridLayout::default();
-                        self.views.clear();
-                        draw_views(ctx, self.run.as_deref());
-                    }
-                    self.snapshot = Some(snapshot);
-                    self.pending = None;
-                    self.notice = None;
+            // `all` has this pipeline's events now: one from here as well would apply twice.
+            PipelineMsg::First(_) if self.first.is_none() => return false,
+            PipelineMsg::First(Live::Snapshot(snapshot)) => {
+                self.keep(snapshot);
+                // Once there is a pipeline to show, every other loads behind it.
+                if self.all.is_none() {
+                    let link = ctx.link();
+                    let on_live = link.callback(PipelineMsg::All);
+                    let on_notice = link.callback(PipelineMsg::Notice);
+                    self.all = Some(follow("/api/pipelines/events", on_live, on_notice));
                 }
+                self.settle(ctx);
             }
-            PipelineMsg::Live(_, Live::Event(event)) => {
-                // The grid still showing is the previous pipeline. Events of the next one wait
-                // with it, so they are not drawn on the wrong grid.
-                if let Some(snapshot) = self.pending.as_mut() {
-                    snapshot.apply(&event);
+            PipelineMsg::All(Live::Snapshot(snapshots)) => {
+                self.first = None;
+                for snapshot in snapshots {
+                    self.keep(snapshot);
+                }
+                self.settle(ctx);
+            }
+            PipelineMsg::First(Live::Event(event)) | PipelineMsg::All(Live::Event(event)) => {
+                let Some((name, _)) = event.run() else {
                     return false;
-                }
-                if let Some(snapshot) = &mut self.snapshot {
+                };
+                let shown = self.shown.as_deref() == Some(name);
+                if let Some(snapshot) = self.pipelines.get_mut(name) {
                     snapshot.apply(&event);
                 }
                 // Views drawn while the run ran showed it unfinished.
-                if let (bettertest_shared::Event::RunFinished { run, .. }, Some(shown)) =
-                    (&event, &self.run)
-                    && run.to_string() == *shown
+                if shown
+                    && let (bettertest_shared::Event::RunFinished { run, .. }, Some(id)) =
+                        (&event, &self.run)
+                    && run.to_string() == *id
                 {
-                    draw_views(ctx, Some(shown));
+                    draw_views(ctx, Some(id));
                 }
-                return true;
+                return shown;
             }
-            PipelineMsg::StreamNotice(_, text) | PipelineMsg::Notice(text) => {
+            PipelineMsg::Notice(text) => {
                 self.notice = Some(text);
             }
             PipelineMsg::Views(run, views) => {
@@ -170,26 +163,21 @@ impl Component for PipelinePage {
                 }
                 self.views = views;
             }
-            PipelineMsg::Commit(layout) => {
-                let Some(snapshot) = self.pending.take() else {
-                    return false;
-                };
-                self.snapshot = Some(snapshot);
-                self.layout = layout;
-                self.measured = true;
-                // The off-screen measurement is the one this grid is drawn with. Measuring the
-                // visible grid again would move it a frame later.
-                self.measure = false;
-                self.notice = None;
-                self.views.clear();
-                draw_views(ctx, self.run.as_deref());
-                return true;
+            PipelineMsg::Measured(name, layout) => {
+                self.layouts.insert(name, layout);
+                let before = self.shown.clone();
+                self.settle(ctx);
+                if self.shown != before {
+                    // The off-screen measurement is the one this grid is drawn with. Measuring
+                    // it on screen again would move it a frame later.
+                    self.measure = false;
+                    return true;
+                }
             }
-            PipelineMsg::Layout(layout) => {
-                self.layout = layout;
-                self.measured = true;
+            PipelineMsg::Resized => {
+                // The others were measured at the old size: each is measured again before it shows.
+                self.layouts.retain(|name, _| Some(name) == self.shown.as_ref());
             }
-            PipelineMsg::Resized => {}
             PipelineMsg::Cancel(run) => {
                 cancel_run(run, ctx.link().callback(PipelineMsg::Notice));
                 return false;
@@ -209,31 +197,35 @@ impl Component for PipelinePage {
         // The next pipeline is in the page, hidden, at the width the grid will have. Measuring it
         // here and swapping on the next render is one visible frame: the grid that is up stays
         // until then.
-        if self.pending.is_some() {
-            let layout = self.measure_pending().unwrap_or_default();
-            self.measure = false;
-            ctx.link().send_message(PipelineMsg::Commit(layout));
+        if let Some(pipeline) = self.staged(ctx) {
+            let layout = self.measure_staged(pipeline).unwrap_or_default();
+            ctx.link()
+                .send_message(PipelineMsg::Measured(ctx.props().id.clone(), layout));
             return;
         }
-        let (Some(main), Some(snapshot)) = (self.main.cast::<Element>(), &self.snapshot) else {
-            return;
-        };
-        let Ok(pipeline) = &snapshot.pipeline else {
-            return;
-        };
         if !std::mem::take(&mut self.measure) || self.run.is_some() {
             return;
         }
+        let Some(name) = &self.shown else { return };
+        let (Some(main), Some(Ok(pipeline))) = (
+            self.main.cast::<Element>(),
+            self.pipelines.get(name).map(|shown| &shown.pipeline),
+        ) else {
+            return;
+        };
         let layout = measure_grid(&main, pipeline);
         // Only a real change renders again, so this settles after one round.
         let moved = |a: view::Tilt, b: view::Tilt| {
             (a.angle - b.angle).abs() > 0.5 || (a.height - b.height).abs() > 1.0
         };
-        let moved = moved(layout.stages, self.layout.stages)
-            || moved(layout.tasks, self.layout.tasks)
-            || layout.dense != self.layout.dense;
-        if moved || !self.measured {
-            ctx.link().send_message(PipelineMsg::Layout(layout));
+        let moved = self.layouts.get(name).is_none_or(|old| {
+            moved(layout.stages, old.stages)
+                || moved(layout.tasks, old.tasks)
+                || layout.dense != old.dense
+        });
+        if moved {
+            ctx.link()
+                .send_message(PipelineMsg::Measured(name.clone(), layout));
         }
     }
 
@@ -241,12 +233,13 @@ impl Component for PipelinePage {
         let start = html! {
             <button class="primary" onclick={ctx.link().callback(|_| PipelineMsg::StartRun)}>{ "New Run" }</button>
         };
-        let tabs = match &self.snapshot {
+        let shown = self.shown.as_ref().and_then(|name| self.pipelines.get(name));
+        let tabs = match shown {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},
         };
         let mut crumbs = html! {};
-        let body = match (&self.snapshot, &self.run) {
+        let body = match (shown, &self.run) {
             (None, _) => html! {},
             (Some(snapshot), Some(id)) => {
                 match snapshot.runs.iter().find(|run| run.id.to_string() == *id) {
@@ -262,20 +255,22 @@ impl Component for PipelinePage {
             }
             (Some(snapshot), None) => match &snapshot.pipeline {
                 Ok(pipeline) => {
-                    let measured = self.measured.then_some(&snapshot.runs);
+                    let layout = self.layouts.get(&snapshot.name);
+                    let measured = layout.map(|_| &snapshot.runs);
                     let rows = measured.into_iter().flatten().map(|run| {
                         html! {
                             <RunRow key={run.id.to_string()} pipeline={pipeline.clone()} run={run.clone()} />
                         }
                     });
-                    view::grid(pipeline, &self.layout, html! { { for rows } })
+                    let layout = layout.cloned().unwrap_or_default();
+                    view::grid(pipeline, &layout, html! { { for rows } })
                 }
                 Err(e) => view::notice(&Some(format!("the pipedef does not parse:\n{e}"))),
             },
         };
         // Off-screen, so the columns can be measured at the width the visible grid has. Nothing
         // on screen moves while it is here.
-        let staging = match self.pending.as_ref().and_then(|s| s.pipeline.as_ref().ok()) {
+        let staging = match self.staged(ctx) {
             Some(pipeline) => html! {
                 <div class="staging" aria-hidden="true" ref={self.staging.clone()}
                     style={STAGING}>
@@ -301,9 +296,53 @@ const STAGING: &str =
     "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;overflow:hidden";
 
 impl PipelinePage {
-    /// The layout `pending` will have, measured in a box as wide as the grid on screen.
-    fn measure_pending(&self) -> Option<view::GridLayout> {
-        let pipeline = self.pending.as_ref()?.pipeline.as_ref().ok()?;
+    /// Holds `snapshot` in place of what the page had of its pipeline.
+    fn keep(&mut self, snapshot: PipelineSnapshot) {
+        let name = snapshot.name.clone();
+        let old = self.pipelines.get(&name);
+        // Another pipedef lays out another way. The one on screen is measured again as it renders.
+        if old.is_some_and(|old| old.pipeline != snapshot.pipeline)
+            && self.shown.as_ref() != Some(&name)
+        {
+            self.layouts.remove(&name);
+        }
+        // Unchanged, the rows on screen stay as they are rather than render again.
+        if self.pipelines.get(&name) != Some(&snapshot) {
+            self.pipelines.insert(name, snapshot);
+        }
+    }
+
+    /// Shows the pipeline the URL names once it can paint whole: measured, with nothing to
+    /// measure (its pipedef does not parse), or the first the page shows, whose rows go in once
+    /// it is measured. Until then the grid that is up stays, and the next is measured off-screen.
+    fn settle(&mut self, ctx: &Context<Self>) {
+        let id = &ctx.props().id;
+        let Some(snapshot) = self.pipelines.get(id) else {
+            return;
+        };
+        if self.shown.as_ref() == Some(id) {
+            return;
+        }
+        if self.shown.is_none() || snapshot.pipeline.is_err() || self.layouts.contains_key(id) {
+            self.shown = Some(id.clone());
+            self.run = ctx.props().run.clone();
+            self.notice = None;
+            self.views.clear();
+            draw_views(ctx, self.run.as_deref());
+        }
+    }
+
+    /// The pipeline the URL names, loaded but not shown yet: measured off-screen first.
+    fn staged(&self, ctx: &Context<Self>) -> Option<&Pipeline> {
+        let id = &ctx.props().id;
+        if self.shown.as_ref() == Some(id) {
+            return None;
+        }
+        self.pipelines.get(id)?.pipeline.as_deref().ok()
+    }
+
+    /// The layout `pipeline` will have, measured in a box as wide as the grid on screen.
+    fn measure_staged(&self, pipeline: &Pipeline) -> Option<view::GridLayout> {
         let stage = self.staging.cast::<Element>()?;
         let main = self.main.cast::<Element>()?;
         let width = main
@@ -316,19 +355,6 @@ impl PipelinePage {
         let _ = stage.set_attribute("style", &format!("{STAGING};width:{width}px"));
         Some(measure_grid(&stage, pipeline))
     }
-}
-
-/// The stream of pipeline `id`, tagged with `generation` so a slower reply from the previous one
-/// cannot replace it.
-fn follow_pipeline(ctx: &Context<PipelinePage>, generation: u32) -> crate::Followed {
-    let url = format!("/api/pipeline/{}/events", ctx.props().id);
-    let on_live = ctx
-        .link()
-        .callback(move |live| PipelineMsg::Live(generation, live));
-    let on_notice = ctx
-        .link()
-        .callback(move |text| PipelineMsg::StreamNotice(generation, text));
-    follow(&url, on_live, on_notice)
 }
 
 /// How the grid in `root` lays its names out. Rotation leaves offset sizes alone, so these are the

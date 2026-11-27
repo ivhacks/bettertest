@@ -223,6 +223,7 @@ pub async fn entry(
     let serving = boss.clone();
     let router = Router::new()
         .route("/api/pipelines", get(get_pipelines))
+        .route("/api/pipelines/events", get(pipelines_events))
         .route("/api/pipeline/{name}", get(get_pipeline))
         .route("/api/pipeline/{name}/events", get(pipeline_events))
         .route("/api/start-run/{name}", post(start_run))

@@ -33,7 +33,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -236,9 +235,11 @@ PIPELINES = {
     "docs": snapshot(pipeline_body("docs", "spell", OTHER)),
 }
 
-# Seconds a pipeline snapshot waits before it is written. Zero except while a test asks, so a
-# switch can be watched with the previous grid still up. Every other stream answers at once.
-SNAPSHOT_DELAY = 0.0
+# Cleared while a test holds back the stream of every pipeline, the one the page loads the other
+# tabs from, so a switch can be watched with the previous grid still up. Every other stream
+# answers at once.
+RELEASED = threading.Event()
+RELEASED.set()
 TASKS = {
     TASK: snapshot(task_body(TASK, "unit", "app")),
     OTHER: snapshot(task_body(OTHER, "spell", "docs")),
@@ -282,6 +283,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/users":
             self._json(b"[]")
+            return
+        if path == "/api/pipelines/events":
+            every = [json.loads(body)["Snapshot"] for body in PIPELINES.values()]
+            self._sse(snapshot(every))
             return
         if path.startswith("/api/pipeline/") and path.endswith("/events"):
             name = path.split("/")[3]
@@ -361,8 +366,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         # The stream is open and the snapshot has not arrived yet: the page must keep showing
         # what it had, which a test can only see if this wait is long enough to paint.
-        if SNAPSHOT_DELAY and urlparse(self.path).path.startswith("/api/pipeline/"):
-            time.sleep(SNAPSHOT_DELAY)
+        if urlparse(self.path).path == "/api/pipelines/events":
+            RELEASED.wait()
         try:
             self.wfile.write(b"event: message\ndata: " + body + b"\n\n")
             self.wfile.flush()

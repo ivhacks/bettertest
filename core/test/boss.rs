@@ -1197,6 +1197,69 @@ async fn a_big_pipeline_with_a_long_history_loads_at_once() {
     );
 }
 
+/// The pipeline page loads every pipeline in one stream (a browser opens at most six connections
+/// over HTTP/1.1): a snapshot of each, with its pipedef and runs, then the events of every one.
+#[tokio::test]
+async fn every_pipeline_loads_in_one_stream_with_the_events_of_all() {
+    use tokio_stream::StreamExt;
+    let boss = boss(BTreeMap::new());
+    let mut files = vec![];
+    for (name, stages) in [("first", 1), ("second", 2)] {
+        let file = std::env::temp_dir().join(format!("{name}-{}.py", Uuid::new_v4()));
+        std::fs::write(&file, big_pipedef(stages, 1)).expect("write pipedef");
+        lock(&boss.pipedefs).insert(name.into(), Pipedef::File(file.clone()));
+        files.push(file);
+    }
+    let (_, second) = runs::load_pipeline(&boss, "second", None).await.expect("load");
+    let second = second.expect("parses");
+    let start = |boss: &Shared| {
+        boss.record(|db| {
+            let run = db.insert_run("second", &second, None, &BTreeMap::new())?;
+            Ok((Event::RunStarted(run.clone()), run))
+        })
+        .expect("run")
+    };
+    let old = start(&boss);
+
+    let response = runs::pipelines_events(State(boss.clone()), HeaderMap::new())
+        .await
+        .expect("events");
+    let mut body = response.into_body().into_data_stream();
+    let mut text = String::new();
+    let mut next = async || -> Live<Vec<PipelineSnapshot>> {
+        while !text.contains("\n\n") {
+            let bytes = body.next().await.expect("a message").expect("bytes");
+            text.push_str(std::str::from_utf8(&bytes).expect("utf-8"));
+        }
+        let (message, rest) = text.split_once("\n\n").expect("a message");
+        let data = message.strip_prefix("data: ").expect("data");
+        let live = serde_json::from_str(data).expect("json");
+        text = rest.to_string();
+        live
+    };
+
+    let Live::Snapshot(snapshots) = next().await else {
+        panic!("expected a snapshot first");
+    };
+    let names: Vec<&str> = snapshots.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["first", "second"]);
+    let stages = |s: &PipelineSnapshot| s.pipeline.as_ref().expect("parses").stages.len();
+    let runs = |s: &PipelineSnapshot| s.runs.iter().map(|run| run.id).collect::<Vec<_>>();
+    let (first_snapshot, second_snapshot) = (&snapshots[0], &snapshots[1]);
+    assert_eq!((stages(first_snapshot), runs(first_snapshot)), (1, vec![]));
+    assert_eq!((stages(second_snapshot), runs(second_snapshot)), (2, vec![old.id]));
+    assert!(snapshots.iter().all(|s| s.pipelines == ["first", "second"]));
+
+    let new = start(&boss);
+    match next().await {
+        Live::Event(Event::RunStarted(run)) => assert_eq!((run.pipeline.as_str(), run.id), ("second", new.id)),
+        other => panic!("expected the second pipeline's new run, got {other:?}"),
+    }
+    for file in files {
+        std::fs::remove_file(file).expect("remove pipedef");
+    }
+}
+
 /// A pipeline page shows the pipeline from memory, and a pipedef file that changed since, as it is
 /// now.
 #[tokio::test]
