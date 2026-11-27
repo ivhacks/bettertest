@@ -296,12 +296,8 @@ impl App {
 /// Cancels run `run`, all of it. What happens to its tasks arrives through the live stream like
 /// any other change; `notice` hears why the boss refused.
 fn cancel_run(run: String, notice: Callback<String>) {
-    spawn_local(async move {
-        let url = format!("/api/cancel-run/{run}");
-        if let Err(e) = send(Request::post(&url).build()).await {
-            notice.emit(format!("could not cancel the run: {e}"));
-        }
-    });
+    let request = Request::post(&format!("/api/cancel-run/{run}")).build();
+    act(request, "could not cancel the run", notice);
 }
 
 /// The right end of every header: who is logged in, or a way to log in.
@@ -482,4 +478,39 @@ async fn fetch<T: DeserializeOwned>(
 /// POSTs `body` as json to `url`, for the reply only to say whether it worked.
 async fn post_json(url: &str, body: &impl serde::Serialize) -> Result<String, String> {
     send(Request::post(url).json(body)).await
+}
+
+/// Sends `request`, whose effect arrives through the live stream; `notice` hears `failed` and why
+/// the boss refused it.
+fn act(request: Result<Request, gloo_net::Error>, failed: &'static str, notice: Callback<String>) {
+    spawn_local(async move {
+        if let Err(e) = send(request).await {
+            notice.emit(format!("{failed}: {e}"));
+        }
+    });
+}
+
+/// Sends `request` for `link`'s component, which then hears the boss's json reply through `then`,
+/// or why there is none through `refused`.
+fn load<C: Component, T: DeserializeOwned + 'static>(
+    link: &yew::html::Scope<C>,
+    request: Result<Request, gloo_net::Error>,
+    then: impl FnOnce(T) -> C::Message + 'static,
+    refused: impl FnOnce(String) -> C::Message + 'static,
+) {
+    let link = link.clone();
+    spawn_local(async move {
+        match fetch(request).await {
+            Ok(reply) => link.send_message(then(reply)),
+            Err(e) => link.send_message(refused(e)),
+        }
+    });
+}
+
+/// What is typed in `input`.
+fn value(input: &NodeRef) -> String {
+    input
+        .cast::<web_sys::HtmlInputElement>()
+        .map(|i| i.value())
+        .unwrap_or_default()
 }

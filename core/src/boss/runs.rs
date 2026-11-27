@@ -359,17 +359,12 @@ async fn end_run(boss: &Shared, run: &Run, why: Option<String>, link: Option<Str
         }
         boss.set_task_state(run, task.id, TaskState::Skipped);
     }
-    let link = link.as_deref();
-    match tasks().all(|t| t.state == TaskState::Pass) {
-        true => {
-            boss.set_run_state(run, RunState::Pass);
-            boss.report(run, "success", "passed", link).await;
-        }
-        false => {
-            boss.set_run_state(run, RunState::Fail);
-            boss.report(run, "failure", "failed", link).await;
-        }
-    }
+    let (state, status, said) = match tasks().all(|t| t.state == TaskState::Pass) {
+        true => (RunState::Pass, "success", "passed"),
+        false => (RunState::Fail, "failure", "failed"),
+    };
+    boss.set_run_state(run, state);
+    boss.report(run, status, said, link.as_deref()).await;
 }
 
 #[derive(Deserialize)]
@@ -461,7 +456,7 @@ pub(super) async fn cancel_run(
     headers: HeaderMap,
 ) -> Result<StatusCode, Failure> {
     let id = Uuid::parse_str(&run).map_err(|_| not_found(format!("run {run}")))?;
-    let me = whoami(&boss, &headers, Some(&peer))?;
+    let (me, _) = who(&boss, &headers, Some(&peer))?;
     let reason = match me.logged_in {
         true => format!("cancelled by {}", me.name),
         false => "cancelled from the web ui".to_string(),
@@ -524,13 +519,6 @@ pub(super) fn restart_start<'a>(
     at: usize,
     task: Option<&'a str>,
 ) -> (usize, Option<&'a str>) {
-    let sandboxes = |stage: &Stage, only: Option<&str>| -> BTreeSet<String> {
-        let tasks = stage
-            .tasks
-            .iter()
-            .filter(|t| only.is_none_or(|only| t.name == only));
-        tasks.filter_map(|t| t.sandbox.clone()).collect()
-    };
     let first_use = |name: &str| {
         let uses = |s: &Stage| s.tasks.iter().any(|t| t.sandbox.as_deref() == Some(name));
         pipeline.stages.iter().position(uses)
@@ -540,11 +528,7 @@ pub(super) fn restart_start<'a>(
         // What restarts: from `start` on, but of stage `at` only `task`, while `start` is `at`.
         let mut needed = BTreeSet::new();
         for (index, stage) in pipeline.stages.iter().enumerate().skip(start) {
-            let only = if index == at && start == at {
-                task
-            } else {
-                None
-            };
+            let only = task.filter(|_| index == at && start == at);
             needed.extend(sandboxes(stage, only));
         }
         let earliest = needed
@@ -891,13 +875,7 @@ pub(super) struct Up {
 
 /// The pipeline's sandboxes that no stage after stage `index` uses: they stop once it is over.
 pub(super) fn last_used_in(pipeline: &Pipeline, index: usize) -> BTreeSet<String> {
-    let used = |stage: &Stage| -> BTreeSet<String> {
-        stage
-            .tasks
-            .iter()
-            .filter_map(|t| t.sandbox.clone())
-            .collect()
-    };
+    let used = |stage: &Stage| sandboxes(stage, None);
     let here = pipeline.stages.get(index).map(used).unwrap_or_default();
     let later: BTreeSet<String> = pipeline
         .stages
@@ -906,6 +884,15 @@ pub(super) fn last_used_in(pipeline: &Pipeline, index: usize) -> BTreeSet<String
         .flat_map(used)
         .collect();
     here.difference(&later).cloned().collect()
+}
+
+/// The pipeline's sandboxes the tasks of `stage` run in, or only its task `only`.
+fn sandboxes(stage: &Stage, only: Option<&str>) -> BTreeSet<String> {
+    let tasks = stage
+        .tasks
+        .iter()
+        .filter(|t| only.is_none_or(|only| t.name == only));
+    tasks.filter_map(|t| t.sandbox.clone()).collect()
 }
 
 /// The tasks of one stage that run in sandbox `name` of the pipeline, one at a time, in order:

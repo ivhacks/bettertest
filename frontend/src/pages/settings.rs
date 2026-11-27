@@ -1,10 +1,8 @@
 // The settings page: retention, and whether the boss speaks HTTPS.
 
-use crate::{account, fetch, view};
+use crate::{account, load, value, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
-use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 pub struct SettingsPage {
@@ -26,37 +24,24 @@ pub enum SettingsMsg {
     Saved(Settings, Swept),
 }
 
-/// What saving the settings deleted right away.
-#[derive(serde::Deserialize)]
-pub struct Swept {
-    logs: usize,
-    artifacts: usize,
-}
-
 impl Component for SettingsPage {
     type Message = SettingsMsg;
     type Properties = ();
 
     // Settings change rarely and only here, so the page reads them once instead of following them.
     fn create(ctx: &Context<Self>) -> Self {
-        let link = ctx.link().clone();
-        spawn_local(async move {
-            match fetch(Request::get("/api/settings").build()).await {
-                Ok(settings) => link.send_message(SettingsMsg::Loaded(settings)),
-                Err(e) => {
-                    link.send_message(SettingsMsg::Notice(format!("could not load them: {e}")))
-                }
-            }
-        });
-        let link = ctx.link().clone();
-        spawn_local(async move {
-            match fetch(Request::get("/api/https").build()).await {
-                Ok(https) => link.send_message(SettingsMsg::Https(https)),
-                Err(e) => {
-                    link.send_message(SettingsMsg::Notice(format!("could not load HTTPS: {e}")))
-                }
-            }
-        });
+        load(
+            ctx.link(),
+            Request::get("/api/settings").build(),
+            SettingsMsg::Loaded,
+            |e| SettingsMsg::Notice(format!("could not load them: {e}")),
+        );
+        load(
+            ctx.link(),
+            Request::get("/api/https").build(),
+            SettingsMsg::Https,
+            |e| SettingsMsg::Notice(format!("could not load HTTPS: {e}")),
+        );
         Self {
             settings: None,
             https: None,
@@ -76,21 +61,14 @@ impl Component for SettingsPage {
                 self.saved = None;
             }
             SettingsMsg::Save => {
-                let days = |input: &NodeRef| {
-                    let value = input.cast::<HtmlInputElement>()?.value();
-                    value.trim().parse::<u32>().ok()
-                };
+                let days = |input: &NodeRef| value(input).trim().parse::<u32>().ok();
                 let settings = Settings {
                     artifact_days: days(&self.artifacts),
                     log_days: days(&self.logs),
                 };
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    match fetch(Request::put("/api/settings").json(&settings)).await {
-                        Ok(swept) => link.send_message(SettingsMsg::Saved(settings, swept)),
-                        Err(e) => link.send_message(SettingsMsg::Notice(e)),
-                    }
-                });
+                let request = Request::put("/api/settings").json(&settings);
+                let saved = move |swept| SettingsMsg::Saved(settings, swept);
+                load(ctx.link(), request, saved, SettingsMsg::Notice);
                 return false;
             }
             SettingsMsg::Saved(settings, swept) => {

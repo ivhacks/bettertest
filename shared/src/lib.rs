@@ -120,6 +120,25 @@ impl TaskRun {
         };
         Some(ended.saturating_sub(self.started?))
     }
+
+    /// `event` is about this task.
+    fn apply(&mut self, event: &Event) {
+        match event {
+            Event::TaskStarted { worker, at, .. } => {
+                self.state = TaskState::Running;
+                self.worker = Some(worker.clone());
+                self.started = Some(*at);
+            }
+            Event::TaskState { state, at, .. } => {
+                self.state = *state;
+                if state.is_over() {
+                    self.ended = Some(*at);
+                }
+            }
+            Event::TaskTests { tests, .. } => self.tests = Some(*tests),
+            _ => {}
+        }
+    }
 }
 
 impl TaskState {
@@ -259,6 +278,13 @@ pub struct Settings {
     // How many days after a task ends its artifacts and its log are kept. None keeps them forever.
     pub artifact_days: Option<u32>,
     pub log_days: Option<u32>,
+}
+
+/// What saving the settings deleted right away: how many tasks lost their log and their artifacts.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Swept {
+    pub logs: usize,
+    pub artifacts: usize,
 }
 
 /// What a user may do, each role everything the one before it may. The logged-out user has one too.
@@ -476,7 +502,8 @@ impl Run {
             | Event::TaskTests { run, task, .. }
                 if *run == self.id =>
             {
-                if let Some(t) = self.task_mut(*task) {
+                let mut tasks = self.stages.iter_mut().flat_map(|s| &mut s.tasks);
+                if let Some(t) = tasks.find(|t| t.id == *task) {
                     t.apply(event);
                 }
             }
@@ -501,13 +528,6 @@ impl Run {
             let task = stage.tasks.iter().find(|task| task.id == id)?;
             Some((stage.name.as_str(), task.name.as_str()))
         })
-    }
-
-    pub fn task_mut(&mut self, id: Uuid) -> Option<&mut TaskRun> {
-        self.stages
-            .iter_mut()
-            .flat_map(|stage| &mut stage.tasks)
-            .find(|task| task.id == id)
     }
 }
 
@@ -547,27 +567,6 @@ impl PipelineSnapshot {
                     Arc::make_mut(run).apply(event);
                 }
             }
-        }
-    }
-}
-
-impl TaskRun {
-    /// `event` is about this task.
-    fn apply(&mut self, event: &Event) {
-        match event {
-            Event::TaskStarted { worker, at, .. } => {
-                self.state = TaskState::Running;
-                self.worker = Some(worker.clone());
-                self.started = Some(*at);
-            }
-            Event::TaskState { state, at, .. } => {
-                self.state = *state;
-                if state.is_over() {
-                    self.ended = Some(*at);
-                }
-            }
-            Event::TaskTests { tests, .. } => self.tests = Some(*tests),
-            _ => {}
         }
     }
 }

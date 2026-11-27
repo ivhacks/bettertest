@@ -4,13 +4,12 @@
 // the next snapshot arrived, and painting that snapshot before its columns were measured would
 // paint the header alone. The next grid is measured off-screen, then replaces this one.
 
-use crate::{account, cancel_run, fetch, follow, send, view};
+use crate::{account, act, cancel_run, follow, load, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement};
 use yew::prelude::*;
 
@@ -45,7 +44,7 @@ pub struct PipelinePage {
     // Which stream this page is following. A message from an older one is dropped.
     generation: u32,
     _resize: EventListener,
-    _fonts: Option<EventListener>,
+    _fonts: EventListener,
     _stream: crate::Followed,
 }
 
@@ -74,9 +73,7 @@ impl Component for PipelinePage {
         let fonts_loaded = link.callback(|()| PipelineMsg::Resized);
         let fonts = gloo::utils::document().fonts();
         let run = ctx.props().run.clone();
-        if let Some(run) = &run {
-            draw_views(ctx, run);
-        }
+        draw_views(ctx, run.as_deref());
         // The stream stops when the page is destroyed, which leaving it for another page does too.
         let generation = 1;
         Self {
@@ -93,9 +90,7 @@ impl Component for PipelinePage {
             run,
             generation,
             _resize: EventListener::new(&window(), "resize", move |_| resized.emit(())),
-            _fonts: Some(EventListener::new(&fonts, "loadingdone", move |_| {
-                fonts_loaded.emit(())
-            })),
+            _fonts: EventListener::new(&fonts, "loadingdone", move |_| fonts_loaded.emit(())),
             _stream: follow_pipeline(ctx, generation),
         }
     }
@@ -113,9 +108,7 @@ impl Component for PipelinePage {
         if ctx.props().run != old.run {
             self.run = ctx.props().run.clone();
             self.views.clear();
-            if let Some(run) = &self.run {
-                draw_views(ctx, run);
-            }
+            draw_views(ctx, self.run.as_deref());
             return true;
         }
         false
@@ -142,9 +135,7 @@ impl Component for PipelinePage {
                         self.measured = false;
                         self.layout = view::GridLayout::default();
                         self.views.clear();
-                        if let Some(run) = &self.run {
-                            draw_views(ctx, run);
-                        }
+                        draw_views(ctx, self.run.as_deref());
                     }
                     self.snapshot = Some(snapshot);
                     self.pending = None;
@@ -166,7 +157,7 @@ impl Component for PipelinePage {
                     (&event, &self.run)
                     && run.to_string() == *shown
                 {
-                    draw_views(ctx, shown);
+                    draw_views(ctx, Some(shown));
                 }
                 return true;
             }
@@ -191,9 +182,7 @@ impl Component for PipelinePage {
                 self.measure = false;
                 self.notice = None;
                 self.views.clear();
-                if let Some(run) = &self.run {
-                    draw_views(ctx, run);
-                }
+                draw_views(ctx, self.run.as_deref());
                 return true;
             }
             PipelineMsg::Layout(layout) => {
@@ -206,16 +195,9 @@ impl Component for PipelinePage {
                 return false;
             }
             PipelineMsg::StartRun => {
-                let url = format!("/api/start-run/{}", ctx.props().id);
-                let link = ctx.link().clone();
-                // The new run shows up through the live stream like any other change.
-                spawn_local(async move {
-                    if let Err(e) = send(Request::post(&url).build()).await {
-                        link.send_message(PipelineMsg::Notice(format!(
-                            "could not start a run: {e}"
-                        )));
-                    }
-                });
+                let request = Request::post(&format!("/api/start-run/{}", ctx.props().id)).build();
+                let notice = ctx.link().callback(PipelineMsg::Notice);
+                act(request, "could not start a run", notice);
                 return false;
             }
         }
@@ -296,7 +278,7 @@ impl Component for PipelinePage {
         let staging = match self.pending.as_ref().and_then(|s| s.pipeline.as_ref().ok()) {
             Some(pipeline) => html! {
                 <div class="staging" aria-hidden="true" ref={self.staging.clone()}
-                    style="position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;overflow:hidden">
+                    style={STAGING}>
                     { view::grid(pipeline, &view::GridLayout::default(), html! {}) }
                 </div>
             },
@@ -314,6 +296,10 @@ impl Component for PipelinePage {
     }
 }
 
+/// Where the next grid is measured: off-screen, out of sight and out of reach.
+const STAGING: &str =
+    "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;overflow:hidden";
+
 impl PipelinePage {
     /// The layout `pending` will have, measured in a box as wide as the grid on screen.
     fn measure_pending(&self) -> Option<view::GridLayout> {
@@ -327,12 +313,7 @@ impl PipelinePage {
             .filter(|grid| grid.client_width() > 0)
             .map(|grid| grid.client_width())
             .unwrap_or_else(|| main.client_width().saturating_sub(32).max(1));
-        let _ = stage.set_attribute(
-            "style",
-            &format!(
-                "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;overflow:hidden;width:{width}px"
-            ),
-        );
+        let _ = stage.set_attribute("style", &format!("{STAGING};width:{width}px"));
         Some(measure_grid(&stage, pipeline))
     }
 }
@@ -391,15 +372,13 @@ fn measure_grid(root: &Element, pipeline: &Pipeline) -> view::GridLayout {
 }
 
 /// Has the boss draw the views of `run` for its results.
-fn draw_views(ctx: &Context<PipelinePage>, run: &str) {
-    let url = format!("/api/run/{run}/views");
-    let link = ctx.link().clone();
+fn draw_views(ctx: &Context<PipelinePage>, run: Option<&str>) {
+    let Some(run) = run else { return };
+    let request = Request::get(&format!("/api/run/{run}/views")).build();
     let run = run.to_string();
-    spawn_local(async move {
-        match fetch(Request::get(&url).build()).await {
-            Ok(views) => link.send_message(PipelineMsg::Views(run, views)),
-            Err(e) => link.send_message(PipelineMsg::Notice(format!("no views: {e}"))),
-        }
+    let drawn = move |views| PipelineMsg::Views(run, views);
+    load(ctx.link(), request, drawn, |e| {
+        PipelineMsg::Notice(format!("no views: {e}"))
     });
 }
 

@@ -119,22 +119,10 @@ impl TaskFiles {
         Ok(Self { id, dir })
     }
 
-    fn src(&self) -> PathBuf {
-        self.dir.join("src")
-    }
-
-    fn inputs(&self) -> PathBuf {
-        self.dir.join("inputs")
-    }
-
-    fn outputs(&self) -> PathBuf {
-        self.dir.join("outputs")
-    }
-
     /// The names of the files the task published, sorted.
     fn published(&self) -> io::Result<Vec<String>> {
         let mut names = vec![];
-        for entry in fs::read_dir(self.outputs())? {
+        for entry in fs::read_dir(self.dir.join("outputs"))? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             // artifact() only ever writes files with valid names. Anything else is not ours to
@@ -242,7 +230,7 @@ fn router(
     stopping: watch::Sender<bool>,
 ) -> Router {
     Router::new()
-        .route("/health", get(health))
+        .route("/health", get(|| async { "ok" }))
         .route(
             "/events",
             get(move || events(labels.clone(), capacity, stopping.subscribe())),
@@ -257,10 +245,6 @@ fn router(
         .route("/start-task", post(start_task))
         .route("/output/{id}/{name}", get(get_output))
         .with_state(shared)
-}
-
-async fn health() -> &'static str {
-    "ok"
 }
 
 /// For the boss: what this worker is, then nothing but keep-alives for as long as it is up. The boss
@@ -640,9 +624,14 @@ async fn start_task(
         }
         let http = http.build().map_err(internal)?;
         let url = format!("{boss}/api/run/{run}/source.tar");
-        check_out(&http, &url, req.boss_token.as_deref(), &files.src())
-            .await
-            .map_err(internal)?;
+        check_out(
+            &http,
+            &url,
+            req.boss_token.as_deref(),
+            &files.dir.join("src"),
+        )
+        .await
+        .map_err(internal)?;
     }
 
     let ready = lock(&shared.ready).pop();
@@ -667,9 +656,9 @@ async fn start_task(
         return Err(internal("python3 is missing a pipe"));
     };
     let task_files = serde_json::json!({
-        "outputs": files.outputs(),
+        "outputs": files.dir.join("outputs"),
         "tests": files.dir.join("tests"),
-        "inputs": files.inputs(),
+        "inputs": files.dir.join("inputs"),
         "boss": boss,
         "boss_token": req.boss_token,
         // Where the boss is, when its url names a host DNS may not know (HTTPS).
@@ -678,7 +667,7 @@ async fn start_task(
         "run": req.run,
     });
     let task = Some((req.stage.as_str(), req.task.as_str()));
-    let src = files.src();
+    let src = files.dir.join("src");
     let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src), None);
 
     let (tx, rx) = mpsc::channel::<Event>(64);
@@ -779,7 +768,7 @@ fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Valu
             let (port, key) = vms
                 .ssh(id)
                 .ok_or((StatusCode::NOT_FOUND, format!("no vm {id}")))?;
-            let reboot = format!("http://127.0.0.1:{}/vm/{id}/reboot", vms.port());
+            let reboot = format!("http://127.0.0.1:{}/vm/{id}/reboot", vms.port);
             let ssh = tools::path("ssh").map_err(internal)?;
             let scp = tools::path("scp").map_err(internal)?;
             serde_json::json!({

@@ -144,7 +144,6 @@ header .menu:popover-open {
     background: var(--surface);
 }
 
-
 /* Buttons cut their top-left and bottom-right corners at 45 degrees. Outlined ones draw the border
    as the button's background and fill an inner shape cut 0.586px less, so the border follows the
    cut at exactly 1px.
@@ -260,7 +259,6 @@ main {
     max-height: 25vh;
     overflow: hidden auto;
     border-top: 1px solid var(--line);
-    font-size: 18px;
     font-stretch: 70%;
 }
 
@@ -529,6 +527,7 @@ main.follow > * {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    margin-bottom: 20px;
 }
 
 input {
@@ -556,15 +555,11 @@ input:focus {
     overflow-x: auto;
 }
 
-.workers,
-.users,
-.results {
+:is(.workers, .users, .results) {
     border-collapse: collapse;
 }
 
-.workers th,
-.users th,
-.results th {
+:is(.workers, .users, .results) th {
     padding: 4px 16px 4px 0;
     color: var(--muted);
     font: 500 16px/1.2 var(--font);
@@ -574,9 +569,7 @@ input:focus {
     text-transform: uppercase;
 }
 
-.workers td,
-.users td,
-.results td {
+:is(.workers, .users, .results) td {
     padding: 6px 16px 6px 0;
     border-top: 1px solid var(--line);
     vertical-align: top;
@@ -752,7 +745,8 @@ input:focus {
     white-space: nowrap;
 }
 
-.users .actions button + button {
+.users .actions button + button,
+.users .cert button {
     margin-left: 6px;
 }
 
@@ -776,10 +770,6 @@ header .me {
     color: var(--muted);
 }
 
-main > .add {
-    margin-bottom: 20px;
-}
-
 .token {
     margin: 0 0 20px;
     padding: 8px;
@@ -794,10 +784,6 @@ main > .add {
     white-space: nowrap;
 }
 
-.users .cert button {
-    margin-left: 6px;
-}
-
 /* Phones. The icons fill the row, so the page's own path and buttons take a line below them. */
 @media (max-width: 640px) {
     header {
@@ -809,27 +795,16 @@ main > .add {
         flex-basis: 100%;
     }
 
-    .workers,
-    .users,
-    .results,
-    .workers tbody,
-    .users tbody,
-    .results tbody,
-    .workers td,
-    .users td,
-    .results td {
+    :is(.workers, .users, .results),
+    :is(.workers, .users, .results) :is(tbody, td) {
         display: block;
     }
 
-    .workers thead,
-    .users thead,
-    .results thead {
+    :is(.workers, .users, .results) thead {
         display: none;
     }
 
-    .workers tr,
-    .users tr,
-    .results tr {
+    :is(.workers, .users, .results) tr {
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
@@ -838,16 +813,12 @@ main > .add {
         border-top: 1px solid var(--line);
     }
 
-    .workers td,
-    .users td,
-    .results td {
+    :is(.workers, .users, .results) td {
         padding: 0;
         border: none;
     }
 
-    .workers td:empty,
-    .users td:empty,
-    .results td:empty {
+    :is(.workers, .users, .results) td:empty {
         display: none;
     }
 

@@ -208,11 +208,7 @@ pub struct ClientCertificate {
     pub expires: String,
 }
 
-pub fn client_certificate(user: &str, label: &str) -> Result<ClientCertificate, String> {
-    make_client_certificate(user, label).map_err(|e| e.to_string())
-}
-
-fn make_client_certificate(user: &str, label: &str) -> Result<ClientCertificate, ErrorStack> {
+pub fn client_certificate(user: &str, label: &str) -> Result<ClientCertificate, ErrorStack> {
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
     let key = PKey::from_ec_key(EcKey::generate(&group)?)?;
     let mut name = X509NameBuilder::new()?;

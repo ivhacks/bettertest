@@ -1,6 +1,6 @@
 // The users page: who may do what, and how each logs in.
 
-use crate::{account, fetch, passkey, post_json, view};
+use crate::{account, load, passkey, post_json, value, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
@@ -81,21 +81,10 @@ impl Component for UsersPage {
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
-        let value = |input: &NodeRef| {
-            input
-                .cast::<HtmlInputElement>()
-                .map(|i| i.value())
-                .unwrap_or_default()
-        };
         match msg {
             UsersMsg::Load => {
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    match fetch(Request::get("/api/users").build()).await {
-                        Ok(users) => link.send_message(UsersMsg::Loaded(users)),
-                        Err(e) => link.send_message(UsersMsg::Notice(e)),
-                    }
-                });
+                let request = Request::get("/api/users").build();
+                load(ctx.link(), request, UsersMsg::Loaded, UsersMsg::Notice);
                 return false;
             }
             UsersMsg::Loaded(users) => {
@@ -119,21 +108,20 @@ impl Component for UsersPage {
             }
             UsersMsg::NewCertificate(id) => {
                 self.notice = None;
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    let request = Request::post("/api/new-certificate")
-                        .json(&serde_json::json!({ "id": id }));
-                    match fetch(request).await {
-                        Ok(made) => {
-                            link.send_message(UsersMsg::CertificateMade(made));
-                            link.send_message(UsersMsg::Load);
-                        }
-                        Err(e) => link.send_message(UsersMsg::Notice(e)),
-                    }
-                });
+                let request =
+                    Request::post("/api/new-certificate").json(&serde_json::json!({ "id": id }));
+                load(
+                    ctx.link(),
+                    request,
+                    UsersMsg::CertificateMade,
+                    UsersMsg::Notice,
+                );
                 return false;
             }
-            UsersMsg::CertificateMade(made) => self.new_certificate = Some(made),
+            UsersMsg::CertificateMade(made) => {
+                self.new_certificate = Some(made);
+                ctx.link().send_message(UsersMsg::Load);
+            }
             UsersMsg::NewPasskey(id) => {
                 self.notice = None;
                 let link = ctx.link().clone();
@@ -165,21 +153,16 @@ impl Component for UsersPage {
                     .find(|u| u.id == id)
                     .map(|u| u.name.clone())
                     .unwrap_or_default();
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    let request =
-                        Request::post("/api/new-token").json(&serde_json::json!({ "id": id }));
-                    match fetch(request).await {
-                        Ok(made) => {
-                            link.send_message(UsersMsg::TokenMade(name, made));
-                            link.send_message(UsersMsg::Load);
-                        }
-                        Err(e) => link.send_message(UsersMsg::Notice(e)),
-                    }
-                });
+                let request =
+                    Request::post("/api/new-token").json(&serde_json::json!({ "id": id }));
+                let made = move |token| UsersMsg::TokenMade(name, token);
+                load(ctx.link(), request, made, UsersMsg::Notice);
                 return false;
             }
-            UsersMsg::TokenMade(name, token) => self.new_token = Some((name, token)),
+            UsersMsg::TokenMade(name, token) => {
+                self.new_token = Some((name, token));
+                ctx.link().send_message(UsersMsg::Load);
+            }
             UsersMsg::SetPassword => {
                 if let Some(id) = self.password_for.take() {
                     let body = serde_json::json!({ "id": id, "password": value(&self.password) });

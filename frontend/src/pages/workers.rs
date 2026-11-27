@@ -1,9 +1,10 @@
 // The workers page: every worker the boss knows, up or down, and what runs on it.
 
-use crate::{account, follow, monotonic, post_json, view};
+use crate::{account, act, follow, monotonic, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
-use wasm_bindgen_futures::spawn_local;
+use gloo_net::http::Request;
+use serde_json::json;
 use yew::prelude::*;
 
 pub struct WorkersPage {
@@ -71,27 +72,19 @@ impl Component for WorkersPage {
                 else {
                     return false;
                 };
-                let link = ctx.link().clone();
                 // The worker shows up through the live stream like any other change.
-                spawn_local(async move {
-                    let body = serde_json::json!({ "url": url });
-                    if let Err(e) = post_json("/api/add-worker", &body).await {
-                        link.send_message(WorkersMsg::Notice(format!("could not add it: {e}")));
-                    }
-                });
+                let request = Request::post("/api/add-worker").json(&json!({ "url": url }));
+                let notice = ctx.link().callback(WorkersMsg::Notice);
+                act(request, "could not add it", notice);
                 return false;
             }
             WorkersMsg::Forget => {
                 let Some(url) = self.forgetting.take() else {
                     return false;
                 };
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    let body = serde_json::json!({ "url": url });
-                    if let Err(e) = post_json("/api/forget-worker", &body).await {
-                        link.send_message(WorkersMsg::Notice(format!("could not forget it: {e}")));
-                    }
-                });
+                let request = Request::post("/api/forget-worker").json(&json!({ "url": url }));
+                let notice = ctx.link().callback(WorkersMsg::Notice);
+                act(request, "could not forget it", notice);
                 // The window closes now; the worker leaves through the live stream.
                 return true;
             }

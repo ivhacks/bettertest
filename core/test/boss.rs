@@ -652,6 +652,8 @@ async fn the_home_document_is_gzipped_when_the_browser_takes_gzip() {
     headers.insert(header::ACCEPT_ENCODING, "gzip;q=0".parse().unwrap());
     let plain = document(&headers, html.clone());
     assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+    assert!(plain.headers().get(header::VARY).is_none());
+    assert_eq!(plain.headers()[header::CACHE_CONTROL], "no-cache");
     let body = axum::body::to_bytes(plain.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -1017,6 +1019,66 @@ async fn an_html_artifact_shows_sandboxed_and_the_rest_downloads() {
     std::fs::remove_dir_all(&dir).expect("clean up");
 }
 
+/// A task's artifact downloads under its name, and fetched by pipeline names the run it came from.
+#[tokio::test]
+async fn an_artifact_names_its_file_and_its_run() {
+    let source = big_pipedef(1, 1);
+    let file = std::env::temp_dir().join(format!("artifact-{}.py", Uuid::new_v4()));
+    std::fs::write(&file, &source).expect("write pipedef");
+    let boss = boss(BTreeMap::new());
+    let name = format!("artifact-{}", Uuid::new_v4().simple());
+    lock(&boss.pipedefs).insert(name.clone(), Pipedef::File(file.clone()));
+    let (_, pipeline) = runs::load_pipeline(&boss, &name, None).await.expect("load");
+    let run = boss
+        .db()
+        .insert_run(&name, &pipeline.expect("parses"), None, &BTreeMap::new())
+        .expect("run");
+    let task = run.stages[0].tasks[0].id;
+    boss.db()
+        .set_task_state(task, TaskState::Pass, 1)
+        .expect("pass");
+    let dir = artifacts::task_artifacts_dir(task).expect("dir");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("app.deb"), "deb").expect("write");
+    let artifact = Artifact {
+        name: "app.deb".into(),
+        size: 3,
+    };
+    boss.db().add_artifact(task, &artifact).expect("artifact");
+    let header = |response: &Response, name: &str| {
+        let value = response.headers().get(name).map(|v| v.to_str().unwrap());
+        value.map(str::to_string)
+    };
+
+    let path = AxumPath((task.to_string(), "app.deb".to_string()));
+    let download = artifacts::get_task_artifact(path).await.expect("download");
+    let disposition = header(&download, "content-disposition");
+    assert_eq!(
+        disposition.as_deref(),
+        Some("attachment; filename=\"app.deb\"")
+    );
+    assert_eq!(header(&download, "content-length").as_deref(), Some("3"));
+
+    let path = [name.as_str(), "latest", "Stage0", "task_0_0", "app.deb"].map(str::to_string);
+    let (pipeline, latest, stage, task_name, file_name) = path.into();
+    let path = AxumPath((pipeline, latest, stage, task_name, file_name));
+    let fetched = artifacts::get_pipeline_artifact(State(boss.clone()), path)
+        .await
+        .expect("fetch");
+    let id = run.id.to_string();
+    assert_eq!(
+        header(&fetched, "bettertest-run").as_deref(),
+        Some(id.as_str())
+    );
+    assert_eq!(header(&fetched, "content-disposition"), None);
+    let body = axum::body::to_bytes(fetched.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body, "deb");
+    std::fs::remove_dir_all(&dir).expect("clean up");
+    std::fs::remove_file(&file).expect("remove pipedef");
+}
+
 /// A pipedef of `stages` stages of `tasks` tasks each.
 fn big_pipedef(stages: usize, tasks: usize) -> String {
     let mut source = String::from(
@@ -1064,6 +1126,26 @@ async fn first_snapshot(boss: &Shared, name: &str) -> (Duration, usize, Pipeline
     match serde_json::from_str(data).expect("json") {
         Live::Snapshot(snapshot) => (took, wire, snapshot),
         Live::Event(event) => panic!("expected a snapshot first, got {event:?}"),
+    }
+}
+
+/// A live stream is gzipped only for a browser that takes gzip, and says so either way it varies.
+#[tokio::test]
+async fn a_live_stream_is_gzipped_only_when_the_browser_takes_gzip() {
+    let boss = boss(BTreeMap::new());
+    for (accept, encoding) in [(Some("gzip, br"), Some("gzip")), (None, None)] {
+        let mut headers = HeaderMap::new();
+        if let Some(accept) = accept {
+            headers.insert(header::ACCEPT_ENCODING, accept.parse().unwrap());
+        }
+        let response = workers::workers_events(State(boss.clone()), headers)
+            .await
+            .expect("events");
+        let got = |name| response.headers().get(name).map(|v| v.to_str().unwrap());
+        assert_eq!(got(header::CONTENT_TYPE), Some("text/event-stream"));
+        assert_eq!(got(header::CACHE_CONTROL), Some("no-cache"));
+        assert_eq!(got(header::VARY), Some("accept-encoding"));
+        assert_eq!(got(header::CONTENT_ENCODING), encoding);
     }
 }
 

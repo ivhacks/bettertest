@@ -40,7 +40,7 @@ const EMULATED_KERNEL_ARGS: &str =
 
 pub struct Vms {
     // Where this worker listens, so a vm can call back at 10.0.2.2.
-    port: u16,
+    pub port: u16,
     // cloud-init may ask for its config on any boot, so it is served for the vm's whole life.
     cloud_init: Mutex<HashMap<String, CloudInit>>,
     // Who is waiting for a vm to finish booting, the first time or after a reboot.
@@ -68,10 +68,6 @@ impl Vms {
             waiting: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// Boots a vm from the qcow2 image at `image_url` and waits until it is ready for ssh. `arch`
@@ -555,11 +551,8 @@ fn largest_partition_offset(disk: &[u8]) -> Result<u64, String> {
     let start = entry_lba
         .checked_mul(512)
         .ok_or("vm image partition table is too large")?;
-    let bytes = (nent as u64)
-        .checked_mul(entsz as u64)
-        .ok_or("vm image partition table is too large")?;
     let end = start
-        .checked_add(bytes)
+        .checked_add(u64::from(nent) * u64::from(entsz))
         .ok_or("vm image partition table is too large")?;
     if end > disk.len() as u64 {
         return Err("vm image partition table is past the start of the disk".to_string());
@@ -595,36 +588,25 @@ fn le<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], String> {
     slice.ok_or_else(|| "truncated partition table".to_string())
 }
 
-/// Runs `program` to its end. Ok is its stdout; Err says what went wrong.
-fn tool(program: &str, args: &[&str]) -> Result<String, String> {
+/// Runs `program` to its end. Ok is its stdout and stderr; Err says what went wrong.
+fn tool(program: &str, args: &[&str]) -> Result<(String, String), String> {
     let output = std::process::Command::new(tools::path(program)?)
         .args(args)
         .output()
         .map_err(|e| format!("could not run {program}: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     match output.status.success() {
-        true => Ok(stdout),
-        false => Err(format!(
-            "{program} failed: {}{stdout}",
-            String::from_utf8_lossy(&output.stderr)
-        )),
+        true => Ok((stdout, stderr)),
+        false => Err(format!("{program} failed: {stderr}{stdout}")),
     }
 }
 
+/// debugfs fails some requests with exit status 0, saying so only in what it prints.
 fn debugfs(spec: &str, request: &str, write: bool) -> Result<String, String> {
-    let mut command = std::process::Command::new(tools::path("debugfs")?);
-    if write {
-        command.arg("-w");
-    }
-    let output = command
-        .args(["-R", request, spec])
-        .output()
-        .map_err(|e| format!("could not run debugfs: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if !output.status.success() {
-        return Err(format!("debugfs failed: {stderr}{stdout}"));
-    }
+    let args = ["-w", "-R", request, spec];
+    let args = if write { &args[..] } else { &args[1..] };
+    let (stdout, stderr) = tool("debugfs", args)?;
     for needle in [
         "Filesystem not open",
         "Bad magic",

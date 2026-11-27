@@ -33,10 +33,7 @@ fn unpack() -> io::Result<PathBuf> {
             hash.update(&file.metadata.sha256_hash());
         }
     }
-    let version: String = hash.finish()[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let version = crate::auth::hex(&hash.finish()[..8]);
     let tools = workdir::dir("tools")?;
     let dir = tools.join(&version);
     if !dir.exists() {

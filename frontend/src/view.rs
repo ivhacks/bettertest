@@ -289,28 +289,22 @@ fn dense_rule(pipeline: &Pipeline, layout: &GridLayout) -> String {
     }
 }
 
-/// The red X before a running run's id: it cancels the run, all of it, at once. `cancel` gets the
-/// run's id. Nothing once the run is over.
-fn cancel_button(run: &Run, cancel: &Callback<String>) -> Html {
-    if run.state != RunState::Running {
-        return html! {};
-    }
-    let id = run.id.to_string();
-    html! {
-        <button class="cancel" title="Cancel this run: every task, now" aria-label="Cancel run"
-            onclick={cancel.reform(move |_| id.clone())}>
-            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8" /></svg>
-        </button>
-    }
-}
-
-/// The path to a run, at the left of the header: its pipeline, the run and what it tested.
+/// The path to a run, at the left of the header: its pipeline, the run and what it tested. A
+/// running run's id has a red X before it, which cancels the run, all of it, at once: `cancel`
+/// gets the run's id.
 fn run_crumbs(run: &Run, cancel: &Callback<String>) -> Html {
+    let id = run.id;
     html! {
         <>
             <a href={format!("/pipeline/{}", run.pipeline)}>{ &run.pipeline }</a>
             <span class="run">
-                { cancel_button(run, cancel) }<a href={run_href(run)}>{ run.short_id() }</a>
+                if run.state == RunState::Running {
+                    <button class="cancel" title="Cancel this run: every task, now" aria-label="Cancel run"
+                        onclick={cancel.reform(move |_| id.to_string())}>
+                        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8" /></svg>
+                    </button>
+                }
+                <a href={run_href(run)}>{ run.short_id() }</a>
             </span>
             { for run.commit.iter().map(|c| html! { <span class="commit">{ c.label() }</span> }) }
         </>
@@ -470,17 +464,12 @@ pub fn restart_buttons(run: &Run, stage: &str, restart: &Callback<Restart>) -> H
         let onclick = restart.reform(move |_| what);
         html! { <button {onclick}>{ label }</button> }
     };
-    let from_here = run.passed_before(stage).then(|| {
-        html! {
-            <>
-                { button(Restart::Task, "Restart Task") }
-                { button(Restart::Stage, "Restart Stage") }
-            </>
-        }
-    });
     html! {
         <>
-            { for from_here }
+            if run.passed_before(stage) {
+                { button(Restart::Task, "Restart Task") }
+                { button(Restart::Stage, "Restart Stage") }
+            }
             { button(Restart::Run, "Restart Run") }
         </>
     }
@@ -612,10 +601,6 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
             .collect();
             html! { <td class="certs" data-label={label}>if listed.is_empty() { { "-" } }{ for listed }</td> }
         };
-    let count = |n: u32| match n {
-        0 => "-".to_string(),
-        n => n.to_string(),
-    };
     html! {
         <table class="users">
             <thead>
@@ -666,7 +651,7 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                                 <td data-label="password">{ if u.passwords > 0 { "set" } else { "-" } }</td>
                                 { credentials("certificate", &mut u.certs.iter().map(|c| (c.id, &c.label, Some(format!("expires {}", c.expires))))) }
                                 { credentials("passkey", &mut u.keys.iter().map(|k| (k.id, &k.label, None))) }
-                                <td data-label="api tokens">{ count(u.tokens) }</td>
+                                <td data-label="api tokens">{ match u.tokens { 0 => "-".to_string(), n => n.to_string() } }</td>
                             }
                             <td class="actions">{ for actions }</td>
                         </tr>
