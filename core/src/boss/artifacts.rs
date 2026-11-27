@@ -222,11 +222,8 @@ pub(super) async fn get_pipeline_artifact(
     let path = boss
         .find_artifact(&run, false, &stage, &task, &name)
         .map_err(not_there)?;
-    let mut response = file_response(&path, &name, None).await?;
-    if let Ok(value) = header::HeaderValue::from_str(&run.id.to_string()) {
-        response.headers_mut().insert("bettertest-run", value);
-    }
-    Ok(response)
+    let file = file_response(&path, &name, None).await?;
+    Ok(([("bettertest-run", run.id.to_string())], file).into_response())
 }
 
 /// Streams the file at `path`, artifact `name`. With a `disposition`, browsers save it rather than
@@ -237,36 +234,29 @@ pub(super) async fn file_response(
     name: &str,
     disposition: Option<String>,
 ) -> Result<Response, Failure> {
-    let file = match tokio::fs::File::open(path).await {
-        Ok(file) => file,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(not_found(format!("artifact {name}")));
-        }
-        Err(e) => return Err(internal(e)),
-    };
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| match e.kind() {
+            ErrorKind::NotFound => not_found(format!("artifact {name}")),
+            _ => internal(e),
+        })?;
     let length = file.metadata().await.map_err(internal)?.len();
     let kind = match name.ends_with(".html") {
         true => "text/html; charset=utf-8",
         false => "application/octet-stream",
     };
-    let mut response = (
-        [
-            (header::CONTENT_TYPE, kind.to_string()),
-            (header::CONTENT_LENGTH, length.to_string()),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "sandbox allow-scripts".into(),
-            ),
-        ],
-        Body::from_stream(ReaderStream::new(file)),
-    )
-        .into_response();
-    if let Some(value) = disposition.and_then(|d| header::HeaderValue::from_str(&d).ok()) {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_DISPOSITION, value);
-    }
-    Ok(response)
+    let disposition = disposition.and_then(|d| header::HeaderValue::from_str(&d).ok());
+    let headers = [
+        (header::CONTENT_TYPE, kind.to_string()),
+        (header::CONTENT_LENGTH, length.to_string()),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            "sandbox allow-scripts".into(),
+        ),
+    ];
+    let saved = disposition.map(|d| [(header::CONTENT_DISPOSITION, d)]);
+    let body = Body::from_stream(ReaderStream::new(file));
+    Ok((headers, saved, body).into_response())
 }
 
 pub(super) async fn put_artifact(

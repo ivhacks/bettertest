@@ -872,16 +872,15 @@ impl Boss {
     /// Deletes the logs and artifacts the settings keep no longer, as of `now`, a batch at a time
     /// so that running tasks can log in between. Returns how many tasks lost their log, and how
     /// many their artifacts.
-    fn sweep(&self, now: u64) -> Result<(usize, usize), String> {
+    fn sweep(&self, now: u64) -> Result<(usize, usize), Box<dyn std::error::Error>> {
         const BATCH: i64 = 100;
         const DAY: u64 = 24 * 60 * 60 * 1000;
-        let settings = self.db().settings().map_err(|e| e.to_string())?;
+        let settings = self.db().settings()?;
         let cutoff = |days: u32| now.saturating_sub(u64::from(days) * DAY);
         let (mut logs, mut artifacts) = (0, 0);
         if let Some(days) = settings.log_days {
             loop {
-                let expired = self.db().expire_logs(cutoff(days), now, BATCH);
-                match expired.map_err(|e| e.to_string())? {
+                match self.db().expire_logs(cutoff(days), now, BATCH)? {
                     0 => break,
                     n => logs += n,
                 }
@@ -889,24 +888,22 @@ impl Boss {
         }
         if let Some(days) = settings.artifact_days {
             loop {
-                let expiring = self.db().expiring_artifacts(cutoff(days), BATCH);
-                let tasks = expiring.map_err(|e| e.to_string())?;
+                let tasks = self.db().expiring_artifacts(cutoff(days), BATCH)?;
                 if tasks.is_empty() {
                     break;
                 }
                 // Files first: should forgetting them fail, the next sweep deletes them again
                 // rather than leaving files nothing refers to.
                 for task in &tasks {
-                    let dir = task_artifacts_dir(*task).map_err(|e| e.to_string())?;
+                    let dir = task_artifacts_dir(*task)?;
                     match fs::remove_dir_all(&dir) {
                         Err(e) if e.kind() != ErrorKind::NotFound => {
-                            return Err(format!("could not delete {}: {e}", dir.display()));
+                            return Err(format!("could not delete {}: {e}", dir.display()).into());
                         }
                         _ => {}
                     }
                 }
-                let forgotten = self.db().forget_artifacts(&tasks, now);
-                forgotten.map_err(|e| e.to_string())?;
+                self.db().forget_artifacts(&tasks, now)?;
                 artifacts += tasks.len();
             }
         }
