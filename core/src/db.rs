@@ -99,16 +99,7 @@ impl Db {
                                     carried_from: Some(earlier.carried_from.unwrap_or(earlier.id)),
                                     ..earlier.clone()
                                 },
-                                None => TaskRun {
-                                    id: Uuid::new_v4(),
-                                    name: task.name.clone(),
-                                    state: TaskState::Pending,
-                                    worker: None,
-                                    started: None,
-                                    ended: None,
-                                    carried_from: None,
-                                    tests: None,
-                                },
+                                None => TaskRun::pending(Uuid::new_v4(), task.name.clone()),
                             }
                         })
                         .collect(),

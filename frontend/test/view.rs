@@ -1058,3 +1058,87 @@ fn run_page_says_how_the_run_went() {
         )
     );
 }
+
+/// A running run's id has a red X before it that cancels the run; a finished one has none.
+#[test]
+fn a_running_run_can_be_cancelled_from_its_id() {
+    let mut run = Run {
+        id: id(0xabcdef << 104),
+        pipeline: "sqlite".into(),
+        state: RunState::Running,
+        stages: vec![],
+        commit: Some(Commit {
+            sha: "3fe66e3a1b".into(),
+            branch: "main".into(),
+        }),
+    };
+    let cancelled = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+    let heard = cancelled.clone();
+    let cancel = Callback::from(move |id: String| heard.borrow_mut().push(id));
+    let link = r#"<a href="/pipeline/sqlite?run=abcdef00-0000-0000-0000-000000000000">abcdef</a>"#;
+    let button = concat!(
+        r#"<button title="Cancel this run: every task, now" aria-label="Cancel run" class="cancel">"#,
+        r#"<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"></path></svg></button>"#,
+    );
+    let expected = |button: &str, state: &str| {
+        [
+            r#"<a href="/pipeline/sqlite">sqlite</a><span class="run">"#,
+            button,
+            link,
+            "</span>",
+            r#"<span class="commit">main @ 3fe66e3</span>"#,
+            &format!(r#"<span class="state {state}">{state}</span>"#),
+        ]
+        .concat()
+    };
+    assert_eq!(
+        to_html(&run_page_crumbs(&run, &cancel)),
+        expected(button, "running")
+    );
+    run.state = RunState::Fail;
+    assert_eq!(
+        to_html(&run_page_crumbs(&run, &cancel)),
+        expected("", "fail")
+    );
+    assert!(cancelled.borrow().is_empty());
+}
+
+#[test]
+fn retention_names_only_what_it_deleted() {
+    let task = TaskRun {
+        id: id(2),
+        name: "compile".into(),
+        state: TaskState::Pass,
+        worker: None,
+        started: Some(1_000),
+        ended: Some(2_000),
+        carried_from: None,
+        tests: None,
+    };
+    let mut snapshot = TaskSnapshot {
+        now: 0,
+        run: Run {
+            id: id(1),
+            pipeline: "app".into(),
+            state: RunState::Pass,
+            stages: vec![],
+            commit: None,
+        },
+        carried_from: None,
+        log_deleted: Some(9_000),
+        artifacts_deleted: None,
+        stage: "Build".into(),
+        task,
+        lines: vec![],
+        artifacts: vec![],
+    };
+    let note = |what: &str| {
+        format!(
+            r#"<p class="note">Retention deleted this task's {what}. <a href="/settings">Settings</a> say how long they are kept.</p>"#
+        )
+    };
+    assert_eq!(to_html(&retention_note(&snapshot)), note("log"));
+    snapshot.log_deleted = None;
+    snapshot.artifacts_deleted = Some(9_000);
+    assert_eq!(to_html(&retention_note(&snapshot)), note("artifacts"));
+}

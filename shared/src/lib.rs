@@ -70,9 +70,10 @@ pub struct Pipeline {
 // One execution of a pipeline. A run captures its own stage/task structure when it is created,
 // so history stays intact when the pipedef changes later.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskState {
+    #[default]
     Pending,
     Running,
     Pass,
@@ -88,7 +89,7 @@ pub enum RunState {
     Fail,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskRun {
     pub id: Uuid,
     pub name: String,
@@ -112,6 +113,15 @@ pub struct Tests {
 }
 
 impl TaskRun {
+    /// A task that has not run (yet).
+    pub fn pending(id: Uuid, name: String) -> TaskRun {
+        TaskRun {
+            id,
+            name,
+            ..TaskRun::default()
+        }
+    }
+
     /// How long it ran, or has been running by `now`. None if it never started.
     pub fn runtime(&self, now: u64) -> Option<u64> {
         let ended = match self.state {
@@ -129,6 +139,11 @@ impl TaskRun {
                 self.worker = Some(worker.clone());
                 self.started = Some(*at);
             }
+            // Put back to run again: as in the db, nothing of its last try stays.
+            Event::TaskState {
+                state: TaskState::Pending,
+                ..
+            } => *self = TaskRun::pending(self.id, std::mem::take(&mut self.name)),
             Event::TaskState { state, at, .. } => {
                 self.state = *state;
                 if state.is_over() {
@@ -207,11 +222,8 @@ pub struct Artifact {
 
 /// Artifact names end up in file paths and URLs.
 pub fn valid_artifact_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    !name.is_empty() && !name.starts_with('.') && name.chars().all(plain)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -575,7 +587,14 @@ impl TaskSnapshot {
             | Event::TaskTests { task, .. }
                 if *task == self.task.id =>
             {
-                self.task.apply(event)
+                self.task.apply(event);
+                // Put back to pending: its artifacts are gone, and a carried task's log was another's.
+                if self.task.state == TaskState::Pending {
+                    self.artifacts.clear();
+                    if self.carried_from.take().is_some() {
+                        self.lines.clear();
+                    }
+                }
             }
             Event::Log { task, line } if *task == self.task.id => self.lines.push(line.clone()),
             Event::Artifact { task, artifact } if *task == self.task.id => {

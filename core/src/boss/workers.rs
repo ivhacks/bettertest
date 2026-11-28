@@ -50,16 +50,10 @@ impl Boss {
                 self.log(task, LogStream::Bettertest, format!("waiting: {busy}"));
                 said = true;
             }
-            let wake = async {
-                match wake {
-                    Some(wait) => sleep(wait).await,
-                    None => std::future::pending().await,
-                }
-            };
             let mut cancelled = Some(cancelled.clone());
             tokio::select! {
                 () = &mut freed => {}
-                () = wake => {}
+                () = sleep(wake.unwrap_or_default()), if wake.is_some() => {}
                 reason = client::cancellation(&mut cancelled) => return Err(reason),
             }
         }

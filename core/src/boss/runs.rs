@@ -351,10 +351,6 @@ pub(super) fn resume_from(run: &Run, pipeline: &Pipeline) -> Option<usize> {
 /// Puts `task` of `run` back to pending, to run again: its artifacts go, its log stays and says
 /// `why`.
 fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
-    if task.started.is_some() {
-        let line = format!("{why}: running this again");
-        boss.log(task.id, LogStream::Bettertest, line);
-    }
     // Files first, as retention does: should forgetting them fail, nothing refers to them anyway.
     if let Err(e) = task_artifacts_dir(task.id).and_then(fs::remove_dir_all)
         && e.kind() != ErrorKind::NotFound
@@ -374,6 +370,11 @@ fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
     });
     if let Err(e) = rewound {
         eprintln!("could not put task {} back to pending: {e}", task.id);
+    }
+    // After the event, which forgets a carried task's log (another run's) on pages that follow it.
+    if task.started.is_some() {
+        let line = format!("{why}: running this again");
+        boss.log(task.id, LogStream::Bettertest, line);
     }
 }
 
@@ -535,15 +536,10 @@ pub(super) fn restart_start<'a>(
             let only = task.filter(|_| index == at && start == at);
             needed.extend(sandboxes(stage, only));
         }
-        let earliest = needed
-            .iter()
-            .filter_map(|n| first_use(n))
-            .min()
-            .unwrap_or(start);
-        if earliest >= start {
-            break;
+        match needed.iter().filter_map(|n| first_use(n)).min() {
+            Some(earliest) if earliest < start => start = earliest,
+            _ => break,
         }
-        start = earliest;
     }
     // A task that runs in a sandbox builds on the tasks before it there: they restart with it.
     let in_sandbox = pipeline
@@ -848,13 +844,9 @@ pub(super) struct Up {
 /// The pipeline's sandboxes that no stage after stage `index` uses: they stop once it is over.
 pub(super) fn last_used_in(pipeline: &Pipeline, index: usize) -> BTreeSet<String> {
     let used = |stage: &Stage| sandboxes(stage, None);
-    let here = pipeline.stages.get(index).map(used).unwrap_or_default();
-    let later: BTreeSet<String> = pipeline
-        .stages
-        .iter()
-        .skip(index + 1)
-        .flat_map(used)
-        .collect();
+    let mut stages = pipeline.stages.iter().skip(index);
+    let here = stages.next().map(used).unwrap_or_default();
+    let later: BTreeSet<String> = stages.flat_map(used).collect();
     here.difference(&later).cloned().collect()
 }
 

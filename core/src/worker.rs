@@ -774,10 +774,8 @@ impl Drop for ProcessGroup {
 
 /// A host name, as a certificate names it: nothing that could turn a url into another one.
 fn valid_host(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '.');
+    !name.is_empty() && name.chars().all(plain)
 }
 
 async fn get_output(Path((id, name)): Path<(String, String)>) -> Result<Response, Failure> {

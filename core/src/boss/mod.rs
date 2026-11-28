@@ -219,9 +219,26 @@ pub async fn entry(
         }
     });
 
-    // The router takes the boss along; this keeps hold of its certificate for serving.
-    let serving = boss.clone();
-    let router = Router::new()
+    let listener = TcpListener::bind(("::", port)).await?;
+    let service = router(boss.clone()).into_make_service_with_connect_info::<tls::Peer>();
+    match &boss.tls {
+        Some(tls) => {
+            println!("boss web ui at https://{}:{port}", tls.name);
+            let names = tls.names.join(", ");
+            println!("certificate for {names}, expires {}", tls.expires);
+            axum::serve(tls::listen(listener, tls), service).await?;
+        }
+        None => {
+            println!("boss web ui at http://[::1]:{port}");
+            axum::serve(tls::PlainListener(listener), service).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Every page and API route, behind the guard that checks who may do what.
+fn router(boss: Shared) -> Router {
+    Router::new()
         .route("/api/pipelines", get(get_pipelines))
         .route("/api/pipelines/events", get(pipelines_events))
         .route("/api/pipeline/{name}", get(get_pipeline))
@@ -283,23 +300,7 @@ pub async fn entry(
         .route("/login", get(index))
         .route("/{*path}", get(get_embedded_asset))
         .layer(middleware::from_fn_with_state(boss.clone(), guard))
-        .with_state(boss);
-
-    let listener = TcpListener::bind(("::", port)).await?;
-    let service = router.into_make_service_with_connect_info::<tls::Peer>();
-    match &serving.tls {
-        Some(tls) => {
-            println!("boss web ui at https://{}:{port}", tls.name);
-            let names = tls.names.join(", ");
-            println!("certificate for {names}, expires {}", tls.expires);
-            axum::serve(tls::listen(listener, tls), service).await?;
-        }
-        None => {
-            println!("boss web ui at http://[::1]:{port}");
-            axum::serve(tls::PlainListener(listener), service).await?;
-        }
-    }
-    Ok(())
+        .with_state(boss)
 }
 
 pub(crate) type Failure = (StatusCode, String);
@@ -491,10 +492,8 @@ const NAMES: &str = "pipedef names are letters, digits, '-' and '_'";
 
 /// Pipeline names end up in URLs.
 fn valid_pipeline_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_');
+    !name.is_empty() && name.chars().all(plain)
 }
 
 /// A browser that could not start the web ui says why, and the boss logs it: the page alone would
