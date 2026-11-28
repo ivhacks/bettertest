@@ -67,7 +67,38 @@ fn uuid(s: &str) -> Option<Uuid> {
     Uuid::parse_str(s).ok()
 }
 
+/// A user's id, name and role, from the first three columns.
+fn user(row: &Row) -> rusqlite::Result<(i64, String, Role)> {
+    Ok((row.get(0)?, row.get(1)?, text(row, 2, Role::parse)?))
+}
+
 impl Db {
+    /// The row `sql` finds, if any, as `read` reads it.
+    fn one<T>(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+        read: impl FnOnce(&Row) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<Option<T>> {
+        self.conn
+            .prepare_cached(sql)?
+            .query_row(params, read)
+            .optional()
+    }
+
+    /// Every row `sql` finds, as `read` reads it.
+    fn all<T>(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+        read: impl FnMut(&Row) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<Vec<T>> {
+        self.conn
+            .prepare_cached(sql)?
+            .query_map(params, read)?
+            .collect()
+    }
+
     /// Records a new run of `pipeline` at `commit`, every task pending, except those `carried`
     /// over from an earlier run, by (stage, task) name.
     pub fn insert_run(
@@ -191,24 +222,20 @@ impl Db {
     }
 
     pub fn log(&self, task: Uuid) -> rusqlite::Result<Vec<LogLine>> {
-        self.conn
-            .prepare_cached(
-                "SELECT stream, line FROM log_lines WHERE task_run_id = ?1 ORDER BY rowid",
-            )?
-            .query_map([task.to_string()], |row| {
-                Ok(LogLine {
-                    stream: text(row, 0, LogStream::parse)?,
-                    line: row.get(1)?,
-                })
-            })?
-            .collect()
+        let sql = "SELECT stream, line FROM log_lines WHERE task_run_id = ?1 ORDER BY rowid";
+        self.all(sql, [task.to_string()], |row| {
+            Ok(LogLine {
+                stream: text(row, 0, LogStream::parse)?,
+                line: row.get(1)?,
+            })
+        })
     }
 
     pub fn task_state(&self, task: Uuid) -> rusqlite::Result<Option<TaskState>> {
-        self.conn
-            .prepare_cached("SELECT state FROM task_runs WHERE id = ?1")?
-            .query_row([task.to_string()], |row| text(row, 0, TaskState::parse))
-            .optional()
+        let sql = "SELECT state FROM task_runs WHERE id = ?1";
+        self.one(sql, [task.to_string()], |row| {
+            text(row, 0, TaskState::parse)
+        })
     }
 
     /// The newest run of `pipeline` in which task `stage.task` passed and published artifact
@@ -220,18 +247,14 @@ impl Db {
         task: &str,
         name: &str,
     ) -> rusqlite::Result<Option<Uuid>> {
-        self.conn
-            .prepare_cached(
-                "SELECT pl_runs.id FROM pl_runs
-                 JOIN stage_runs ON stage_runs.pl_run_id = pl_runs.id
-                 JOIN task_runs ON task_runs.stage_run_id = stage_runs.id
-                 JOIN task_artifacts ON task_artifacts.task_run_id = task_runs.id
-                 WHERE pl_runs.pipeline = ?1 AND stage_runs.name = ?2 AND task_runs.name = ?3
-                   AND task_runs.state = 'pass' AND task_artifacts.name = ?4
-                 ORDER BY pl_runs.rowid DESC LIMIT 1",
-            )?
-            .query_row((pipeline, stage, task, name), |row| text(row, 0, uuid))
-            .optional()
+        let sql = "SELECT pl_runs.id FROM pl_runs
+             JOIN stage_runs ON stage_runs.pl_run_id = pl_runs.id
+             JOIN task_runs ON task_runs.stage_run_id = stage_runs.id
+             JOIN task_artifacts ON task_artifacts.task_run_id = task_runs.id
+             WHERE pl_runs.pipeline = ?1 AND stage_runs.name = ?2 AND task_runs.name = ?3
+               AND task_runs.state = 'pass' AND task_artifacts.name = ?4
+             ORDER BY pl_runs.rowid DESC LIMIT 1";
+        self.one(sql, (pipeline, stage, task, name), |row| text(row, 0, uuid))
     }
 
     /// Runs of `pipeline` whose id, without dashes, starts with `prefix` (lowercase hex digits).
@@ -242,13 +265,10 @@ impl Db {
         prefix: &str,
         limit: i64,
     ) -> rusqlite::Result<Vec<Uuid>> {
-        self.conn
-            .prepare_cached(
-                "SELECT id FROM pl_runs WHERE pipeline = ?1 AND replace(id, '-', '') LIKE ?2 || '%'
-                 ORDER BY rowid DESC LIMIT ?3",
-            )?
-            .query_map((pipeline, prefix, limit), |row| text(row, 0, uuid))?
-            .collect()
+        let sql =
+            "SELECT id FROM pl_runs WHERE pipeline = ?1 AND replace(id, '-', '') LIKE ?2 || '%'
+             ORDER BY rowid DESC LIMIT ?3";
+        self.all(sql, (pipeline, prefix, limit), |row| text(row, 0, uuid))
     }
 
     pub fn add_artifact(&self, task: Uuid, artifact: &Artifact) -> rusqlite::Result<usize> {
@@ -260,17 +280,13 @@ impl Db {
 
     /// The artifacts a task published, in the order the boss received them.
     pub fn artifacts(&self, task: Uuid) -> rusqlite::Result<Vec<Artifact>> {
-        self.conn
-            .prepare_cached(
-                "SELECT name, size FROM task_artifacts WHERE task_run_id = ?1 ORDER BY rowid",
-            )?
-            .query_map([task.to_string()], |row| {
-                Ok(Artifact {
-                    name: row.get(0)?,
-                    size: from_sql(row.get(1)?),
-                })
-            })?
-            .collect()
+        let sql = "SELECT name, size FROM task_artifacts WHERE task_run_id = ?1 ORDER BY rowid";
+        self.all(sql, [task.to_string()], |row| {
+            Ok(Artifact {
+                name: row.get(0)?,
+                size: from_sql(row.get(1)?),
+            })
+        })
     }
 
     pub fn run(&self, id: Uuid) -> rusqlite::Result<Option<Run>> {
@@ -360,18 +376,13 @@ impl Db {
 
     /// The run a task belongs to, and the name of the task's stage.
     pub fn task(&self, id: Uuid) -> rusqlite::Result<Option<(Run, String)>> {
-        let Some((run_id, stage)) = self
-            .conn
-            .prepare_cached(
-                "SELECT stage_runs.pl_run_id, stage_runs.name FROM task_runs
-                 JOIN stage_runs ON stage_runs.id = task_runs.stage_run_id
-                 WHERE task_runs.id = ?1",
-            )?
-            .query_row([id.to_string()], |row| {
-                Ok((text(row, 0, uuid)?, row.get(1)?))
-            })
-            .optional()?
-        else {
+        let sql = "SELECT stage_runs.pl_run_id, stage_runs.name FROM task_runs
+             JOIN stage_runs ON stage_runs.id = task_runs.stage_run_id
+             WHERE task_runs.id = ?1";
+        let found = self.one(sql, [id.to_string()], |row| {
+            Ok((text(row, 0, uuid)?, row.get(1)?))
+        })?;
+        let Some((run_id, stage)) = found else {
             return Ok(None);
         };
         Ok(self.run(run_id)?.map(|run| (run, stage)))
@@ -379,11 +390,8 @@ impl Db {
 
     pub fn settings(&self) -> rusqlite::Result<Settings> {
         let days = |name: &str| {
-            let value: Option<String> = self
-                .conn
-                .prepare_cached("SELECT value FROM settings WHERE name = ?1")?
-                .query_row([name], |row| row.get(0))
-                .optional()?;
+            let sql = "SELECT value FROM settings WHERE name = ?1";
+            let value: Option<String> = self.one(sql, [name], |row| row.get(0))?;
             Ok::<_, rusqlite::Error>(value.and_then(|v| v.parse().ok()))
         };
         Ok(Settings {
@@ -432,14 +440,10 @@ impl Db {
 
     /// Up to `limit` tasks that ended before `cutoff` and still have artifacts.
     pub fn expiring_artifacts(&self, cutoff: u64, limit: i64) -> rusqlite::Result<Vec<Uuid>> {
-        self.conn
-            .prepare_cached(
-                "SELECT DISTINCT task_artifacts.task_run_id FROM task_artifacts
-                 JOIN task_runs ON task_runs.id = task_artifacts.task_run_id
-                 WHERE task_runs.ended_at < ?1 LIMIT ?2",
-            )?
-            .query_map((to_sql(cutoff), limit), |row| text(row, 0, uuid))?
-            .collect()
+        let sql = "SELECT DISTINCT task_artifacts.task_run_id FROM task_artifacts
+             JOIN task_runs ON task_runs.id = task_artifacts.task_run_id
+             WHERE task_runs.ended_at < ?1 LIMIT ?2";
+        self.all(sql, (to_sql(cutoff), limit), |row| text(row, 0, uuid))
     }
 
     /// The artifacts of `tasks` are gone, deleted by retention at `now`.
@@ -460,58 +464,44 @@ impl Db {
 
     /// When retention deleted the log and the artifacts of a task, if it did.
     pub fn deleted(&self, task: Uuid) -> rusqlite::Result<(Option<u64>, Option<u64>)> {
-        let (log, artifacts): (Option<i64>, Option<i64>) = self
-            .conn
-            .prepare_cached(
-                "SELECT log_deleted_at, artifacts_deleted_at FROM task_runs WHERE id = ?1",
-            )?
-            .query_row([task.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))
-            .optional()?
-            .unwrap_or_default();
-        Ok((log.map(from_sql), artifacts.map(from_sql)))
+        let sql = "SELECT log_deleted_at, artifacts_deleted_at FROM task_runs WHERE id = ?1";
+        let found = self.one(sql, [task.to_string()], |row| {
+            let at = |i| row.get::<_, Option<i64>>(i).map(|at| at.map(from_sql));
+            Ok((at(0)?, at(1)?))
+        })?;
+        Ok(found.unwrap_or_default())
     }
 
     /// Every user, the logged-out one first, with their credentials and how many API tokens they
     /// have.
     pub fn users(&self) -> rusqlite::Result<Vec<User>> {
-        self.conn
-            .prepare_cached(
-                "SELECT id, name, role, id = 0,
-                    (SELECT count(*) FROM credentials c WHERE c.user_id = u.id AND kind = 'password'),
-                    (SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)
-                 FROM users u ORDER BY id != 0, name",
-            )?
-            .query_map([], |row| {
-                let id = row.get(0)?;
-                Ok(User {
-                    id,
-                    name: row.get(1)?,
-                    role: text(row, 2, Role::parse)?,
-                    builtin: row.get(3)?,
-                    passwords: row.get(4)?,
-                    tokens: row.get(5)?,
-                    certs: self.certificates(id)?,
-                    keys: self.passkeys(id)?,
-                })
-            })?
-            .collect()
+        let sql = "SELECT id, name, role, id = 0,
+                (SELECT count(*) FROM credentials c WHERE c.user_id = u.id AND kind = 'password'),
+                (SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)
+             FROM users u ORDER BY id != 0, name";
+        self.all(sql, [], |row| {
+            let (id, name, role) = user(row)?;
+            Ok(User {
+                id,
+                name,
+                role,
+                builtin: row.get(3)?,
+                passwords: row.get(4)?,
+                tokens: row.get(5)?,
+                certs: self.certificates(id)?,
+                keys: self.passkeys(id)?,
+            })
+        })
     }
 
     /// A user's client certificates, oldest first.
     pub fn certificates(&self, user: i64) -> rusqlite::Result<Vec<Certificate>> {
-        self.conn
-            .prepare_cached(
-                "SELECT id, json_extract(data, '$.label'), json_extract(data, '$.expires')
-                 FROM credentials WHERE user_id = ?1 AND kind = 'certificate' ORDER BY id",
-            )?
-            .query_map([user], |row| {
-                Ok(Certificate {
-                    id: row.get(0)?,
-                    label: row.get(1)?,
-                    expires: row.get(2)?,
-                })
-            })?
-            .collect()
+        let sql = "SELECT id, json_extract(data, '$.label'), json_extract(data, '$.expires')
+             FROM credentials WHERE user_id = ?1 AND kind = 'certificate' ORDER BY id";
+        self.all(sql, [user], |row| {
+            let (id, label, expires) = (row.get(0)?, row.get(1)?, row.get(2)?);
+            Ok(Certificate { id, label, expires })
+        })
     }
 
     /// Records a client certificate of `user` by its fingerprint: the boss keeps nothing else of it.
@@ -540,18 +530,12 @@ impl Db {
 
     /// A user's passkeys, oldest first.
     pub fn passkeys(&self, user: i64) -> rusqlite::Result<Vec<Passkey>> {
-        self.conn
-            .prepare_cached(
-                "SELECT id, json_extract(data, '$.label')
-                 FROM credentials WHERE user_id = ?1 AND kind = 'passkey' ORDER BY id",
-            )?
-            .query_map([user], |row| {
-                Ok(Passkey {
-                    id: row.get(0)?,
-                    label: row.get(1)?,
-                })
-            })?
-            .collect()
+        let sql = "SELECT id, json_extract(data, '$.label')
+             FROM credentials WHERE user_id = ?1 AND kind = 'passkey' ORDER BY id";
+        self.all(sql, [user], |row| {
+            let (id, label) = (row.get(0)?, row.get(1)?);
+            Ok(Passkey { id, label })
+        })
     }
 
     /// Records a passkey of `user`: webauthn-rs's record of it (its credential id, public key and
@@ -573,26 +557,18 @@ impl Db {
 
     /// The passkey with this credential id: its row, whose it is, and webauthn-rs's record of it.
     pub fn passkey(&self, credential: &str) -> rusqlite::Result<Option<(i64, i64, String)>> {
-        self.conn
-            .prepare_cached(
-                "SELECT id, user_id, json_extract(data, '$.passkey') FROM credentials
-                 WHERE kind = 'passkey' AND json_extract(data, '$.credential') = ?1",
-            )?
-            .query_row([credential], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .optional()
+        let sql = "SELECT id, user_id, json_extract(data, '$.passkey') FROM credentials
+             WHERE kind = 'passkey' AND json_extract(data, '$.credential') = ?1";
+        self.one(sql, [credential], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
     }
 
     /// webauthn-rs's records of a user's passkeys, oldest first.
     pub fn user_passkeys(&self, user: i64) -> rusqlite::Result<Vec<String>> {
-        self.conn
-            .prepare_cached(
-                "SELECT json_extract(data, '$.passkey') FROM credentials
-                 WHERE user_id = ?1 AND kind = 'passkey' ORDER BY id",
-            )?
-            .query_map([user], |row| row.get(0))?
-            .collect()
+        let sql = "SELECT json_extract(data, '$.passkey') FROM credentials
+             WHERE user_id = ?1 AND kind = 'passkey' ORDER BY id";
+        self.all(sql, [user], |row| row.get(0))
     }
 
     /// Replaces webauthn-rs's record of a passkey, whose signature counter moved on at a login.
@@ -609,10 +585,8 @@ impl Db {
 
     /// The name of a user, for a passkey's label and the authenticator's prompt.
     pub fn user_name(&self, user: i64) -> rusqlite::Result<Option<String>> {
-        self.conn
-            .prepare_cached("SELECT name FROM users WHERE id = ?1 AND id != 0")?
-            .query_row([user], |row| row.get(0))
-            .optional()
+        let sql = "SELECT name FROM users WHERE id = ?1 AND id != 0";
+        self.one(sql, [user], |row| row.get(0))
     }
 
     /// The id, name and role of the user whose client certificate has this fingerprint.
@@ -620,16 +594,10 @@ impl Db {
         &self,
         fingerprint: &str,
     ) -> rusqlite::Result<Option<(i64, String, Role)>> {
-        self.conn
-            .prepare_cached(
-                "SELECT users.id, users.name, users.role FROM credentials JOIN users ON users.id = credentials.user_id
-                 WHERE credentials.kind = 'certificate'
-                   AND json_extract(credentials.data, '$.fingerprint') = ?1",
-            )?
-            .query_row([fingerprint], |row| {
-                Ok((row.get(0)?, row.get(1)?, text(row, 2, Role::parse)?))
-            })
-            .optional()
+        let sql = "SELECT users.id, users.name, users.role FROM credentials JOIN users ON users.id = credentials.user_id
+             WHERE credentials.kind = 'certificate'
+               AND json_extract(credentials.data, '$.fingerprint') = ?1";
+        self.one(sql, [fingerprint], user)
     }
 
     pub fn add_user(&self, name: &str, role: Role) -> rusqlite::Result<i64> {
@@ -669,14 +637,10 @@ impl Db {
 
     /// The id and password hash of the user called `name`, if they have a password.
     pub fn password(&self, name: &str) -> rusqlite::Result<Option<(i64, String)>> {
-        self.conn
-            .prepare_cached(
-                "SELECT users.id, credentials.data FROM users
-                 JOIN credentials ON credentials.user_id = users.id AND credentials.kind = 'password'
-                 WHERE users.name = ?1 AND users.id != 0",
-            )?
-            .query_row([name], |row| Ok((row.get(0)?, row.get(1)?)))
-            .optional()
+        let sql = "SELECT users.id, credentials.data FROM users
+             JOIN credentials ON credentials.user_id = users.id AND credentials.kind = 'password'
+             WHERE users.name = ?1 AND users.id != 0";
+        self.one(sql, [name], |row| Ok((row.get(0)?, row.get(1)?)))
     }
 
     pub fn add_api_token(&self, token_hash: &str, user: i64) -> rusqlite::Result<usize> {
@@ -688,15 +652,9 @@ impl Db {
 
     /// The id, name and role of the user an API token is for.
     pub fn api_token(&self, token_hash: &str) -> rusqlite::Result<Option<(i64, String, Role)>> {
-        self.conn
-            .prepare_cached(
-                "SELECT users.id, users.name, users.role FROM api_tokens
-                 JOIN users ON users.id = api_tokens.user_id WHERE api_tokens.token_hash = ?1",
-            )?
-            .query_row([token_hash], |row| {
-                Ok((row.get(0)?, row.get(1)?, text(row, 2, Role::parse)?))
-            })
-            .optional()
+        let sql = "SELECT users.id, users.name, users.role FROM api_tokens
+             JOIN users ON users.id = api_tokens.user_id WHERE api_tokens.token_hash = ?1";
+        self.one(sql, [token_hash], user)
     }
 
     pub fn revoke_api_tokens(&self, user: i64) -> rusqlite::Result<usize> {
@@ -722,21 +680,13 @@ impl Db {
         token_hash: &str,
         now: u64,
     ) -> rusqlite::Result<Option<(i64, String, Role, u64)>> {
-        self.conn
-            .prepare_cached(
-                "SELECT users.id, users.name, users.role, sessions.expires_at FROM sessions
-                 JOIN users ON users.id = sessions.user_id
-                 WHERE sessions.token_hash = ?1 AND sessions.expires_at > ?2",
-            )?
-            .query_row((token_hash, to_sql(now)), |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    text(row, 2, Role::parse)?,
-                    from_sql(row.get(3)?),
-                ))
-            })
-            .optional()
+        let sql = "SELECT users.id, users.name, users.role, sessions.expires_at FROM sessions
+             JOIN users ON users.id = sessions.user_id
+             WHERE sessions.token_hash = ?1 AND sessions.expires_at > ?2";
+        self.one(sql, (token_hash, to_sql(now)), |row| {
+            let (id, name, role) = user(row)?;
+            Ok((id, name, role, from_sql(row.get(3)?)))
+        })
     }
 
     pub fn extend_session(&self, token_hash: &str, expires: u64) -> rusqlite::Result<usize> {
@@ -756,10 +706,9 @@ impl Db {
 
     /// The workers the boss keeps a connection to.
     pub fn workers(&self) -> rusqlite::Result<Vec<String>> {
-        self.conn
-            .prepare_cached("SELECT url FROM workers ORDER BY rowid")?
-            .query_map([], |row| row.get(0))?
-            .collect()
+        self.all("SELECT url FROM workers ORDER BY rowid", [], |row| {
+            row.get(0)
+        })
     }
 
     /// Adds a worker the boss keeps a connection to. Adding one twice is fine.
@@ -787,19 +736,15 @@ impl Db {
 
     /// When `who` was last known to be alive.
     pub fn last_heartbeat(&self, who: &str) -> rusqlite::Result<Option<u64>> {
-        self.conn
-            .prepare_cached("SELECT at FROM heartbeats WHERE who = ?1")?
-            .query_row([who], |row| Ok(from_sql(row.get(0)?)))
-            .optional()
+        let sql = "SELECT at FROM heartbeats WHERE who = ?1";
+        self.one(sql, [who], |row| Ok(from_sql(row.get(0)?)))
     }
 
     /// The runs not over, oldest first. When the boss starts, those are the ones the previous boss
     /// process left going.
     pub fn running_runs(&self) -> rusqlite::Result<Vec<Uuid>> {
-        self.conn
-            .prepare_cached("SELECT id FROM pl_runs WHERE state = 'running' ORDER BY rowid")?
-            .query_map([], |row| text(row, 0, uuid))?
-            .collect()
+        let sql = "SELECT id FROM pl_runs WHERE state = 'running' ORDER BY rowid";
+        self.all(sql, [], |row| text(row, 0, uuid))
     }
 
     /// Where run `id` comes in the order runs were started.

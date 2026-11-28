@@ -1,6 +1,6 @@
 // The task page: one task of one run, its live log, artifacts and restart buttons.
 
-use crate::{PageProps, account, cancel_run, fetch, follow, monotonic, view};
+use crate::{PageProps, cancel_run, fetch, follow, monotonic, top, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
 use gloo_net::http::Request;
@@ -73,10 +73,7 @@ impl Component for TaskPage {
                 spawn_local(async move {
                     match fetch::<Run>(Request::post(&url).build()).await {
                         Ok(restart) => {
-                            let same = restart
-                                .stages
-                                .iter()
-                                .filter(|s| s.name == stage)
+                            let same = (restart.stages.iter().filter(|s| s.name == stage))
                                 .flat_map(|s| &s.tasks)
                                 .find(|t| t.name == task);
                             let page = match same {
@@ -107,10 +104,8 @@ impl Component for TaskPage {
             TaskMsg::Notice(text) => self.notice = Some(text),
             // Only a running task's time changes.
             TaskMsg::Tick => {
-                return self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|s| s.task.state == TaskState::Running);
+                let shown = self.snapshot.as_ref();
+                return shown.is_some_and(|s| s.task.state == TaskState::Running);
             }
         }
         true
@@ -144,8 +139,7 @@ impl Component for TaskPage {
         };
         html! {
             <>
-                { view::header(crumbs, right, account()) }
-                { view::notice(&self.notice) }
+                { top(crumbs, right, &self.notice) }
                 { carried }
                 { artifacts }
                 // column-reverse makes the browser keep the newest lines in view while the user

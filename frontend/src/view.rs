@@ -206,14 +206,8 @@ fn cell_classes(layout: &GridLayout, stage: usize, task: usize) -> Classes {
 pub fn run_row(pipeline: &Pipeline, run: &Run) -> String {
     use std::fmt::Write;
     // By (stage, task): a stage can have thousands of tasks, too many to search for each cell.
-    let task_runs: HashMap<(&str, &str), &TaskRun> = run
-        .stages
-        .iter()
-        .flat_map(|s| {
-            s.tasks
-                .iter()
-                .map(move |t| ((s.name.as_str(), t.name.as_str()), t))
-        })
+    let task_runs: HashMap<(&str, &str), &TaskRun> = (run.stages.iter())
+        .flat_map(|s| (s.tasks.iter()).map(move |t| ((s.name.as_str(), t.name.as_str()), t)))
         .collect();
     // Writing to a String cannot fail, so the results of write! are ignored.
     let tasks: usize = pipeline.stages.iter().map(|stage| stage.tasks.len()).sum();

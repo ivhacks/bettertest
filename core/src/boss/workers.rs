@@ -517,9 +517,7 @@ pub(super) async fn forget_worker(
     State(boss): State<Shared>,
     Json(WorkerUrl { url }): Json<WorkerUrl>,
 ) -> Result<StatusCode, Failure> {
-    if boss.forget(&url).map_err(internal)? {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(not_found(format!("worker {url}")))
-    }
+    let forgot = boss.forget(&url).map_err(internal)?;
+    let gone = forgot.then_some(StatusCode::NO_CONTENT);
+    gone.ok_or_else(|| not_found(format!("worker {url}")))
 }

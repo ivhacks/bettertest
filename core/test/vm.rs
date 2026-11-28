@@ -24,9 +24,20 @@ menuentry 'recovery' {\n\
 \tlinuxefi /boot/vmlinuz root=PARTUUID=abc ro single\n\
 }\n";
     let once = extend_linux_cmdline(cfg, EMULATED_KERNEL_ARGS).unwrap();
-    assert!(once.contains(&format!("ro {EMULATED_KERNEL_ARGS}")));
-    assert!(once.contains(&format!("single {EMULATED_KERNEL_ARGS}")));
-    assert!(once.contains("initrd"));
+    let extended = format!(
+        "\
+menuentry 'Debian GNU/Linux' {{\n\
+\tlinux /boot/vmlinuz root=PARTUUID=abc ro {EMULATED_KERNEL_ARGS}\n\
+\tinitrd\t/boot/initrd.img\n\
+}}\n\
+menuentry 'recovery' {{\n\
+\tlinuxefi /boot/vmlinuz root=PARTUUID=abc ro single {EMULATED_KERNEL_ARGS}\n\
+}}\n"
+    );
+    assert_eq!(once, extended);
+    // A last line without a newline keeps going without one.
+    let last = extend_linux_cmdline("  linux /vmlinuz", "x=1").unwrap();
+    assert_eq!(last, "  linux /vmlinuz x=1");
     let twice = extend_linux_cmdline(&once, EMULATED_KERNEL_ARGS).unwrap();
     assert_eq!(once, twice);
     let err = extend_linux_cmdline("set default=0\n", EMULATED_KERNEL_ARGS).unwrap_err();
@@ -57,6 +68,23 @@ fn largest_partition_is_the_root_not_the_efi_one() {
     assert_eq!(offset, 262144 * 512);
     let err = largest_partition_offset(&[0; 2048]).unwrap_err();
     assert!(err.contains("no GPT"), "{err}");
+    // Of two the same size, the first. Unused entries and backwards ones are no partitions.
+    let offset = largest_partition_offset(&gpt(&[(10, 19), (30, 39)])).unwrap();
+    assert_eq!(offset, 10 * 512);
+    for parts in [&[][..], &[(100, 50)]] {
+        let err = largest_partition_offset(&gpt(parts)).unwrap_err();
+        assert_eq!(err, "vm image GPT has no partitions");
+    }
+    let mut far = gpt(&[(10, 19)]);
+    far[512 + 72..512 + 80].copy_from_slice(&1000u64.to_le_bytes());
+    let err = largest_partition_offset(&far).unwrap_err();
+    assert_eq!(
+        err,
+        "vm image partition table is past the start of the disk"
+    );
+    far[512 + 72..512 + 80].copy_from_slice(&u64::MAX.to_le_bytes());
+    let err = largest_partition_offset(&far).unwrap_err();
+    assert_eq!(err, "vm image partition table is too large");
 }
 
 /// debugfs rewrite of a real grub.cfg inside a qcow2, the same path a worker takes.

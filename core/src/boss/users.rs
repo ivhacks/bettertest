@@ -394,17 +394,15 @@ pub(super) async fn new_certificate(
 /// Revokes a client certificate or a passkey.
 pub(super) async fn revoke_credential(
     State(boss): State<Shared>,
-    Json(credential): Json<Id>,
+    Json(Id { id }): Json<Id>,
 ) -> Result<StatusCode, Failure> {
     check_lockout(&boss, |users| {
         for u in users.iter_mut() {
-            u.certs.retain(|c| c.id != credential.id);
-            u.keys.retain(|k| k.id != credential.id);
+            u.certs.retain(|c| c.id != id);
+            u.keys.retain(|k| k.id != id);
         }
     })?;
-    boss.db()
-        .revoke_credential(credential.id)
-        .map_err(internal)?;
+    boss.db().revoke_credential(id).map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

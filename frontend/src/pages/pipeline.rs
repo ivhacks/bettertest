@@ -5,7 +5,7 @@
 // pipeline shown for the first time is measured off-screen while the grid that is up stays:
 // painting it before its columns were measured would paint the header alone.
 
-use crate::{account, act, cancel_run, follow, load, view};
+use crate::{act, cancel_run, follow, load, top, view};
 use bettertest_shared::*;
 use gloo::{events::EventListener, utils::window};
 use gloo_net::http::Request;
@@ -295,8 +295,7 @@ impl Component for PipelinePage {
         };
         html! {
             <>
-                { view::header(crumbs, start, account()) }
-                { view::notice(&self.notice) }
+                { top(crumbs, start, &self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
                 { tabs }
                 { staging }

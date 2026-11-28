@@ -145,12 +145,8 @@ impl Boss {
 
 /// 400 for a name that could reach outside the artifact directories.
 pub(super) fn check_artifact_name(name: &str) -> Result<(), Failure> {
-    match valid_artifact_name(name) {
-        true => Ok(()),
-        false => Err(bad_request(
-            "artifact names are letters, digits, '.', '-' and '_', not starting with '.'",
-        )),
-    }
+    let why = "artifact names are letters, digits, '.', '-' and '_', not starting with '.'";
+    (valid_artifact_name(name).then_some(())).ok_or_else(|| bad_request(why))
 }
 
 pub(super) fn artifact_path(name: &str) -> Result<PathBuf, Failure> {

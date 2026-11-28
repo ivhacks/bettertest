@@ -9,7 +9,7 @@ use bettertest_shared::Arch;
 use std::{
     collections::HashMap,
     fs,
-    io::Write,
+    io::{Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
@@ -421,13 +421,15 @@ fn ensure_emulated_cmdline(image: &Path) -> Result<(), String> {
     let grub_file = RemoveOnDrop(sibling(image, "grub.cfg")?);
     let convert = |from: &str, to: &str, input: &Path, output: &Path| {
         let (input, output) = (input.to_string_lossy(), output.to_string_lossy());
-        tool(
-            "qemu-img",
-            &["convert", "-f", from, "-O", to, &input, &output],
-        )
+        let args = ["convert", "-f", from, "-O", to, &input, &output];
+        tool("qemu-img", &args)
     };
     convert("qcow2", "raw", image, &raw.0)?;
-    let offset = largest_partition_offset(&read_prefix(&raw.0, 1024 * 1024)?)?;
+    // The partition table is in the first MiB.
+    let mut prefix = vec![];
+    let read = fs::File::open(&raw.0).and_then(|file| file.take(1 << 20).read_to_end(&mut prefix));
+    read.map_err(|e| e.to_string())?;
+    let offset = largest_partition_offset(&prefix)?;
     let spec = format!("{}?offset={offset}", raw.0.display());
     // Debian's grub.cfg and Fedora's grub2 one. The edit is on a raw copy; the cached qcow is
     // replaced only after e2fsck accepts it, so a crash mid-edit leaves the previous image.
@@ -486,19 +488,10 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-fn read_prefix(path: &Path, len: usize) -> Result<Vec<u8>, String> {
-    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut buf = vec![0; len];
-    use std::io::Read;
-    let n = file.read(&mut buf).map_err(|e| e.to_string())?;
-    buf.truncate(n);
-    Ok(buf)
-}
-
 /// Byte offset of the largest GPT partition. A cloud image's root filesystem is that partition;
 /// the EFI one is much smaller.
 fn largest_partition_offset(disk: &[u8]) -> Result<u64, String> {
-    if disk.len() < 1024 || &disk[512..520] != b"EFI PART" {
+    if disk.len() < 1024 || disk.get(512..520) != Some(b"EFI PART".as_slice()) {
         return Err("vm image has no GPT, so its boot timeout cannot be set".to_string());
     }
     let entry_lba = u64::from_le_bytes(le(disk, 512 + 72)?);
@@ -507,30 +500,18 @@ fn largest_partition_offset(disk: &[u8]) -> Result<u64, String> {
     if nent == 0 || nent > 128 || !(128..=512).contains(&entsz) {
         return Err("vm image has a GPT this worker will not parse".to_string());
     }
-    let start = entry_lba
-        .checked_mul(512)
-        .ok_or("vm image partition table is too large")?;
-    let end = start
-        .checked_add(u64::from(nent) * u64::from(entsz))
-        .ok_or("vm image partition table is too large")?;
-    if end > disk.len() as u64 {
-        return Err("vm image partition table is past the start of the disk".to_string());
-    }
+    let too_large = "vm image partition table is too large";
+    let start = entry_lba.checked_mul(512).ok_or(too_large)?;
+    let end = (start.checked_add(u64::from(nent) * u64::from(entsz))).ok_or(too_large)?;
+    let table = (disk.get(start as usize..end as usize))
+        .ok_or("vm image partition table is past the start of the disk")?;
     let mut best: Option<(u64, u64)> = None;
-    for i in 0..nent {
-        let at = (start + i as u64 * entsz as u64) as usize;
-        let entry = &disk[at..at + entsz as usize];
-        if entry[..16].iter().all(|b| *b == 0) {
-            continue;
-        }
+    for entry in table.chunks_exact(entsz as usize) {
         let first = u64::from_le_bytes(le(entry, 32)?);
         let last = u64::from_le_bytes(le(entry, 40)?);
-        if last < first {
-            continue;
-        }
-        let size = last - first + 1;
-        if best.is_none_or(|(_, got)| size > got) {
-            best = Some((first, size));
+        let used = entry.iter().take(16).any(|b| *b != 0);
+        if used && last >= first && best.is_none_or(|(_, got)| last - first + 1 > got) {
+            best = Some((first, last - first + 1));
         }
     }
     let Some((first, _)) = best else {
@@ -584,14 +565,12 @@ fn debugfs_cat(spec: &str, path: &str) -> Result<String, String> {
     if stdout.contains("File not found") {
         return Err(format!("debugfs: File not found: {path}"));
     }
-    Ok(without_debugfs_banner(&stdout).to_string())
-}
-
-fn without_debugfs_banner(stdout: &str) -> &str {
-    match stdout.strip_prefix("debugfs ") {
-        Some(rest) => rest.split_once('\n').map(|(_, body)| body).unwrap_or(""),
-        None => stdout,
-    }
+    // Without the banner debugfs starts with.
+    let body = match stdout.strip_prefix("debugfs ") {
+        Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body),
+        None => &stdout,
+    };
+    Ok(body.to_string())
 }
 
 /// `(path, contents)` of the image's grub.cfg. None when it has none to edit.
@@ -635,40 +614,26 @@ fn extend_linux_cmdline(cfg: &str, extra: &str) -> Result<String, String> {
     let mut changed = false;
     let mut out = String::new();
     for line in cfg.split_inclusive('\n') {
-        let without_nl = line.trim_end_matches('\n');
-        let trimmed = without_nl.trim_start();
-        if is_kernel_line(trimmed) {
-            let indent_len = without_nl.len() - trimmed.len();
-            out.push_str(&without_nl[..indent_len]);
-            out.push_str(&strip_timeout_args(trimmed));
-            out.push(' ');
-            out.push_str(extra);
-            changed = true;
-        } else {
-            out.push_str(without_nl);
+        let trimmed = line.trim_start();
+        let command = trimmed.split_once([' ', '\t']).map(|(command, _)| command);
+        if !matches!(command, Some("linux" | "linuxefi")) {
+            out.push_str(line);
+            continue;
         }
-        if line.ends_with('\n') {
-            out.push('\n');
-        }
+        let indent = line.strip_suffix(trimmed).unwrap_or_default();
+        let kept: Vec<&str> = (trimmed.split_whitespace())
+            .filter(|word| {
+                !word.starts_with("systemd.default_device_timeout_sec=")
+                    && !word.starts_with("systemd.default_timeout_start_sec=")
+            })
+            .collect();
+        let newline = if line.ends_with('\n') { "\n" } else { "" };
+        out.push_str(&format!("{indent}{} {extra}{newline}", kept.join(" ")));
+        changed = true;
     }
     changed.then_some(out).ok_or_else(|| {
         "grub.cfg has no linux command, so the emulated boot timeout cannot be set".to_string()
     })
-}
-
-fn is_kernel_line(trimmed: &str) -> bool {
-    (trimmed.split_once([' ', '\t']))
-        .is_some_and(|(command, _)| matches!(command, "linux" | "linuxefi"))
-}
-
-fn strip_timeout_args(line: &str) -> String {
-    line.split_whitespace()
-        .filter(|word| {
-            !word.starts_with("systemd.default_device_timeout_sec=")
-                && !word.starts_with("systemd.default_timeout_start_sec=")
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]

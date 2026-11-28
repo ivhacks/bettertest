@@ -47,11 +47,8 @@ pub fn needed(method: &str, path: &str) -> Option<Role> {
     if admin.contains(&path) || (path == "/api/settings" && method != "GET") {
         return Some(Role::Admin);
     }
-    Some(if matches!(method, "GET" | "HEAD") {
-        Role::Read
-    } else {
-        Role::Write
-    })
+    let read = matches!(method, "GET" | "HEAD");
+    Some(if read { Role::Read } else { Role::Write })
 }
 
 /// Whether `users`, as they would be after a change, leave nobody able to administer the boss: the
@@ -78,12 +75,8 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 /// Whether `password` is the one `stored` is the hash of. The argon2 crate reads the cost from the
 /// stored hash and compares in constant time.
 pub fn check_password(password: &str, stored: &str) -> bool {
-    match PasswordHash::new(stored) {
-        Ok(hash) => Argon2::default()
-            .verify_password(password.as_bytes(), &hash)
-            .is_ok(),
-        Err(_) => false,
-    }
+    PasswordHash::new(stored)
+        .is_ok_and(|hash| (Argon2::default().verify_password(password.as_bytes(), &hash)).is_ok())
 }
 
 /// A new session token for the cookie, and the hash of it the db keeps: a stolen db then holds no

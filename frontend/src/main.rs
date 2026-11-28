@@ -10,7 +10,7 @@ use futures::{
 use gloo::timers::future::TimeoutFuture;
 use gloo::{
     events::{EventListener, EventListenerOptions, EventListenerPhase},
-    utils::window,
+    utils::{document, window},
 };
 use gloo_net::{eventsource::futures::EventSource, http::Request};
 use serde::de::DeserializeOwned;
@@ -39,12 +39,8 @@ fn main() {
     fade_released_buttons();
     spawn_local(async {
         // The boss serves `/` as the first pipeline's page, and names it.
-        let canonical = gloo::utils::document().query_selector("link[rel=canonical]");
-        if let Some(page) = canonical
-            .ok()
-            .flatten()
-            .and_then(|l| l.get_attribute("href"))
-        {
+        let canonical = document().query_selector("link[rel=canonical]");
+        if let Some(page) = (canonical.ok().flatten()).and_then(|l| l.get_attribute("href")) {
             write_history(&page, true);
         }
         load_me().await;
@@ -57,7 +53,7 @@ fn main() {
         // The document already painted this route's frame. Mark the app up, then drop the frame
         // and draw in the same turn, so the header is not blank between the two. The watchdog
         // stands down once data-started is set.
-        if let Some(body) = gloo::utils::document().body() {
+        if let Some(body) = document().body() {
             let _ = body.set_attribute("data-started", "");
             let _ = body.remove_attribute("data-frame");
             body.set_text_content(None);
@@ -68,17 +64,13 @@ fn main() {
 
 /// Asks the boss who this browser is and remembers the answer for the header.
 pub async fn load_me() {
-    let me = match Request::get("/api/me").send().await {
-        Ok(response) => response.json::<Me>().await.ok(),
-        Err(_) => None,
-    };
+    let me = fetch::<Me>(Request::get("/api/me").build()).await.ok();
     ME.with(|cell| *cell.borrow_mut() = me);
 }
 
 /// Moves to `url` (a path, and a query if it has one) inside the running shell.
 pub fn navigate(url: &str) {
-    let go = GO.with(|cell| cell.borrow().clone());
-    if let Some(go) = go {
+    if let Some(go) = GO.with(|cell| cell.borrow().clone()) {
         go.emit(url.to_string());
     }
 }
@@ -136,10 +128,7 @@ fn run_query(url: &str) -> Option<String> {
 }
 
 fn pathname() -> String {
-    window()
-        .location()
-        .pathname()
-        .unwrap_or_else(|_| "/".to_string())
+    (window().location().pathname()).unwrap_or_else(|_| "/".to_string())
 }
 
 /// The path and query in the address bar.
@@ -216,22 +205,17 @@ impl Component for App {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let link = ctx.link().clone();
-        GO.with(|cell| *cell.borrow_mut() = Some(link.callback(AppMsg::Go)));
-        let pop_link = ctx.link().clone();
-        let pop = EventListener::new(&window(), "popstate", move |_| {
-            pop_link.send_message(AppMsg::Pop);
-        });
+        GO.with(|cell| *cell.borrow_mut() = Some(ctx.link().callback(AppMsg::Go)));
+        let pop = ctx.link().callback(|()| AppMsg::Pop);
         // The default listener is passive, and a passive listener cannot cancel the click, so the
         // browser would load the document anyway. Capture runs before anything else stops it.
         let mut options = EventListenerOptions::enable_prevent_default();
         options.phase = EventListenerPhase::Capture;
-        let click =
-            EventListener::new_with_options(&gloo::utils::document(), "click", options, |event| {
-                if let Some(url) = app_link(event) {
-                    navigate(&url);
-                }
-            });
+        let click = EventListener::new_with_options(&document(), "click", options, |event| {
+            if let Some(url) = app_link(event) {
+                navigate(&url);
+            }
+        });
         if pathname() == "/" {
             ctx.link().send_message(AppMsg::Go("/".to_string()));
         }
@@ -240,7 +224,7 @@ impl Component for App {
             pages: vec![here()],
             notice: None,
             home_gen: 0,
-            _pop: pop,
+            _pop: EventListener::new(&window(), "popstate", move |_| pop.emit(())),
             _click: click,
         }
     }
@@ -351,9 +335,22 @@ fn cancel_run(run: String, notice: Callback<String>) {
     act(request, "could not cancel the run", notice);
 }
 
-/// The right end of every header: who is logged in, or a way to log in.
-fn account() -> Html {
-    me().map(|me| view::account(&me)).unwrap_or_default()
+/// The top of every page: its header, ending in who is logged in or a way to log in, then what went
+/// wrong.
+fn top(crumbs: Html, actions: Html, notice: &Option<String>) -> Html {
+    let account = me().map(|me| view::account(&me)).unwrap_or_default();
+    html! { <>{ view::header(crumbs, actions, account) }{ view::notice(notice) }</> }
+}
+
+/// A form's submit, which stays on the page and sends `msg` instead.
+fn submit<C: Component>(
+    link: &yew::html::Scope<C>,
+    msg: fn() -> C::Message,
+) -> Callback<SubmitEvent> {
+    link.callback(move |e: SubmitEvent| {
+        e.prevent_default();
+        msg()
+    })
 }
 
 /// The menu the account icon opens.
@@ -389,7 +386,7 @@ fn menu() -> Html {
 /// its buttons, hidden, and showing it again would play the fade of the one pressed to leave it.
 fn unmark_released() {
     // Live: a button leaves it as it loses the mark, so it is walked from the end.
-    let marked = gloo::utils::document().get_elements_by_class_name("released");
+    let marked = document().get_elements_by_class_name("released");
     for button in (0..marked.length()).rev().filter_map(|i| marked.item(i)) {
         let _ = button.class_list().remove_1("released");
     }
@@ -400,7 +397,7 @@ fn unmark_released() {
 /// down on as released when it comes up again, wherever that is. Taking the mark off at the next
 /// press lets the fade start over.
 fn fade_released_buttons() {
-    let document = gloo::utils::document();
+    let document = document();
     let pressed: Rc<RefCell<Option<Element>>> = Rc::default();
     let down = pressed.clone();
     EventListener::new(&document, "pointerdown", move |event| {
@@ -534,11 +531,6 @@ async fn fetch<T: DeserializeOwned>(
     serde_json::from_str(&send(request).await?).map_err(|e| e.to_string())
 }
 
-/// POSTs `body` as json to `url`, for the reply only to say whether it worked.
-async fn post_json(url: &str, body: &impl serde::Serialize) -> Result<String, String> {
-    send(Request::post(url).json(body)).await
-}
-
 /// Sends `request`, whose effect arrives through the live stream; `notice` hears `failed` and why
 /// the boss refused it.
 fn act(request: Result<Request, gloo_net::Error>, failed: &'static str, notice: Callback<String>) {
@@ -568,8 +560,5 @@ fn load<C: Component, T: DeserializeOwned + 'static>(
 
 /// What is typed in `input`.
 fn value(input: &NodeRef) -> String {
-    input
-        .cast::<web_sys::HtmlInputElement>()
-        .map(|i| i.value())
-        .unwrap_or_default()
+    (input.cast::<web_sys::HtmlInputElement>()).map_or_else(String::new, |i| i.value())
 }
