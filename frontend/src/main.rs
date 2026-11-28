@@ -159,12 +159,8 @@ fn locked_out() -> bool {
 /// new document. Modified clicks keep the browser's own behavior, so a new tab still works.
 fn app_link(event: &Event) -> Option<String> {
     let mouse = event.dyn_ref::<MouseEvent>()?;
-    if mouse.button() != 0
-        || mouse.meta_key()
-        || mouse.ctrl_key()
-        || mouse.shift_key()
-        || mouse.alt_key()
-    {
+    let modified = mouse.meta_key() || mouse.ctrl_key() || mouse.shift_key() || mouse.alt_key();
+    if mouse.button() != 0 || modified {
         return None;
     }
     let element = event.target()?.dyn_into::<Element>().ok()?;

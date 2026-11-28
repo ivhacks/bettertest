@@ -82,14 +82,8 @@ pub fn load(cert: &Path, key: &Path) -> Result<Tls, String> {
     if days_left < 0 {
         return Err(format!("{} expired on {expires}", cert.display()));
     }
-    let mut names: Vec<String> = leaf
-        .subject_alt_names()
-        .map(|sans| {
-            sans.iter()
-                .filter_map(|n| n.dnsname().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let sans = leaf.subject_alt_names().into_iter().flatten();
+    let mut names: Vec<String> = sans.filter_map(|n| n.dnsname().map(String::from)).collect();
     if names.is_empty() {
         let common = leaf.subject_name().entries_by_nid(Nid::COMMONNAME).next();
         if let Some(name) = common.and_then(|e| e.data().to_string().ok()) {

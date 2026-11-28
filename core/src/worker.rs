@@ -314,7 +314,7 @@ fn channel(id: &str) -> Result<PathBuf, String> {
 
 async fn delete_container(Path(id): Path<Uuid>) -> Result<(), Failure> {
     let id = id.to_string();
-    output(Command::new("docker").args(["rm", "--force", "--volumes", &id]))
+    docker(&["rm", "--force", "--volumes", &id])
         .await
         .map_err(internal)?;
     fs::remove_dir_all(channel(&id).map_err(internal)?).map_err(internal)?;
@@ -323,19 +323,18 @@ async fn delete_container(Path(id): Path<Uuid>) -> Result<(), Failure> {
 
 async fn remove_leftover_containers() -> Result<(), String> {
     let label = format!("label={CONTAINER_LABEL}");
-    let ids =
-        output(Command::new("docker").args(["ps", "--all", "--quiet", "--filter", &label])).await?;
+    let ids = docker(&["ps", "--all", "--quiet", "--filter", &label]).await?;
     let ids: Vec<&str> = ids.split_whitespace().collect();
     if !ids.is_empty() {
         println!("removing {} leftover containers", ids.len());
-        output(
-            Command::new("docker")
-                .args(["rm", "--force", "--volumes"])
-                .args(&ids),
-        )
-        .await?;
+        docker(&[&["rm", "--force", "--volumes"][..], &ids].concat()).await?;
     }
     Ok(())
+}
+
+/// Runs docker to completion, as `output` does.
+async fn docker(args: &[&str]) -> Result<String, String> {
+    output(Command::new("docker").args(args)).await
 }
 
 /// Runs a command to completion. Ok is its stdout; Err explains what went wrong.
@@ -375,10 +374,7 @@ pub fn cache_key(url: &str) -> String {
 /// first time. Returns the local image name.
 async fn load_image(url: &str) -> Result<String, Failure> {
     let name = format!("bettertest-artifact:{}", cache_key(url));
-    if output(Command::new("docker").args(["image", "inspect", &name]))
-        .await
-        .is_ok()
-    {
+    if docker(&["image", "inspect", &name]).await.is_ok() {
         return Ok(name);
     }
 
@@ -392,7 +388,7 @@ async fn load_image(url: &str) -> Result<String, Failure> {
     }) else {
         return Err(internal(format!("unexpected docker load output: {stdout}")));
     };
-    output(Command::new("docker").args(["tag", loaded.trim(), &name]))
+    docker(&["tag", loaded.trim(), &name])
         .await
         .map_err(internal)?;
     Ok(name)
