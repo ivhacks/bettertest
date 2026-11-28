@@ -421,13 +421,11 @@ async fn check_out(
         let why = response.text().await.unwrap_or_default();
         return Err(format!("could not download {url}: {status} {why}"));
     }
-    let tar = feed(
-        response,
-        url,
-        Command::new("tar").args(["-x", "-C"]).arg(dir),
-    )
-    .await;
-    tar.map(|_| ())
+    let mut tar = Command::new("tar");
+    tar.args(["-x", "-C"]).arg(dir);
+    let unpacked = feed(response, url, &mut tar).await;
+    unpacked
+        .map(drop)
         .map_err(|e| format!("could not unpack {url}: {e}"))
 }
 
