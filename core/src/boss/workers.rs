@@ -486,10 +486,8 @@ pub(super) async fn add_worker(
     let url = url.trim();
     let valid = reqwest::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
     if !valid {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("{url:?} is not a worker url like http://worker-host:7358"),
-        ));
+        let why = format!("{url:?} is not a worker url like http://worker-host:7358");
+        return Err(bad_request(why));
     }
     boss.enroll(url);
     Ok(StatusCode::NO_CONTENT)

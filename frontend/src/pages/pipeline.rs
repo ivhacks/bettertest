@@ -358,8 +358,8 @@ impl PipelinePage {
             .query_selector(".grid")
             .ok()
             .flatten()
-            .filter(|grid| grid.client_width() > 0)
             .map(|grid| grid.client_width())
+            .filter(|width| *width > 0)
             .unwrap_or_else(|| main.client_width().saturating_sub(32).max(1));
         let _ = stage.set_attribute("style", &format!("{STAGING};width:{width}px"));
         Some(measure_grid(&stage, pipeline))

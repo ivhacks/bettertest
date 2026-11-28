@@ -198,11 +198,9 @@ pub async fn entry(
     for index in 0..boss.repos.len() {
         boss.fetch(index).await;
     }
-    if !interrupted.is_empty() {
-        println!(
-            "resuming {} runs a previous boss left going",
-            interrupted.len()
-        );
+    let resuming = interrupted.len();
+    if resuming > 0 {
+        println!("resuming {resuming} runs a previous boss left going");
     }
     for id in interrupted {
         spawn(resume(boss.clone(), id, "the boss restarted".into(), None));
@@ -290,11 +288,8 @@ pub async fn entry(
     match &serving.tls {
         Some(tls) => {
             println!("boss web ui at https://{}:{port}", tls.name);
-            println!(
-                "certificate for {}, expires {}",
-                tls.names.join(", "),
-                tls.expires
-            );
+            let names = tls.names.join(", ");
+            println!("certificate for {names}, expires {}", tls.expires);
             axum::serve(tls::listen(listener, tls), service).await?;
         }
         None => {
@@ -321,8 +316,16 @@ fn not_found(what: impl std::fmt::Display) -> Failure {
     (StatusCode::NOT_FOUND, format!("no {what}"))
 }
 
+pub(crate) fn bad_request(why: impl ToString) -> Failure {
+    (StatusCode::BAD_REQUEST, why.to_string())
+}
+
+pub(crate) fn conflict(why: impl ToString) -> Failure {
+    (StatusCode::CONFLICT, why.to_string())
+}
+
 fn parse_id(id: &str) -> Result<Uuid, Failure> {
-    Uuid::parse_str(id).map_err(|_| (StatusCode::BAD_REQUEST, format!("{id:?} is not a uuid")))
+    Uuid::parse_str(id).map_err(|_| bad_request(format!("{id:?} is not a uuid")))
 }
 
 /// Retention keeps up with the clock once an hour, which is plenty for settings counted in days.
@@ -356,15 +359,10 @@ async fn put_settings(
     State(boss): State<Shared>,
     Json(settings): Json<Settings>,
 ) -> Result<Json<Swept>, Failure> {
-    for days in [settings.artifact_days, settings.log_days]
-        .into_iter()
-        .flatten()
-    {
-        if !(1..=36500).contains(&days) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("keep things 1 to 36500 days, or forever, not {days} days"),
-            ));
+    for days in [settings.artifact_days, settings.log_days].iter().flatten() {
+        if !(1..=36500).contains(days) {
+            let why = format!("keep things 1 to 36500 days, or forever, not {days} days");
+            return Err(bad_request(why));
         }
     }
     boss.db().set_settings(&settings).map_err(internal)?;
@@ -593,22 +591,18 @@ async fn install_sh(State(boss): State<Shared>, headers: HeaderMap, uri: Uri) ->
         .into_response()
 }
 
-async fn download_binary(AxumPath(name): AxumPath<String>) -> Response {
+async fn download_binary(AxumPath(name): AxumPath<String>) -> Result<Response, Failure> {
     let Some(path) = binary_file(&name) else {
-        return (StatusCode::NOT_FOUND, "no such binary").into_response();
+        return Err(not_found("such binary"));
     };
-    let file = match tokio::fs::File::open(&path).await {
-        Ok(file) => file,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return (StatusCode::NOT_FOUND, format!("no {name} in {DL_DIR}")).into_response();
-        }
-        Err(e) => return internal(e).into_response(),
-    };
-    let length = match file.metadata().await {
-        Ok(meta) => meta.len(),
-        Err(e) => return internal(e).into_response(),
-    };
-    (
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| match e.kind() {
+            ErrorKind::NotFound => not_found(format!("{name} in {DL_DIR}")),
+            _ => internal(e),
+        })?;
+    let length = file.metadata().await.map_err(internal)?.len();
+    Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (header::CACHE_CONTROL, "no-cache".to_string()),
@@ -616,7 +610,7 @@ async fn download_binary(AxumPath(name): AxumPath<String>) -> Response {
         ],
         Body::from_stream(ReaderStream::new(file)),
     )
-        .into_response()
+        .into_response())
 }
 
 /// There is no landing page: `/` is the first pipeline's page. It is served here rather than
@@ -782,13 +776,9 @@ impl Boss {
                     }
                 }
             }
-            pipedefs
-                .iter()
-                .filter(
-                    |(_, pipedef)| matches!(pipedef, Pipedef::Repo { repo, .. } if *repo == index),
-                )
-                .map(|(name, _)| name.clone())
-                .collect()
+            let ours = |p: &Pipedef| matches!(p, Pipedef::Repo { repo, .. } if *repo == index);
+            let ours = pipedefs.iter().filter(|(_, p)| ours(p));
+            ours.map(|(name, _)| name.clone()).collect()
         };
         // What the pages show is the default branch as of this fetch.
         for name in names {
@@ -894,11 +884,10 @@ impl Boss {
                 // rather than leaving files nothing refers to.
                 for task in &tasks {
                     let dir = task_artifacts_dir(*task)?;
-                    match fs::remove_dir_all(&dir) {
-                        Err(e) if e.kind() != ErrorKind::NotFound => {
-                            return Err(format!("could not delete {}: {e}", dir.display()).into());
-                        }
-                        _ => {}
+                    if let Err(e) = fs::remove_dir_all(&dir)
+                        && e.kind() != ErrorKind::NotFound
+                    {
+                        return Err(format!("could not delete {}: {e}", dir.display()).into());
                     }
                 }
                 self.db().forget_artifacts(&tasks, now)?;
