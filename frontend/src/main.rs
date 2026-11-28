@@ -85,31 +85,48 @@ pub fn navigate(url: &str) {
 
 /// A page the shell draws itself. Anything else (an artifact, the API) is a real navigation.
 pub fn is_app_path(path: &str) -> bool {
-    page(path).is_some()
+    page(path, true).is_some()
 }
 
-/// The page at `url`. A new key destroys the previous page, and with it the stream it was
-/// following. The pipeline page is the exception: one component covers every pipeline and its
-/// results, so switching tabs keeps the grid up until the snapshot it switched to can replace it.
-fn page(url: &str) -> Option<Html> {
-    let key = url.to_string();
+/// The page at `url`, on screen or kept behind it (see `App::pages`). One pipeline page covers
+/// every pipeline and its results, so switching tabs keeps the grid up until the snapshot it
+/// switched to can replace it. A task page is one task's: another task's is a new page.
+fn page(url: &str, shown: bool) -> Option<Html> {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
     Some(match segments.as_slice() {
         [""] => html! {},
         ["pipeline", name] if !name.is_empty() => {
             let run = run_query(url);
-            html! { <pages::pipeline::PipelinePage key="pipeline" id={name.to_string()} run={run} /> }
+            html! { <pages::pipeline::PipelinePage id={name.to_string()} {run} {shown} /> }
         }
         ["task", id] if !id.is_empty() => {
-            html! { <pages::task::TaskPage key={key} id={id.to_string()} /> }
+            html! { <pages::task::TaskPage key={id.to_string()} id={id.to_string()} /> }
         }
-        ["workers"] => html! { <pages::workers::WorkersPage key={key} /> },
-        ["settings"] => html! { <pages::settings::SettingsPage key={key} /> },
-        ["users"] => html! { <pages::users::UsersPage key={key} /> },
-        ["login"] => html! { <pages::login::LoginPage key={key} /> },
+        ["workers"] => html! { <pages::workers::WorkersPage {shown} /> },
+        ["settings"] => html! { <pages::settings::SettingsPage {shown} /> },
+        ["users"] => html! { <pages::users::UsersPage {shown} /> },
+        ["login"] => html! { <pages::login::LoginPage /> },
         _ => return None,
     })
+}
+
+/// What kind of page `url` is: the first part of its path.
+fn kind(url: &str) -> &str {
+    let path = url.trim_start_matches('/');
+    path.split(['/', '?', '#']).next().unwrap_or_default()
+}
+
+/// Whether the page at `url` stays up once left: the ones that hold data worth painting at once
+/// on the way back.
+fn kept(url: &str) -> bool {
+    matches!(kind(url), "pipeline" | "workers" | "settings" | "users")
+}
+
+/// Whether a page that stays up once left is the one on screen.
+#[derive(Properties, PartialEq)]
+pub struct Shown {
+    pub shown: bool,
 }
 
 /// `?run=<id>` on a pipeline url, the results to show instead of the grid.
@@ -176,6 +193,10 @@ fn app_link(event: &Event) -> Option<String> {
 struct App {
     // The page's path and query.
     url: String,
+    // The url of every page in the document, one of each kind, in the order first visited: the
+    // one on screen, and the kept ones left, hidden, holding their data and following their
+    // streams, so coming back to one paints at once.
+    pages: Vec<String>,
     notice: Option<String>,
     // Bumped whenever a navigation starts, so a slow answer about `/` cannot land late.
     home_gen: u32,
@@ -215,6 +236,7 @@ impl Component for App {
         }
         Self {
             url: here(),
+            pages: vec![here()],
             notice: None,
             home_gen: 0,
             _pop: pop,
@@ -245,11 +267,21 @@ impl Component for App {
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
-        let page = page(&self.url);
+        // A list of its own: among unkeyed siblings, Yew would match pages by place, not by key,
+        // and make each new again whenever one is added.
+        let pages: Html = (self.pages.iter())
+            .map(|url| {
+                let shown = *url == self.url;
+                let page = page(url, shown)
+                    .unwrap_or_else(|| html! { <pre class="notice">{ "not found" }</pre> });
+                html! { <div class="page" key={kind(url).to_string()} hidden={!shown}>{ page }</div> }
+            })
+            .collect();
         html! {
             <>
                 { view::notice(&self.notice) }
-                { page.unwrap_or_else(|| html! { <pre class="notice">{ "not found" }</pre> }) }
+                { pages }
+                { menu() }
             </>
         }
     }
@@ -267,6 +299,13 @@ impl App {
             return true;
         }
         if path == "/" {
+            // Back to the grid of the pipeline shown last, which is still up, rather than asking
+            // the boss which is first.
+            let pipeline = self.pages.iter().find(|page| kind(page) == "pipeline");
+            if let Some(grid) = pipeline.and_then(|page| page.split('?').next()) {
+                self.show(grid.to_string(), replace);
+                return true;
+            }
             self.request_home(ctx);
             return false;
         }
@@ -274,10 +313,18 @@ impl App {
         true
     }
 
+    /// Puts the page at `url` on screen, in the place of the page of its kind; pages that are not
+    /// kept go once left.
     fn show(&mut self, url: String, replace: bool) {
         if url != self.url {
             write_history(&url, replace);
-            self.url = url;
+            self.url = url.clone();
+        }
+        let to = kind(&url).to_string();
+        self.pages.retain(|page| kept(page) || kind(page) == to);
+        match self.pages.iter_mut().find(|page| kind(page) == to) {
+            Some(page) => *page = url,
+            None => self.pages.push(url),
         }
     }
 
@@ -302,6 +349,16 @@ fn cancel_run(run: String, notice: Callback<String>) {
 
 /// The right end of every header: who is logged in, or a way to log in.
 fn account() -> Html {
+    ME.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(view::account)
+            .unwrap_or_default()
+    })
+}
+
+/// The menu the account icon opens.
+fn menu() -> Html {
     let logout = Callback::from(|_: MouseEvent| {
         spawn_local(async {
             let _ = Request::post("/api/logout").send().await;
@@ -331,7 +388,7 @@ fn account() -> Html {
         });
     });
     ME.with(|cell| match &*cell.borrow() {
-        Some(me) => view::account(me, logout, passkey),
+        Some(me) => view::menu(me, logout, passkey),
         None => html! {},
     })
 }
@@ -346,7 +403,7 @@ fn fade_released_buttons() {
     let down = pressed.clone();
     EventListener::new(&document, "pointerdown", move |event| {
         let target = event.target().and_then(|t| t.dyn_into::<Element>().ok());
-        let button = target.and_then(|e| e.closest("button, .cell a").ok().flatten());
+        let button = target.and_then(|e| e.closest("button, .icon, .cell a").ok().flatten());
         if let Some(button) = &button {
             let _ = button.class_list().remove_1("released");
         }

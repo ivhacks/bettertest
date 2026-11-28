@@ -61,9 +61,10 @@ impl UsersPage {
 
 impl Component for UsersPage {
     type Message = UsersMsg;
-    type Properties = ();
+    type Properties = crate::Shown;
 
-    // Users change rarely and only here, so the page reads them when it changes them, not live.
+    // Users change rarely and mostly here, so the page reads them when it opens, when it changes
+    // them and when it comes back on screen, not live. What it read before stays up meanwhile.
     fn create(ctx: &Context<Self>) -> Self {
         ctx.link().send_message(UsersMsg::Load);
         Self {
@@ -78,6 +79,13 @@ impl Component for UsersPage {
             new_password: NodeRef::default(),
             password: NodeRef::default(),
         }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>, _old: &Self::Properties) -> bool {
+        if ctx.props().shown {
+            ctx.link().send_message(UsersMsg::Load);
+        }
+        true
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {

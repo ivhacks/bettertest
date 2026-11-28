@@ -71,6 +71,16 @@ a {
     text-decoration: none;
 }
 
+/* Each page's header, main and tabs lay out in the body. A page left stays in the document,
+   hidden, so coming back to it paints at once. */
+.page {
+    display: contents;
+}
+
+.page[hidden] {
+    display: none;
+}
+
 /* One row: the mark, the page's own path and buttons, then an icon for each page and the account.
    The mark and the icons sit at the same place on every page. */
 header {
@@ -119,22 +129,11 @@ header .links {
     margin-left: auto;
 }
 
-header .icon,
-header .account {
-    --fill: transparent;
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    color: var(--text);
-}
-
-header .menu {
+.menu {
     display: none;
 }
 
-header .menu:popover-open {
+.menu:popover-open {
     --cut: 16px;
     display: flex;
     flex-direction: column;
@@ -150,8 +149,10 @@ header .menu:popover-open {
    Hovered, a button lights up at once: its fill mixes in a little white (brightness cannot lift
    pure red). Pressed, it turns white with black type the moment the mouse goes down, and fades back
    over --fade once released. The fade is an animation, not a transition, so that it runs only on
-   release: CSS cannot tell a release from a hover, so main.rs marks the released button. */
-button {
+   release: CSS cannot tell a release from a hover, so main.rs marks the released button.
+   The header's icons, links or not, are such buttons. */
+button,
+.icon {
     --cut: 10px;
     --fill: var(--line);
     position: relative;
@@ -168,13 +169,15 @@ button {
 }
 
 button,
+.icon,
 .window,
-header .menu:popover-open {
+.menu:popover-open {
     clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
             calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 
 button::before,
+.icon::before,
 .window::before {
     --inner: calc(var(--cut) - 0.586px);
     content: "";
@@ -206,8 +209,20 @@ button.small {
     font-size: 16px;
 }
 
+/* A 44px square around a 24px line drawing, outlined only while lit. */
+.icon {
+    --fill: transparent;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+}
+
 button:hover,
 button:focus-visible,
+.icon:hover,
+.icon:focus-visible,
 .cell a:hover,
 .cell a:focus-visible {
     outline: none;
@@ -216,6 +231,8 @@ button:focus-visible,
 
 button:active,
 button:active::before,
+.icon:active,
+.icon:active::before,
 .cell a:active {
     background: #ffffff;
     color: #000000;
@@ -223,6 +240,8 @@ button:active::before,
 
 button.released,
 button.released::before,
+.icon.released,
+.icon.released::before,
 .cell a.released {
     animation: released var(--fade) ease-out;
 }
@@ -766,7 +785,7 @@ select {
     gap: 10px;
 }
 
-header .me {
+.menu .me {
     color: var(--muted);
 }
 

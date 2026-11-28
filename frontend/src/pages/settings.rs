@@ -24,12 +24,10 @@ pub enum SettingsMsg {
     Saved(Settings, Swept),
 }
 
-impl Component for SettingsPage {
-    type Message = SettingsMsg;
-    type Properties = ();
-
-    // Settings change rarely and only here, so the page reads them once instead of following them.
-    fn create(ctx: &Context<Self>) -> Self {
+impl SettingsPage {
+    // Settings change rarely and only here, so the page reads them when it opens, and again when it
+    // comes back on screen, instead of following them. What it read before stays up meanwhile.
+    fn read(ctx: &Context<Self>) {
         load(
             ctx.link(),
             Request::get("/api/settings").build(),
@@ -42,6 +40,15 @@ impl Component for SettingsPage {
             SettingsMsg::Https,
             |e| SettingsMsg::Notice(format!("could not load HTTPS: {e}")),
         );
+    }
+}
+
+impl Component for SettingsPage {
+    type Message = SettingsMsg;
+    type Properties = crate::Shown;
+
+    fn create(ctx: &Context<Self>) -> Self {
+        Self::read(ctx);
         Self {
             settings: None,
             https: None,
@@ -50,6 +57,14 @@ impl Component for SettingsPage {
             artifacts: NodeRef::default(),
             logs: NodeRef::default(),
         }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>, _old: &Self::Properties) -> bool {
+        if ctx.props().shown {
+            Self::read(ctx);
+            self.saved = None;
+        }
+        true
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {

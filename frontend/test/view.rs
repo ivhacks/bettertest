@@ -777,6 +777,8 @@ const PERSON: &str = concat!(
     r#"<circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5"></path></svg>"#,
 );
 
+// The account is one of the header's icons, as the page links are: the same class, title and label,
+// a button only because it opens a menu rather than a page.
 #[test]
 fn account_is_a_person_icon() {
     let me = Me {
@@ -785,14 +787,20 @@ fn account_is_a_person_icon() {
         logged_in: true,
     };
     assert_eq!(
-        to_html(&account(&me, Callback::noop(), Callback::noop())),
+        to_html(&account(&me)),
         [
-            r#"<button popovertarget="account" aria-label="Account, iv" class="account">"#,
+            r#"<button popovertarget="account" title="Account, iv" aria-label="Account, iv" class="icon">"#,
             PERSON,
-            r#"</button><span id="account" popover="auto" class="menu"><span class="me">iv</span>"#,
-            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></span>"#,
+            r#"</button>"#,
         ]
         .concat()
+    );
+    assert_eq!(
+        to_html(&menu(&me, Callback::noop(), Callback::noop())),
+        concat!(
+            r#"<span id="account" popover="auto" class="menu"><span class="me">iv</span>"#,
+            r#"<button class="small">Add Passkey</button><button class="small">Log Out</button></span>"#,
+        )
     );
     let me = Me {
         name: "logged out".into(),
@@ -800,14 +808,15 @@ fn account_is_a_person_icon() {
         logged_in: false,
     };
     assert_eq!(
-        to_html(&account(&me, Callback::noop(), Callback::noop())),
+        to_html(&account(&me)),
         [
-            r#"<a href="/login" aria-label="Log In" class="account">"#,
+            r#"<a href="/login" title="Log In" aria-label="Log In" class="icon">"#,
             PERSON,
             "</a>"
         ]
         .concat()
     );
+    assert_eq!(to_html(&menu(&me, Callback::noop(), Callback::noop())), "");
 }
 
 #[test]

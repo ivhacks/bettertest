@@ -11,38 +11,46 @@ pub fn header(crumbs: Html, actions: Html, account: Html) -> Html {
     let context = (crumbs != Html::default() || actions != Html::default()).then(|| {
         html! { <span class="context">{ crumbs }<span class="actions">{ actions }</span></span> }
     });
-    let page = |href: &'static str, name: &'static str, icon: Html| {
-        html! { <a class="icon" href={href} title={name} aria-label={name}>{ icon }</a> }
-    };
     html! {
         <header>
             <a class="home" href="/"><img src="/assets/mark.v1.svg" alt="bettertest" /></a>
             { for context }
             <nav class="links">
-                { page("/", "Pipelines", icon(html! {
+                { icon("Pipelines", Some("/"), html! {
                     <><rect x="3.5" y="4.5" width="17" height="15" /><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10M15 9.5v10" /></>
-                })) }
-                { page("/workers", "Workers", icon(html! {
+                }) }
+                { icon("Workers", Some("/workers"), html! {
                     <><rect x="3.5" y="4.5" width="17" height="6" /><rect x="3.5" y="13.5" width="17" height="6" /><path d="M7 7.5h2M7 16.5h2" /></>
-                })) }
-                { page("/settings", "Settings", icon(html! {
+                }) }
+                { icon("Settings", Some("/settings"), html! {
                     <><path d="M3.5 7.5h17M3.5 16.5h17" /><circle cx="9" cy="7.5" r="2.5" fill="var(--background)" /><circle cx="15" cy="16.5" r="2.5" fill="var(--background)" /></>
-                })) }
-                { page("/users", "Users", icon(html! {
+                }) }
+                { icon("Users", Some("/users"), html! {
                     <><circle cx="9" cy="8.5" r="3" /><path d="M3 19.5c1-3 3-4.5 6-4.5s5 1.5 6 4.5" /><path d="M15 5.8a3 3 0 0 1 0 5.4M17.5 15.3c1.6.6 2.7 2 3.3 4.2" /></>
-                })) }
+                }) }
                 { account }
             </nav>
         </header>
     }
 }
 
-/// A 24px line drawing in the text's color, like the person icon.
-fn icon(shapes: Html) -> Html {
-    html! {
+/// One of the header's icons: a 24px line drawing in a 44px square that lights up and presses like
+/// a button (`.icon` in style.css). A link to `href`, or with none, the button that opens the
+/// account menu.
+fn icon(name: &str, href: Option<&str>, shapes: Html) -> Html {
+    let drawing = html! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
             { shapes }
         </svg>
+    };
+    let name = name.to_string();
+    match href {
+        Some(href) => html! {
+            <a class="icon" href={href.to_string()} title={name.clone()} aria-label={name}>{ drawing }</a>
+        },
+        None => html! {
+            <button class="icon" popovertarget="account" title={name.clone()} aria-label={name}>{ drawing }</button>
+        },
     }
 }
 
@@ -535,34 +543,29 @@ pub fn settings(
     }
 }
 
-/// Who is logged in, with a way out; or a way in, for the logged-out user. On a phone each is one
-/// person icon, and the logged-in controls sit in the popover it opens; on a wide screen the icon is
-/// hidden and the popover's contents stand in the header.
-pub fn account(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEvent>) -> Html {
-    if me.logged_in {
-        html! {
-            <>
-                <button class="account" popovertarget="account" aria-label={format!("Account, {}", me.name)}>
-                    { person() }
-                </button>
-                <span id="account" class="menu" popover="auto">
-                    <span class="me">{ &me.name }</span>
-                    <button class="small" onclick={passkey}>{ "Add Passkey" }</button>
-                    <button class="small" onclick={logout}>{ "Log Out" }</button>
-                </span>
-            </>
-        }
-    } else {
-        html! {
-            <a class="account" href="/login" aria-label="Log In">{ person() }</a>
-        }
+/// The header's last icon, a person: for the logged-out user a link to log in, for anyone else the
+/// button that opens their `menu`.
+pub fn account(me: &Me) -> Html {
+    let person = html! { <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5" /></> };
+    match me.logged_in {
+        true => icon(&format!("Account, {}", me.name), None, person),
+        false => icon("Log In", Some("/login"), person),
     }
 }
 
-fn person() -> Html {
-    icon(
-        html! { <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.3-3.3 3.7-5 7-5s5.7 1.7 7 5" /></> },
-    )
+/// Who is logged in, with a way out: the popover the account icon opens. One for every page, since
+/// pages stay in the document, hidden, once left.
+pub fn menu(me: &Me, logout: Callback<MouseEvent>, passkey: Callback<MouseEvent>) -> Html {
+    if !me.logged_in {
+        return html! {};
+    }
+    html! {
+        <span id="account" class="menu" popover="auto">
+            <span class="me">{ &me.name }</span>
+            <button class="small" onclick={passkey}>{ "Add Passkey" }</button>
+            <button class="small" onclick={logout}>{ "Log Out" }</button>
+        </span>
+    }
 }
 
 /// One row per user, logged out first, with a column per way of logging in. `change` gets a user's

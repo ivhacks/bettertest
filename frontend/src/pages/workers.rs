@@ -28,9 +28,10 @@ pub enum WorkersMsg {
     Forget,
 }
 
+// Kept up once left, following the boss's workers all along, so coming back paints them at once.
 impl Component for WorkersPage {
     type Message = WorkersMsg;
-    type Properties = ();
+    type Properties = crate::Shown;
 
     fn create(ctx: &Context<Self>) -> Self {
         let link = ctx.link();
