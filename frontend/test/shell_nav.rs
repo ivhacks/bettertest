@@ -23,6 +23,11 @@ fn pipeline_page_fits_and_its_cells_answer() {
 }
 
 #[test]
+fn header_icons_are_one_control_and_pages_come_back_at_once() {
+    playwright("test/navigation.py");
+}
+
+#[test]
 fn tap_targets_take_a_finger() {
     playwright("test/tap_targets.py");
 }

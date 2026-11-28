@@ -245,6 +245,9 @@ TASKS = {
     OTHER: snapshot(task_body(OTHER, "spell", "docs")),
 }
 WORKERS = snapshot({"now": 10_000, "workers": []})
+# Who /api/me says the browser is, and what /api/users lists. Other tests change them.
+ME = b'{"name":"logged out","role":"admin","logged_in":false}'
+USERS = b"[]"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -270,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             RESUMED.append(self.connection.session_reused)
         path = urlparse(self.path).path
         if path == "/api/me":
-            self._json(b'{"name":"logged out","role":"admin","logged_in":false}')
+            self._json(ME)
             return
         if path == "/api/pipelines":
             self._json(b'["app","docs"]')
@@ -282,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(b"null")
             return
         if path == "/api/users":
-            self._json(b"[]")
+            self._json(USERS)
             return
         if path == "/api/pipelines/events":
             every = [json.loads(body)["Snapshot"] for body in PIPELINES.values()]
