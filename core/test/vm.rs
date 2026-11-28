@@ -78,7 +78,10 @@ fn largest_partition_is_the_root_not_the_efi_one() {
     let mut far = gpt(&[(10, 19)]);
     far[512 + 72..512 + 80].copy_from_slice(&1000u64.to_le_bytes());
     let err = largest_partition_offset(&far).unwrap_err();
-    assert_eq!(err, "vm image partition table is past the start of the disk");
+    assert_eq!(
+        err,
+        "vm image partition table is past the start of the disk"
+    );
     far[512 + 72..512 + 80].copy_from_slice(&u64::MAX.to_le_bytes());
     let err = largest_partition_offset(&far).unwrap_err();
     assert_eq!(err, "vm image partition table is too large");

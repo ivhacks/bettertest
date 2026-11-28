@@ -149,6 +149,36 @@ async fn a_stopping_worker_says_so_and_waits_for_the_boss_to_hang_up() {
 }
 
 #[tokio::test]
+async fn a_bad_start_task_form_is_refused_saying_why() {
+    let url = worker(1).await;
+    let client = reqwest::Client::new();
+    let refused = async |form: reqwest::multipart::Form| {
+        let sent = client.post(format!("{url}/start-task")).multipart(form);
+        let response = sent.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        response.text().await.unwrap()
+    };
+    let form = || task_form("noop");
+    let unknown = form().text("colour", "red");
+    assert_eq!(refused(unknown).await, r#"unknown field "colour""#);
+    for port in ["0", "x", "70000"] {
+        let bad = form().text("boss_port", port);
+        assert_eq!(refused(bad).await, format!("bad boss_port {port:?}"));
+    }
+    // The first bad field is the one named.
+    let both = form().text("boss_port", "0").text("colour", "red");
+    assert_eq!(refused(both).await, r#"bad boss_port "0""#);
+    let none = reqwest::multipart::Form::new().text("stage", "T");
+    assert_eq!(refused(none).await, "pipedef is missing");
+    let no_task = reqwest::multipart::Form::new()
+        .text("pipedef", "")
+        .text("stage", "T");
+    assert_eq!(refused(no_task).await, "task is missing");
+    let no_boss = form().text("pipeline", "p").text("run", "not a uuid");
+    assert_eq!(refused(no_boss).await, "bad pipeline, run or boss name");
+}
+
+#[tokio::test]
 async fn a_running_task_still_fills_the_worker() {
     let url = worker(1).await;
     let client = reqwest::Client::new();
