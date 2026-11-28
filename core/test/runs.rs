@@ -582,3 +582,82 @@ async fn the_boss_keeps_what_a_task_publishes() {
     assert_eq!(log.last(), Some(&said), "{log:?}");
     assert!(boss.db().artifacts(task).unwrap().is_empty());
 }
+
+/// `POST /api/restart/{run}[/{stage}[/{task}]]`: never while the run runs, never from after a stage
+/// that did not pass, and otherwise a new run that carries over what came before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_restarts_once_over_carrying_over_what_passed() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = worker_hanging_once(1, calls.clone()).await;
+    let (boss, pipeline, source) = two_stages_on(&url).await;
+    let mut events = boss.events.subscribe();
+    let loaded = (source, Ok(pipeline));
+    let first = begin_run(
+        &boss,
+        &HeaderMap::new(),
+        "app",
+        loaded,
+        None,
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let restart = |path: String| restart(State(boss.clone()), AxumPath(path), HeaderMap::new());
+    let running = async {
+        loop {
+            if let Ok(Event::Log { line, .. }) = events.recv().await
+                && line.line == "first try"
+            {
+                return;
+            }
+        }
+    };
+    timeout(Duration::from_secs(20), running).await.unwrap();
+    let short = first.short_id();
+    let refused = restart(first.id.to_string()).await.map(|_| ()).unwrap_err();
+    let still = format!("run {short} is still running. Restart it once it is over.");
+    assert_eq!(refused, conflict(still));
+
+    lock(&boss.going)[&first.id]
+        .cancel
+        .send_replace(Some("enough".into()));
+    assert_eq!(finished(&mut events, first.id).await, RunState::Fail);
+    let refused = restart(format!("{}/Second", first.id)).await;
+    let why = format!(
+        "First.once did not run in run {short}, so the stages after it have nothing to build on. \
+         Restart First instead."
+    );
+    assert_eq!(refused.map(|_| ()).unwrap_err(), conflict(why));
+    let unknown = restart(format!("{}/Third", first.id)).await;
+    assert_eq!(unknown.map(|_| ()).unwrap_err().1, "no stage Third in app");
+    let nonsense = restart("6dfde7".into()).await.map(|_| ()).unwrap_err();
+    assert_eq!(nonsense, bad_request("\"6dfde7\" is not a uuid"));
+
+    // The whole run again: every task runs.
+    let Json(whole) = restart(first.id.to_string()).await.unwrap();
+    assert_eq!(finished(&mut events, whole.id).await, RunState::Pass);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert!(
+        whole
+            .stages
+            .iter()
+            .flat_map(|s| &s.tasks)
+            .all(|t| t.carried_from.is_none())
+    );
+
+    // From Second: First.once is carried over, pointing at the task that really ran.
+    let Json(second) = restart(format!("{}/Second", whole.id)).await.unwrap();
+    assert_eq!(finished(&mut events, second.id).await, RunState::Pass);
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "only Second.twice ran");
+    let once = &second.stages[0].tasks[0];
+    assert_eq!(once.carried_from, Some(whole.stages[0].tasks[0].id));
+    assert_eq!(once.state, Pass);
+    // And a restart of that carries over the same task, not the carried copy.
+    let Json(third) = restart(format!("{}/Second/twice", second.id))
+        .await
+        .unwrap();
+    assert_eq!(finished(&mut events, third.id).await, RunState::Pass);
+    assert_eq!(
+        third.stages[0].tasks[0].carried_from,
+        Some(whole.stages[0].tasks[0].id)
+    );
+}
