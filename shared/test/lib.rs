@@ -138,3 +138,78 @@ fn workers_stay_sorted_by_url_one_each() {
     assert_eq!(snapshot.workers.len(), 4);
     assert!(snapshot.workers.iter().all(|w| w.url != "http://c"));
 }
+
+/// A task a restart puts back to pending (to run it again) keeps nothing of its last try: the db
+/// forgets its worker, times, tests, carried-over result and artifacts, so a page that folds the
+/// event has to forget them too, or it shows what a fresh snapshot no longer has.
+#[test]
+fn a_task_put_back_to_pending_keeps_nothing_of_its_last_try() {
+    let mut ran = run(1);
+    let earlier = Uuid::from_u128(7);
+    ran.stages[0].tasks[0] = TaskRun {
+        state: TaskState::Skipped,
+        worker: Some("http://w:7358".into()),
+        started: Some(5),
+        ended: Some(9),
+        carried_from: Some(Uuid::from_u128(77)),
+        tests: Some(Tests {
+            total: 3,
+            failed: 0,
+        }),
+        ..run(1).stages[0].tasks[0].clone()
+    };
+    let rewound = Event::TaskState {
+        pipeline: "app".into(),
+        run: Uuid::from_u128(1),
+        task: Uuid::from_u128(101),
+        state: TaskState::Pending,
+        at: 12,
+    };
+    let mut snapshot = PipelineSnapshot {
+        name: "app".into(),
+        pipelines: vec!["app".into()],
+        pipeline: Err("not needed".into()),
+        runs: vec![Arc::new(ran.clone())],
+    };
+    snapshot.apply(&rewound);
+    assert_eq!(*snapshot.runs[0], run(1));
+
+    let mut task = TaskSnapshot {
+        now: 0,
+        run: ran.clone(),
+        carried_from: Some(earlier),
+        log_deleted: None,
+        artifacts_deleted: None,
+        stage: "Test".into(),
+        task: ran.stages[0].tasks[0].clone(),
+        lines: vec![LogLine {
+            stream: LogStream::Stdout,
+            line: "the earlier run's log".into(),
+        }],
+        artifacts: vec![Artifact {
+            name: "app.deb".into(),
+            size: 3,
+        }],
+    };
+    task.apply(&rewound);
+    let again = LogLine {
+        stream: LogStream::Bettertest,
+        line: "the boss restarted: running this again".into(),
+    };
+    task.apply(&Event::Log {
+        task: Uuid::from_u128(101),
+        line: again.clone(),
+    });
+    let fresh = TaskSnapshot {
+        now: 0,
+        run: run(1),
+        carried_from: None,
+        log_deleted: None,
+        artifacts_deleted: None,
+        stage: "Test".into(),
+        task: run(1).stages[0].tasks[0].clone(),
+        lines: vec![again],
+        artifacts: vec![],
+    };
+    assert_eq!(task, fresh);
+}

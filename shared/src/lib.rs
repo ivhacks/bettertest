@@ -112,6 +112,22 @@ pub struct Tests {
 }
 
 impl TaskRun {
+    /// A task that has not run (yet).
+    pub fn pending(id: Uuid, name: String) -> TaskRun {
+        let (worker, started, ended, carried_from, tests) = (None, None, None, None, None);
+        let state = TaskState::Pending;
+        TaskRun {
+            id,
+            name,
+            state,
+            worker,
+            started,
+            ended,
+            carried_from,
+            tests,
+        }
+    }
+
     /// How long it ran, or has been running by `now`. None if it never started.
     pub fn runtime(&self, now: u64) -> Option<u64> {
         let ended = match self.state {
@@ -129,6 +145,11 @@ impl TaskRun {
                 self.worker = Some(worker.clone());
                 self.started = Some(*at);
             }
+            // Put back to run again: as in the db, nothing of its last try stays.
+            Event::TaskState {
+                state: TaskState::Pending,
+                ..
+            } => *self = TaskRun::pending(self.id, std::mem::take(&mut self.name)),
             Event::TaskState { state, at, .. } => {
                 self.state = *state;
                 if state.is_over() {
@@ -575,7 +596,14 @@ impl TaskSnapshot {
             | Event::TaskTests { task, .. }
                 if *task == self.task.id =>
             {
-                self.task.apply(event)
+                self.task.apply(event);
+                // Put back to pending: its artifacts are gone, and a carried task's log was another's.
+                if self.task.state == TaskState::Pending {
+                    self.artifacts.clear();
+                    if self.carried_from.take().is_some() {
+                        self.lines.clear();
+                    }
+                }
             }
             Event::Log { task, line } if *task == self.task.id => self.lines.push(line.clone()),
             Event::Artifact { task, artifact } if *task == self.task.id => {
