@@ -38,7 +38,7 @@ async fn logged_in() {
     crate::navigate(next);
 }
 
-/// Logs in `how` says, then goes back to where the browser came from, or says why not.
+/// Logs in through `how`, then goes back to where the browser came from, or says why not.
 fn log_in(
     link: &yew::html::Scope<LoginPage>,
     how: impl Future<Output = Result<String, String>> + 'static,
