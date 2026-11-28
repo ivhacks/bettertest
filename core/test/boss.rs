@@ -7,6 +7,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+// The tests of the boss's own modules, children of these so they share the helpers below.
+#[path = "users.rs"]
+mod users;
+
 fn task(name: &str) -> Task {
     Task {
         name: name.into(),
