@@ -95,6 +95,13 @@ async fn following_a_worker_says_why_it_ended() {
     );
     assert_eq!(*cancelled.borrow(), Some(format!("{url} is restarting")));
     assert!(lock(&boss.going)[&running.run].interrupted);
+    // Down already, before watch_worker hears follow_worker end: the run going on waits for it to
+    // come back, rather than start its task there and fail on a closed port.
+    let gone = worker(&boss, &url);
+    let restarting = Some(format!("{url} is restarting"));
+    assert_eq!((gone.info, gone.problem), (None, restarting));
+    let picked = pick_worker(&lock(&boss.workers), Some(&url), &[], now(), &[]);
+    assert!(matches!(picked, Ok(Pick::Busy(why)) if why == format!("{url} is connecting")));
 
     let url = worker_answering(StatusCode::OK, "event: worker\ndata: {\"hostname\":1}\n\n").await;
     known(&boss, &url);

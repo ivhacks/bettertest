@@ -196,6 +196,11 @@ impl Boss {
     /// Worker `url` is restarting, and takes its tasks and sandboxes with it. Every run with either
     /// there stops, as a cancelled one does, then goes on from where it was (see resume).
     pub(super) fn worker_stopping(&self, url: &str) {
+        let reason = format!("{url} is restarting");
+        // Gone before its runs stop, or they would go on there: it no longer takes connections.
+        self.change_worker(url, |w| {
+            (w.info, w.problem, w.since) = (None, Some(reason.clone()), now());
+        });
         let runs: BTreeSet<Uuid> = match lock(&self.workers).get(url) {
             Some(watched) => watched.worker.tasks.iter().map(|t| t.run).collect(),
             None => BTreeSet::new(),
@@ -206,8 +211,7 @@ impl Boss {
                 .any(|up| worker_key(&up.worker) == url);
             if (runs.contains(id) || sandbox_there) && going.cancel.borrow().is_none() {
                 going.interrupted = true;
-                let reason = format!("{url} is restarting");
-                going.cancel.send_replace(Some(reason));
+                going.cancel.send_replace(Some(reason.clone()));
             }
         }
     }
@@ -408,18 +412,18 @@ pub(super) fn edit_distance(a: &str, b: &str) -> usize {
 pub(super) async fn watch_worker(boss: Shared, url: String) {
     let mut pause = Duration::from_secs(1);
     while lock(&boss.workers).contains_key(&url) {
+        let started = now();
         let problem = follow_worker(&boss, &url).await;
         // A worker that went quiet was gone from its last word, not from when the boss gave up.
         let last_heard = boss.db().last_heartbeat(&url).ok().flatten();
-        let mut was_connected = false;
         boss.change_worker(&url, |w| {
             if w.info.take().is_some() {
                 w.since = last_heard.unwrap_or_else(now);
-                was_connected = true;
             }
             w.problem = Some(problem);
         });
-        if was_connected {
+        // It answered this time, so it was up, and may well be back soon.
+        if last_heard.is_some_and(|heard| heard >= started) {
             pause = Duration::from_secs(1);
         }
         sleep(pause).await;

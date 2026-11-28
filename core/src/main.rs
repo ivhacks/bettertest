@@ -140,12 +140,22 @@ impl Https {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    run(Args::parse().command).await.unwrap_or_else(|e| {
+fn main() -> ExitCode {
+    block_on(run(Args::parse().command)).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         ExitCode::FAILURE
     })
+}
+
+/// Drives `command` to its end on a tokio runtime that the process then ends with, still up. Torn
+/// down, it refuses what spawned tasks still ask of it ("background task failed"), and a boss's
+/// tasks would record that: a run going on after its worker said it was restarting would fail,
+/// its pipedef unreadable.
+fn block_on<T>(command: impl Future<Output = Result<T, Box<dyn Error>>>) -> Result<T, Box<dyn Error>> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let ended = runtime.block_on(command);
+    std::mem::forget(runtime);
+    ended
 }
 
 async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {

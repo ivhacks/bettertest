@@ -146,3 +146,50 @@ fn printing_to_a_full_disk_does_not_panic() {
     assert!(child.status.success(), "{output}");
     assert!(output.contains("1 passed"), "{output}");
 }
+
+/// A task still going when its command ends keeps a runtime that works until the process is gone.
+/// The prober waits until tokio would refuse blocking work, as a runtime being torn down does, and
+/// only then lets the task ask for some: a boss going on with a run once its worker said it was
+/// restarting read the pipedef just then, got "background task failed", and failed the run.
+#[test]
+fn a_task_still_going_as_the_command_ends_is_not_refused() {
+    use std::sync::{Arc, atomic::*, mpsc};
+    let (go, wait) = mpsc::channel();
+    let (read, result) = mpsc::channel();
+    let (handle, runtime) = mpsc::channel();
+    let ended = Arc::new(AtomicBool::new(false));
+    let over = ended.clone();
+    let prober = std::thread::spawn(move || {
+        let runtime: tokio::runtime::Handle = runtime.recv().unwrap();
+        loop {
+            let ran = Arc::new(AtomicBool::new(false));
+            let probe = runtime.spawn_blocking({
+                let ran = ran.clone();
+                move || ran.store(true, Ordering::SeqCst)
+            });
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let refused = probe.is_finished() && !ran.load(Ordering::SeqCst);
+            if refused || over.load(Ordering::SeqCst) {
+                return go.send(()).unwrap();
+            }
+        }
+    });
+    let command = async move {
+        let (started, holding) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            // Holds a worker thread, as a busy one would, until the prober says.
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            let metadata = tokio::fs::metadata("/").await;
+            read.send(metadata.map(|_| ()).map_err(|e| e.to_string())).unwrap();
+        });
+        holding.await.unwrap();
+        handle.send(tokio::runtime::Handle::current()).unwrap();
+        Ok(())
+    };
+    block_on(command).unwrap();
+    ended.store(true, Ordering::SeqCst);
+    prober.join().unwrap();
+    let timeout = std::time::Duration::from_secs(10);
+    assert_eq!(result.recv_timeout(timeout), Ok(Ok(())));
+}
