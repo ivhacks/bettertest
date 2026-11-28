@@ -267,10 +267,8 @@ impl Vms {
 
     /// The vm finished booting. Returns false when nobody is waiting for it.
     pub fn ready(&self, id: &str) -> bool {
-        match lock(&self.waiting).remove(id) {
-            Some(ready) => ready.send(()).is_ok(),
-            None => false,
-        }
+        let waiting = lock(&self.waiting).remove(id);
+        waiting.is_some_and(|ready| ready.send(()).is_ok())
     }
 }
 
@@ -631,11 +629,8 @@ fn find_grub(spec: &str) -> Result<Option<(String, String)>, String> {
 /// deleted. Reading the file cannot tell: a deleted inode still returns its old bytes.
 fn replace_grub(spec: &str, cfg_path: &str, host_file: &Path) -> Result<(), String> {
     let _ = debugfs(spec, &format!("rm {cfg_path}"), true);
-    let wrote = debugfs(
-        spec,
-        &format!("write {} {cfg_path}", host_file.display()),
-        true,
-    )?;
+    let write = format!("write {} {cfg_path}", host_file.display());
+    let wrote = debugfs(spec, &write, true)?;
     if wrote.contains("File not found") || wrote.contains("already exists") {
         return Err(format!("debugfs could not write {cfg_path}: {wrote}"));
     }

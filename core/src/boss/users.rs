@@ -28,9 +28,8 @@ impl Boss {
     pub(super) fn end_ceremony(&self, id: &str) -> Result<Ceremony, Failure> {
         match lock(&self.ceremonies).remove(id) {
             Some(pending) if pending.expires > now() => Ok(pending.ceremony),
-            _ => Err((
-                StatusCode::UNAUTHORIZED,
-                "that passkey ceremony is unknown, finished or expired: try again".into(),
+            _ => Err(unauthorized(
+                "that passkey ceremony is unknown, finished or expired: try again",
             )),
         }
     }
@@ -95,10 +94,7 @@ pub(super) fn who(
         if let Some((id, name, role)) = db.api_token(&hash).map_err(internal)? {
             return Ok((me(name, role), Some(id)));
         }
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "that token is not, or no longer, valid".into(),
-        ));
+        return Err(unauthorized("that token is not, or no longer, valid"));
     }
     if let Some(token) = auth::session_token(cookies) {
         let hash = auth::token_hash(token);
@@ -147,21 +143,13 @@ pub(super) async fn guard(
         return next.run(request).await;
     }
     // 401 when logging in could help, 403 when the user is logged in and still may not.
-    match me.logged_in {
-        false => {
-            let why = format!("log in to do this: it needs {} access", needed.as_str());
-            (StatusCode::UNAUTHORIZED, why).into_response()
-        }
-        true => {
-            let why = format!(
-                "{} has {} access, and this needs {}",
-                me.name,
-                me.role.as_str(),
-                needed.as_str()
-            );
-            (StatusCode::FORBIDDEN, why).into_response()
-        }
+    let needs = needed.as_str();
+    if !me.logged_in {
+        return unauthorized(format!("log in to do this: it needs {needs} access")).into_response();
     }
+    let (name, role) = (&me.name, me.role.as_str());
+    let why = format!("{name} has {role} access, and this needs {needs}");
+    (StatusCode::FORBIDDEN, why).into_response()
 }
 
 pub(super) async fn get_me(
@@ -185,10 +173,7 @@ pub(super) async fn login(
 ) -> Result<Response, Failure> {
     let found = boss.db().password(&login.name).map_err(internal)?;
     // The same answer for an unknown name as for a wrong password, so it says nothing about who exists.
-    let refused = (
-        StatusCode::UNAUTHORIZED,
-        "that name and password do not match".to_string(),
-    );
+    let refused = unauthorized("that name and password do not match");
     let (user, stored) = found.ok_or_else(|| refused.clone())?;
     // Argon2 takes a moment of CPU and memory on purpose: off the async threads.
     let password = login.password;
@@ -343,9 +328,8 @@ pub(super) async fn remove_user(
     Json(user): Json<Id>,
 ) -> Result<StatusCode, Failure> {
     if user.id == 0 {
-        return Err(bad_request(
-            "logged out is always there; lower its role instead",
-        ));
+        let why = "logged out is always there; lower its role instead";
+        return Err(bad_request(why));
     }
     check_lockout(&boss, |users| users.retain(|u| u.id != user.id))?;
     boss.db().remove_user(user.id).map_err(internal)?;
@@ -451,16 +435,12 @@ pub(super) async fn new_passkey_options(
         (Some(id), _) if me.role == Role::Admin => id,
         (None, Some(mine)) => mine,
         _ if me.logged_in => {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("{} may add passkeys only for themselves", me.name),
-            ));
+            let why = format!("{} may add passkeys only for themselves", me.name);
+            return Err((StatusCode::FORBIDDEN, why));
         }
         _ => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "log in first: a passkey is added for the user logged in".into(),
-            ));
+            let why = "log in first: a passkey is added for the user logged in";
+            return Err(unauthorized(why));
         }
     };
     let name = boss.db().user_name(user).map_err(internal)?;
@@ -513,14 +493,13 @@ pub(super) async fn new_passkey(
     headers: HeaderMap,
     Json(finish): Json<Finish<RegisterPublicKeyCredential>>,
 ) -> Result<Json<serde_json::Value>, Failure> {
-    let bad = |why: String| (StatusCode::BAD_REQUEST, why);
     let Ceremony::Register { user, state } = boss.end_ceremony(&finish.ceremony)? else {
-        return Err(bad("that ceremony was for logging in".into()));
+        return Err(bad_request("that ceremony was for logging in"));
     };
     let webauthn = boss.webauthn(&headers)?;
     let made = webauthn
         .finish_passkey_registration(&finish.credential, &state)
-        .map_err(|e| bad(format!("the passkey does not check out: {e}")))?;
+        .map_err(|e| bad_request(format!("the passkey does not check out: {e}")))?;
     let credential = passkey::credential_key(made.cred_id());
     let record = serde_json::to_value(&made).map_err(internal)?;
     let db = boss.db();
@@ -530,7 +509,7 @@ pub(super) async fn new_passkey(
     let keys = db.passkeys(user).map_err(internal)?;
     room_for_passkey(&name, keys.len())?;
     if db.passkey(&credential).map_err(internal)?.is_some() {
-        return Err((StatusCode::CONFLICT, "that passkey is added already".into()));
+        return Err(conflict("that passkey is added already"));
     }
     let label = next_label(&name, keys.iter().map(|k| &k.label));
     db.add_passkey(user, &label, &credential, &record)
@@ -562,26 +541,23 @@ pub(super) async fn passkey_login(
     headers: HeaderMap,
     Json(finish): Json<Finish<PublicKeyCredential>>,
 ) -> Result<Response, Failure> {
-    let refused = |why: String| (StatusCode::UNAUTHORIZED, why);
     let Ceremony::Login(state) = boss.end_ceremony(&finish.ceremony)? else {
-        return Err(refused("that ceremony was for adding a passkey".into()));
+        return Err(unauthorized("that ceremony was for adding a passkey"));
     };
     let webauthn = boss.webauthn(&headers)?;
     let (handle, id) = webauthn
         .identify_discoverable_authentication(&finish.credential)
-        .map_err(|e| refused(format!("the passkey says nothing of whose it is: {e}")))?;
+        .map_err(|e| unauthorized(format!("the passkey says nothing of whose it is: {e}")))?;
     let credential = passkey::credential_key(id);
     let found = boss.db().passkey(&credential).map_err(internal)?;
     let found = found.filter(|(_, user, _)| passkey::user(handle) == *user);
     let Some((row, user, record)) = found else {
-        return Err(refused(
-            "that passkey is not, or no longer, anyone's".into(),
-        ));
+        return Err(unauthorized("that passkey is not, or no longer, anyone's"));
     };
     let mut key: webauthn_rs::prelude::Passkey = serde_json::from_str(&record).map_err(internal)?;
     let result = webauthn
         .finish_discoverable_authentication_v2(&finish.credential, state, &key)
-        .map_err(|e| refused(format!("the passkey does not check out: {e}")))?;
+        .map_err(|e| unauthorized(format!("the passkey does not check out: {e}")))?;
     if key.update_credential(&result) == Some(true) {
         let record = serde_json::to_value(&key).map_err(internal)?;
         boss.db().set_passkey(row, &record).map_err(internal)?;

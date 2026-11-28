@@ -308,19 +308,21 @@ pub(super) async fn resume(boss: Shared, id: Uuid, why: String, link: Option<Str
     };
     let Some(run) = read() else { return };
     let loaded = match load_pipeline(&boss, &run.pipeline, run.commit.as_ref()).await {
-        Ok((source, Ok(pipeline))) if lines_up(&run, &pipeline) => Ok((source, pipeline)),
+        Ok((source, Ok(pipeline))) if lines_up(&run, &pipeline) => {
+            match resume_from(&run, &pipeline) {
+                Some(from) => Ok((source, pipeline, from)),
+                None => Err("a task failed".into()),
+            }
+        }
         Ok((_, Ok(_))) => Err("its pipedef no longer has the stages and tasks it had".into()),
         Ok((_, Err(e))) | Err((_, e)) => Err(e),
     };
-    let (source, pipeline) = match loaded {
+    let (source, pipeline, from) = match loaded {
         Ok(loaded) => loaded,
         Err(e) => {
             let why = format!("{why}, and the run cannot go on: {e}");
-            return end_run(&boss, &run, Some(why), link).await;
+            return end_run(&boss, &run, why, link).await;
         }
-    };
-    let Some(from) = resume_from(&run, &pipeline) else {
-        return end_run(&boss, &run, None, link).await;
     };
     for stage in run.stages.iter().skip(from) {
         for task in stage.tasks.iter().filter(|t| t.state != TaskState::Pending) {
@@ -333,15 +335,11 @@ pub(super) async fn resume(boss: Shared, id: Uuid, why: String, link: Option<Str
 
 /// Whether `run` has the stages and tasks `pipeline` has, in the same order.
 fn lines_up(run: &Run, pipeline: &Pipeline) -> bool {
-    run.stages.len() == pipeline.stages.len()
-        && run
-            .stages
-            .iter()
-            .zip(&pipeline.stages)
-            .all(|(ran, defined)| {
-                let names = ran.tasks.iter().map(|t| &t.name);
-                ran.name == defined.name && names.eq(defined.tasks.iter().map(|t| &t.name))
-            })
+    let same = |(ran, defined): (&StageRun, &Stage)| {
+        let names = ran.tasks.iter().map(|t| &t.name);
+        ran.name == defined.name && names.eq(defined.tasks.iter().map(|t| &t.name))
+    };
+    run.stages.len() == pipeline.stages.len() && run.stages.iter().zip(&pipeline.stages).all(same)
 }
 
 /// The stage an interrupted run goes on from: its first stage that has not passed, or an earlier
@@ -361,11 +359,8 @@ pub(super) fn resume_from(run: &Run, pipeline: &Pipeline) -> Option<usize> {
 /// `why`.
 fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
     if task.started.is_some() {
-        boss.log(
-            task.id,
-            LogStream::Bettertest,
-            format!("{why}: running this again"),
-        );
+        let line = format!("{why}: running this again");
+        boss.log(task.id, LogStream::Bettertest, line);
     }
     // Files first, as retention does: should forgetting them fail, nothing refers to them anyway.
     if let Err(e) = task_artifacts_dir(task.id).and_then(fs::remove_dir_all)
@@ -389,15 +384,22 @@ fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
     }
 }
 
-/// Ends `run`, which will not go on: every task not over is skipped, its log saying `why`, if
-/// given. The run passed if every task did.
-async fn end_run(boss: &Shared, run: &Run, why: Option<String>, link: Option<String>) {
+/// Ends `run`, which will not go on. A task the restart cut short fails, its log saying `why`, so
+/// a failed run shows where it failed; the tasks still to come are skipped. The run passed if every
+/// task did.
+async fn end_run(boss: &Shared, run: &Run, why: String, link: Option<String>) {
     let tasks = || run.stages.iter().flat_map(|s| &s.tasks);
-    for task in tasks().filter(|t| !t.state.is_over()) {
-        if let Some(why) = &why {
+    for task in tasks() {
+        // Started here, and neither passed nor failed: running, or skipped once a worker restarted.
+        let cut_short = matches!(task.state, TaskState::Running | TaskState::Skipped)
+            && task.started.is_some()
+            && task.carried_from.is_none();
+        if cut_short {
             boss.log(task.id, LogStream::Bettertest, why.clone());
+            boss.set_task_state(run, task.id, TaskState::Fail);
+        } else if task.state == TaskState::Pending {
+            boss.set_task_state(run, task.id, TaskState::Skipped);
         }
-        boss.set_task_state(run, task.id, TaskState::Skipped);
     }
     let (state, status, said) = match tasks().all(|t| t.state == TaskState::Pass) {
         true => (RunState::Pass, "success", "passed"),
@@ -668,12 +670,8 @@ pub(super) async fn execute_run(r: Running, pipeline: Pipeline, link: Option<Str
     // The run was created from this pipeline, so its stages and tasks line up one to one.
     for (index, (stage, stage_run)) in pipeline.stages.iter().zip(&r.run.stages).enumerate() {
         // Tasks a restart carried over, or that ran before the run was resumed, keep their result.
-        let fresh = || {
-            stage_run
-                .tasks
-                .iter()
-                .filter(|t| t.state == TaskState::Pending)
-        };
+        let pending = |t: &&TaskRun| t.state == TaskState::Pending;
+        let fresh = || stage_run.tasks.iter().filter(pending);
         if failed || r.is_cancelled() {
             for task_run in fresh() {
                 r.skip(task_run.id);
@@ -1228,18 +1226,12 @@ pub(super) async fn get_source(
     let commit = run
         .commit
         .ok_or_else(|| not_found(format!("commit: run {id} tests none")))?;
-    let Some(Pipedef::Repo { repo, .. }) = boss.pipedef(&run.pipeline) else {
-        return Err(not_found(format!(
-            "repo: pipeline {} is in none",
-            run.pipeline
-        )));
+    let pipeline = &run.pipeline;
+    let Some(Pipedef::Repo { repo, .. }) = boss.pipedef(pipeline) else {
+        return Err(not_found(format!("repo: pipeline {pipeline} is in none")));
     };
-    let mut archive = boss
-        .repo(repo)?
-        .archive(&commit.sha)
-        .map_err(internal)?
-        .spawn()
-        .map_err(internal)?;
+    let mut git = boss.repo(repo)?.archive(&commit.sha).map_err(internal)?;
+    let mut archive = git.spawn().map_err(internal)?;
     let stdout = archive
         .stdout
         .take()

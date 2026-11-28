@@ -3,7 +3,7 @@
 // shared by several tasks or started early to have them warm.
 
 use crate::{
-    boss::{self, Failure, bad_request, conflict, internal},
+    boss::{self, Failure, bad_request, conflict, internal, not_found},
     client, lock, pipedef, tools, vm, workdir,
 };
 use axum::{
@@ -345,11 +345,7 @@ async fn remove_leftover_containers() -> Result<(), String> {
 
 /// Runs a command to completion. Ok is its stdout; Err explains what went wrong.
 pub async fn output(command: &mut Command) -> Result<String, String> {
-    let program = command
-        .as_std()
-        .get_program()
-        .to_string_lossy()
-        .into_owned();
+    let program = command.as_std().get_program().display().to_string();
     let output = command
         .stdin(Stdio::null())
         .output()
@@ -359,10 +355,8 @@ pub async fn output(command: &mut Command) -> Result<String, String> {
             _ => format!("could not run {program}: {e}"),
         })?;
     if !output.status.success() {
-        return Err(format!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{program} failed: {stderr}"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -473,10 +467,8 @@ async fn check_out(
     drop(stdin);
     let finished = tar.wait_with_output().await.map_err(|e| e.to_string())?;
     if !finished.status.success() {
-        return Err(format!(
-            "could not unpack {url}: {}",
-            String::from_utf8_lossy(&finished.stderr)
-        ));
+        let stderr = String::from_utf8_lossy(&finished.stderr);
+        return Err(format!("could not unpack {url}: {stderr}"));
     }
     Ok(())
 }
@@ -525,10 +517,9 @@ async fn vm_cloud_init(
 }
 
 async fn vm_ready(State(vms): State<Arc<vm::Vms>>, Path(id): Path<String>) -> StatusCode {
-    if vms.ready(&id) {
-        StatusCode::OK
-    } else {
-        StatusCode::NOT_FOUND
+    match vms.ready(&id) {
+        true => StatusCode::OK,
+        false => StatusCode::NOT_FOUND,
     }
 }
 
@@ -749,9 +740,7 @@ fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Valu
             serde_json::json!({"kind": "container", "id": id, "commands": commands})
         }
         Some(Some(("vm", id))) => {
-            let (port, key) = vms
-                .ssh(id)
-                .ok_or((StatusCode::NOT_FOUND, format!("no vm {id}")))?;
+            let (port, key) = vms.ssh(id).ok_or_else(|| not_found(format!("vm {id}")))?;
             let reboot = format!("http://127.0.0.1:{}/vm/{id}/reboot", vms.port);
             let ssh = tools::path("ssh").map_err(internal)?;
             let scp = tools::path("scp").map_err(internal)?;
@@ -808,12 +797,8 @@ async fn get_output(Path((id, name)): Path<(String, String)>) -> Result<Response
     let (Ok(id), true) = (Uuid::parse_str(&id), valid_artifact_name(&name)) else {
         return Err(bad_request("bad task id or artifact name"));
     };
-    let path = workdir::root()
-        .map_err(internal)?
-        .join("tasks")
-        .join(id.to_string())
-        .join("outputs")
-        .join(&name);
+    let path = workdir::root().map_err(internal)?;
+    let path = path.join(format!("tasks/{id}/outputs/{name}"));
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, format!("{}: {e}", path.display())))?;
