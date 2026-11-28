@@ -248,7 +248,10 @@ impl Component for PipelinePage {
             .shown
             .as_ref()
             .and_then(|name| self.pipelines.get(name));
-        let tabs = shown.map(|snapshot| view::tabs(&snapshot.pipelines, &snapshot.name));
+        let tabs = match shown {
+            Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
+            None => html! {},
+        };
         let mut crumbs = html! {};
         let body = match (shown, &self.run) {
             (None, _) => html! {},
@@ -281,20 +284,22 @@ impl Component for PipelinePage {
         };
         // Off-screen, so the columns can be measured at the width the visible grid has. Nothing
         // on screen moves while it is here.
-        let staging = self.staged(ctx).map(|pipeline| {
-            html! {
-                <div class="staging" aria-hidden="true" ref={self.staging.clone()} style={STAGING}>
+        let staging = match self.staged(ctx) {
+            Some(pipeline) => html! {
+                <div class="staging" aria-hidden="true" ref={self.staging.clone()}
+                    style={STAGING}>
                     { view::grid(pipeline, &view::GridLayout::default(), html! {}) }
                 </div>
-            }
-        });
+            },
+            None => html! {},
+        };
         html! {
             <>
                 { view::header(crumbs, start, account()) }
                 { view::notice(&self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
-                { for tabs }
-                { for staging }
+                { tabs }
+                { staging }
             </>
         }
     }
@@ -358,8 +363,8 @@ impl PipelinePage {
             .query_selector(".grid")
             .ok()
             .flatten()
+            .filter(|grid| grid.client_width() > 0)
             .map(|grid| grid.client_width())
-            .filter(|width| *width > 0)
             .unwrap_or_else(|| main.client_width().saturating_sub(32).max(1));
         let _ = stage.set_attribute("style", &format!("{STAGING};width:{width}px"));
         Some(measure_grid(&stage, pipeline))
