@@ -500,3 +500,85 @@ fn tar_names(tar: &[u8]) -> Vec<String> {
     }
     names
 }
+
+/// A stand-in worker whose task publishes `published` (`<id>/<name>`, as its artifact event says)
+/// and exits 0. It serves the file at /output/<id>/app.deb only.
+async fn worker_publishing(published: String) -> String {
+    let stream = format!("event: artifact\ndata: {published}\n\nevent: exit\ndata: 0\n\n");
+    let start_task = move || async move { ([(header::CONTENT_TYPE, "text/event-stream")], stream) };
+    let output = |AxumPath((_, name)): AxumPath<(String, String)>| async move {
+        match name.as_str() {
+            "app.deb" => (StatusCode::OK, "deb!"),
+            _ => (StatusCode::NOT_FOUND, "no such file"),
+        }
+    };
+    let app = Router::new()
+        .route("/start-task", post(start_task))
+        .route("/output/{id}/{name}", get(output));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+const ONE_TASK: &str = "from bettertest import Stage, task
+
+
+class Build(Stage):
+    worker = \"WORKER\"
+
+    @task()
+    def packages():
+        pass
+";
+
+/// What a task publishes, the boss downloads from its worker before hanging up, and keeps. A name
+/// that could reach outside the task's directory, or a file the worker does not have, fails the task.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_boss_keeps_what_a_task_publishes() {
+    let id = Uuid::new_v4();
+    let url = worker_publishing(format!("{id}/app.deb")).await;
+    let (boss, run) = run_to_end(&url, ONE_TASK).await;
+    assert_eq!(run.state, RunState::Pass);
+    let task = run.stages[0].tasks[0].id;
+    let artifact = Artifact {
+        name: "app.deb".into(),
+        size: 4,
+    };
+    assert_eq!(boss.db().artifacts(task).unwrap(), [artifact]);
+    let dir = task_artifacts_dir(task).unwrap();
+    assert_eq!(fs::read_to_string(dir.join("app.deb")).unwrap(), "deb!");
+    // Nothing half-written is left beside it.
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    assert_eq!(
+        log_text(&boss, task),
+        ["kept artifact app.deb (4 bytes)", "exit code 0"]
+    );
+    fs::remove_dir_all(dir).unwrap();
+
+    for (published, said) in [
+        (
+            format!("{id}/../bettertest.db"),
+            format!("the worker published a bad artifact \"{id}/../bettertest.db\""),
+        ),
+        (
+            "not-a-uuid/app.deb".to_string(),
+            "the worker published a bad artifact \"not-a-uuid/app.deb\"".to_string(),
+        ),
+    ] {
+        let url = worker_publishing(published).await;
+        let (boss, run) = run_to_end(&url, ONE_TASK).await;
+        assert_eq!(run.state, RunState::Fail);
+        let log = log_text(&boss, run.stages[0].tasks[0].id);
+        assert_eq!(log.last(), Some(&said), "{log:?}");
+    }
+
+    let url = worker_publishing(format!("{id}/app.rpm")).await;
+    let (boss, run) = run_to_end(&url, ONE_TASK).await;
+    assert_eq!(run.state, RunState::Fail);
+    let task = run.stages[0].tasks[0].id;
+    let log = log_text(&boss, task);
+    let said = format!("{url}/output/{id}/app.rpm said 404 Not Found: no such file");
+    assert_eq!(log.last(), Some(&said), "{log:?}");
+    assert!(boss.db().artifacts(task).unwrap().is_empty());
+}
