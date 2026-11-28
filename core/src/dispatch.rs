@@ -25,11 +25,8 @@ pub async fn entry(
         return Err(format!("stage {stage_name:?} has no task {task_name:?}").into());
     };
 
-    let named = match &stage.sandbox {
-        Some(sandbox) => sandbox.worker.clone(),
-        None => task.worker.clone(),
-    };
-    let Some(worker) = worker.or(named) else {
+    let named = stage.sandbox.as_ref().map_or(&task.worker, |s| &s.worker);
+    let Some(worker) = worker.or_else(|| named.clone()) else {
         return Err("this task picks its worker by labels: name one with --worker".into());
     };
 

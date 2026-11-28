@@ -260,10 +260,8 @@ impl Listener for HttpsListener {
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
-        match &self.local {
-            Ok(addr) => Ok(*addr),
-            Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
-        }
+        let local = self.local.as_ref().copied();
+        local.map_err(|e| io::Error::new(e.kind(), e.to_string()))
     }
 }
 

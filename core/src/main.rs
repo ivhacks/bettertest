@@ -135,22 +135,17 @@ struct Https {
 
 impl Https {
     fn load(&self) -> Result<Option<tls::Tls>, Box<dyn Error>> {
-        match (&self.cert, &self.key) {
-            (Some(cert), Some(key)) => Ok(Some(tls::load(cert, key)?)),
-            _ => Ok(None),
-        }
+        let both = self.cert.as_ref().zip(self.key.as_ref());
+        Ok(both.map(|(cert, key)| tls::load(cert, key)).transpose()?)
     }
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(Args::parse().command).await {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    run(Args::parse().command).await.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
 }
 
 async fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
