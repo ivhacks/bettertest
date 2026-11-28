@@ -598,15 +598,7 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
     html! {
         <table class="users">
             <thead>
-                <tr>
-                    <th>{ "User" }</th>
-                    <th>{ "Role" }</th>
-                    <th>{ "Password" }</th>
-                    <th>{ "Certificate" }</th>
-                    <th>{ "Passkey" }</th>
-                    <th>{ "API Tokens" }</th>
-                    <th></th>
-                </tr>
+                <tr><th>{ "User" }</th><th>{ "Role" }</th><th>{ "Password" }</th><th>{ "Certificate" }</th><th>{ "Passkey" }</th><th>{ "API Tokens" }</th><th></th></tr>
             </thead>
             <tbody>
                 { for users.iter().map(|u| {
@@ -733,17 +725,7 @@ pub fn workers(workers: &[Worker], now: u64, forget: &Callback<String>) -> Html 
     html! {
         <table class="workers">
             <thead>
-                <tr>
-                    <th>{ "worker" }</th>
-                    <th>{ "host" }</th>
-                    <th>{ "arch" }</th>
-                    <th>{ "labels" }</th>
-                    <th>{ "version" }</th>
-                    <th>{ "busy" }</th>
-                    <th>{ "for" }</th>
-                    <th>{ "running" }</th>
-                    <th></th>
-                </tr>
+                <tr><th>{ "worker" }</th><th>{ "host" }</th><th>{ "arch" }</th><th>{ "labels" }</th><th>{ "version" }</th><th>{ "busy" }</th><th>{ "for" }</th><th>{ "running" }</th><th></th></tr>
             </thead>
             <tbody>
                 { for workers.iter().map(|w| worker_row(w, now, forget)) }
