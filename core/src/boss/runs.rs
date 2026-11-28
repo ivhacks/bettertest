@@ -373,11 +373,8 @@ fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
     }
     // After the event, which forgets a carried task's log (another run's) on pages that follow it.
     if task.started.is_some() {
-        boss.log(
-            task.id,
-            LogStream::Bettertest,
-            format!("{why}: running this again"),
-        );
+        let line = format!("{why}: running this again");
+        boss.log(task.id, LogStream::Bettertest, line);
     }
 }
 

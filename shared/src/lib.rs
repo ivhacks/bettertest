@@ -70,9 +70,10 @@ pub struct Pipeline {
 // One execution of a pipeline. A run captures its own stage/task structure when it is created,
 // so history stays intact when the pipedef changes later.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskState {
+    #[default]
     Pending,
     Running,
     Pass,
@@ -88,7 +89,7 @@ pub enum RunState {
     Fail,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskRun {
     pub id: Uuid,
     pub name: String,
@@ -114,17 +115,10 @@ pub struct Tests {
 impl TaskRun {
     /// A task that has not run (yet).
     pub fn pending(id: Uuid, name: String) -> TaskRun {
-        let (worker, started, ended, carried_from, tests) = (None, None, None, None, None);
-        let state = TaskState::Pending;
         TaskRun {
             id,
             name,
-            state,
-            worker,
-            started,
-            ended,
-            carried_from,
-            tests,
+            ..TaskRun::default()
         }
     }
 
