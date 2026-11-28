@@ -13,7 +13,6 @@ fn github_status_uses_api_github_com() {
     let repo = url("https://ci:secret@github.com/ivhacks/bettertest.git");
     let call = status_call(
         &repo,
-        "ivhacks/bettertest",
         "e0346054145650540e333eba6e18d3a853a53823",
         "bettertest",
         "pending",
@@ -37,7 +36,6 @@ fn github_status_uses_api_github_com() {
 
     let www = status_call(
         &url("https://www.github.com/ivhacks/bettertest.git"),
-        "ivhacks/bettertest",
         "abc",
         "bettertest",
         "success",
@@ -58,7 +56,6 @@ fn github_warning_becomes_failure_and_description_is_capped() {
     let long = "x".repeat(180);
     let call = status_call(
         &url("https://github.com/ivhacks/bettertest.git"),
-        "ivhacks/bettertest",
         "abc",
         "bettertest",
         "warning",
@@ -84,7 +81,6 @@ fn github_warning_becomes_failure_and_description_is_capped() {
 fn gitea_status_stays_on_the_repo_host() {
     let call = status_call(
         &url("http://ci:secret@forge.example/team/app.git"),
-        "team/app",
         "abc",
         "app",
         "warning",
@@ -121,25 +117,8 @@ fn credential_is_the_password_or_else_the_username() {
 fn github_status_names_itself_and_keeps_the_token_out_of_the_url() {
     let http = reqwest::Client::new();
     let repo = url("https://ci:secret@github.com/ivhacks/bettertest.git");
-    let call = status_call(
-        &repo,
-        "ivhacks/bettertest",
-        "abc",
-        "bettertest",
-        "pending",
-        "running",
-        None,
-    )
-    .unwrap();
-    let sent = status_request(
-        &http,
-        &call,
-        credential(&repo).as_deref(),
-        "ci",
-        Some("secret"),
-    )
-    .build()
-    .unwrap();
+    let call = status_call(&repo, "abc", "bettertest", "pending", "running", None).unwrap();
+    let sent = status_request(&http, &call, &repo).build().unwrap();
     assert_eq!(sent.headers().get("user-agent").unwrap(), "bettertest");
     assert_eq!(
         sent.headers().get("accept").unwrap(),
@@ -156,18 +135,29 @@ fn github_status_names_itself_and_keeps_the_token_out_of_the_url() {
     assert!(!sent.url().as_str().contains("secret"));
     assert!(!sent.url().as_str().contains("ci:"));
 
-    let anonymous = status_request(&http, &call, None, "", None)
-        .build()
-        .unwrap();
+    let public = url("https://github.com/ivhacks/bettertest.git");
+    let anonymous = status_request(&http, &call, &public).build().unwrap();
     assert_eq!(anonymous.headers().get("user-agent").unwrap(), "bettertest");
     assert!(anonymous.headers().get("authorization").is_none());
+}
+
+#[test]
+fn gitea_status_sends_the_repo_credentials_as_basic_auth() {
+    let http = reqwest::Client::new();
+    let repo = url("http://ci:secret@forge.example/team/app.git");
+    let call = status_call(&repo, "abc", "app", "pending", "running", None).unwrap();
+    let sent = status_request(&http, &call, &repo).build().unwrap();
+    let authorization = sent.headers().get("authorization").unwrap();
+    // base64 of ci:secret
+    assert_eq!(authorization, "Basic Y2k6c2VjcmV0");
+    assert!(sent.headers().get("user-agent").is_none());
+    assert!(!sent.url().as_str().contains("secret"));
 }
 
 #[test]
 fn status_refuses_a_sha_git_could_read_as_an_option() {
     let err = status_call(
         &url("https://github.com/ivhacks/bettertest.git"),
-        "ivhacks/bettertest",
         "--upload-pack",
         "bettertest",
         "pending",
