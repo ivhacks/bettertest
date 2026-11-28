@@ -12,6 +12,8 @@ use std::{
 mod artifact_tests;
 #[path = "users.rs"]
 mod user_tests;
+#[path = "workers.rs"]
+mod worker_tests;
 
 fn task(name: &str) -> Task {
     Task {
