@@ -244,10 +244,7 @@ impl Component for PipelinePage {
         let start = html! {
             <button class="primary" onclick={ctx.link().callback(|_| PipelineMsg::StartRun)}>{ "New Run" }</button>
         };
-        let shown = self
-            .shown
-            .as_ref()
-            .and_then(|name| self.pipelines.get(name));
+        let shown = self.shown.as_ref().and_then(|n| self.pipelines.get(n));
         let tabs = match shown {
             Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
             None => html! {},

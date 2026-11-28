@@ -465,11 +465,8 @@ fn write_marker(marker: &Path) -> Result<(), String> {
 }
 
 fn sibling(image: &Path, suffix: &str) -> Result<PathBuf, String> {
-    let name = image
-        .file_name()
-        .ok_or("vm image has no file name")?
-        .to_string_lossy();
-    Ok(image.with_file_name(format!(".{name}.{suffix}")))
+    let name = image.file_name().ok_or("vm image has no file name")?;
+    Ok(image.with_file_name(format!(".{}.{suffix}", name.to_string_lossy())))
 }
 
 struct RemoveOnDrop(PathBuf);
