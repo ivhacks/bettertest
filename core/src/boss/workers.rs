@@ -341,16 +341,12 @@ pub(super) fn pick_worker(
     // A label nobody has is most often a typo, of the pipedef's or of a worker's --label.
     let mut similar = vec![];
     for wanted in labels {
-        for w in workers.values() {
-            let Some(info) = &w.worker.info else { continue };
-            if info.labels.contains(wanted) {
+        for Worker { url, info, .. } in workers.values().map(|w| &w.worker) {
+            let Some(info) = info.as_ref().filter(|i| !i.labels.contains(wanted)) else {
                 continue;
-            }
+            };
             for label in info.labels.iter().filter(|l| similar_label(wanted, l)) {
-                similar.push(format!(
-                    " Worker {} has the similar label {label}.",
-                    w.worker.url
-                ));
+                similar.push(format!(" Worker {url} has the similar label {label}."));
             }
         }
     }
