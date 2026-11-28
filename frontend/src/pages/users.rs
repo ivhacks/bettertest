@@ -3,6 +3,7 @@
 use crate::{account, load, passkey, post_json, value, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
+use serde_json::json;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
@@ -57,6 +58,14 @@ impl UsersPage {
             }
         });
     }
+
+    /// The name of user `id`.
+    fn name(&self, id: i64) -> &str {
+        self.users
+            .iter()
+            .find(|u| u.id == id)
+            .map_or("", |u| u.name.as_str())
+    }
 }
 
 impl Component for UsersPage {
@@ -102,11 +111,7 @@ impl Component for UsersPage {
             UsersMsg::Notice(text) => self.notice = Some(text),
             UsersMsg::Role(id, role) => {
                 self.notice = None;
-                Self::change(
-                    ctx,
-                    "/api/set-role",
-                    serde_json::json!({ "id": id, "role": role }),
-                );
+                Self::change(ctx, "/api/set-role", json!({ "id": id, "role": role }));
             }
             UsersMsg::AskPassword(id) => self.password_for = Some(id),
             UsersMsg::Cancel => {
@@ -116,8 +121,7 @@ impl Component for UsersPage {
             }
             UsersMsg::NewCertificate(id) => {
                 self.notice = None;
-                let request =
-                    Request::post("/api/new-certificate").json(&serde_json::json!({ "id": id }));
+                let request = Request::post("/api/new-certificate").json(&json!({ "id": id }));
                 load(
                     ctx.link(),
                     request,
@@ -136,7 +140,7 @@ impl Component for UsersPage {
                 spawn_local(async move {
                     let added = passkey::ceremony(
                         "/api/new-passkey-options",
-                        serde_json::json!({ "id": id }),
+                        json!({ "id": id }),
                         "/api/new-passkey",
                         true,
                     );
@@ -147,22 +151,12 @@ impl Component for UsersPage {
                 });
                 return false;
             }
-            UsersMsg::Revoke(credential) => {
-                Self::change(
-                    ctx,
-                    "/api/revoke-credential",
-                    serde_json::json!({ "id": credential }),
-                );
+            UsersMsg::Revoke(id) => {
+                Self::change(ctx, "/api/revoke-credential", json!({ "id": id }))
             }
             UsersMsg::NewToken(id) => {
-                let name = self
-                    .users
-                    .iter()
-                    .find(|u| u.id == id)
-                    .map(|u| u.name.clone())
-                    .unwrap_or_default();
-                let request =
-                    Request::post("/api/new-token").json(&serde_json::json!({ "id": id }));
+                let name = self.name(id).to_string();
+                let request = Request::post("/api/new-token").json(&json!({ "id": id }));
                 let made = move |token| UsersMsg::TokenMade(name, token);
                 load(ctx.link(), request, made, UsersMsg::Notice);
                 return false;
@@ -173,20 +167,15 @@ impl Component for UsersPage {
             }
             UsersMsg::SetPassword => {
                 if let Some(id) = self.password_for.take() {
-                    let body = serde_json::json!({ "id": id, "password": value(&self.password) });
+                    let body = json!({ "id": id, "password": value(&self.password) });
                     Self::change(ctx, "/api/set-password", body);
                 }
             }
-            UsersMsg::Remove(id) => {
-                Self::change(ctx, "/api/remove-user", serde_json::json!({ "id": id }))
-            }
+            UsersMsg::Remove(id) => Self::change(ctx, "/api/remove-user", json!({ "id": id })),
             UsersMsg::Add => {
-                let role = self
-                    .new_role
-                    .cast::<web_sys::HtmlSelectElement>()
-                    .map(|s| s.value())
-                    .unwrap_or_default();
-                let body = serde_json::json!({ "name": value(&self.new_name), "role": role, "password": value(&self.new_password) });
+                let role = self.new_role.cast::<web_sys::HtmlSelectElement>();
+                let role = role.map(|s| s.value()).unwrap_or_default();
+                let body = json!({ "name": value(&self.new_name), "role": role, "password": value(&self.new_password) });
                 for input in [&self.new_name, &self.new_password] {
                     if let Some(input) = input.cast::<HtmlInputElement>() {
                         input.set_value("");
@@ -218,7 +207,7 @@ impl Component for UsersPage {
             </form>
         };
         let window = self.password_for.map(|id| {
-            let name = self.users.iter().find(|u| u.id == id).map_or("", |u| u.name.as_str());
+            let name = self.name(id);
             let onsubmit = link.callback(|e: SubmitEvent| {
                 e.prevent_default();
                 UsersMsg::SetPassword

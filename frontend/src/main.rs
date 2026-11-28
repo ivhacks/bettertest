@@ -47,11 +47,11 @@ fn main() {
         {
             write_history(&page, true);
         }
-        let me = load_me().await;
+        load_me().await;
         let path = pathname();
         // A boss that lets nobody in without logging in sends everyone else to log in first,
         // without fetching the shell a second time: it is already running.
-        if me.as_ref().is_some_and(|me| me.role == Role::None) && path != "/login" {
+        if locked_out() && path != "/login" {
             write_history(&format!("/login?next={path}"), true);
         }
         // The document already painted this route's frame. Mark the app up, then drop the frame
@@ -67,13 +67,12 @@ fn main() {
 }
 
 /// Asks the boss who this browser is and remembers the answer for the header.
-pub async fn load_me() -> Option<Me> {
+pub async fn load_me() {
     let me = match Request::get("/api/me").send().await {
         Ok(response) => response.json::<Me>().await.ok(),
         Err(_) => None,
     };
-    ME.with(|cell| *cell.borrow_mut() = me.clone());
-    me
+    ME.with(|cell| *cell.borrow_mut() = me);
 }
 
 /// Moves to `url` (a path, and a query if it has one) inside the running shell.
@@ -158,12 +157,13 @@ fn write_history(url: &str, replace: bool) {
     };
 }
 
+/// Who this browser is, as the boss last said.
+fn me() -> Option<Me> {
+    ME.with(|cell| cell.borrow().clone())
+}
+
 fn locked_out() -> bool {
-    ME.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .is_some_and(|me| me.role == Role::None)
-    })
+    me().is_some_and(|me| me.role == Role::None)
 }
 
 /// The link a click would open, when it is one of ours and this click would have loaded it as a
@@ -353,12 +353,7 @@ fn cancel_run(run: String, notice: Callback<String>) {
 
 /// The right end of every header: who is logged in, or a way to log in.
 fn account() -> Html {
-    ME.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .map(view::account)
-            .unwrap_or_default()
-    })
+    me().map(|me| view::account(&me)).unwrap_or_default()
 }
 
 /// The menu the account icon opens.
@@ -393,25 +388,17 @@ fn menu() -> Html {
             gloo::dialogs::alert(&said);
         });
     });
-    ME.with(|cell| match &*cell.borrow() {
-        Some(me) => view::menu(me, logout, passkey),
-        None => html! {},
-    })
+    me().map(|me| view::menu(&me, logout, passkey))
+        .unwrap_or_default()
 }
 
 /// Takes the released mark off every button, as the page on screen changes. The page left keeps
 /// its buttons, hidden, and showing it again would play the fade of the one pressed to leave it.
 fn unmark_released() {
-    let Ok(marked) = gloo::utils::document().query_selector_all(".released") else {
-        return;
-    };
-    for i in 0..marked.length() {
-        if let Some(button) = marked
-            .item(i)
-            .and_then(|node| node.dyn_into::<Element>().ok())
-        {
-            let _ = button.class_list().remove_1("released");
-        }
+    // Live: a button leaves it as it loses the mark, so it is walked from the end.
+    let marked = gloo::utils::document().get_elements_by_class_name("released");
+    for button in (0..marked.length()).rev().filter_map(|i| marked.item(i)) {
+        let _ = button.class_list().remove_1("released");
     }
 }
 

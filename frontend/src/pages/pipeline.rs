@@ -248,10 +248,7 @@ impl Component for PipelinePage {
             .shown
             .as_ref()
             .and_then(|name| self.pipelines.get(name));
-        let tabs = match shown {
-            Some(snapshot) => view::tabs(&snapshot.pipelines, &snapshot.name),
-            None => html! {},
-        };
+        let tabs = shown.map(|snapshot| view::tabs(&snapshot.pipelines, &snapshot.name));
         let mut crumbs = html! {};
         let body = match (shown, &self.run) {
             (None, _) => html! {},
@@ -284,22 +281,20 @@ impl Component for PipelinePage {
         };
         // Off-screen, so the columns can be measured at the width the visible grid has. Nothing
         // on screen moves while it is here.
-        let staging = match self.staged(ctx) {
-            Some(pipeline) => html! {
-                <div class="staging" aria-hidden="true" ref={self.staging.clone()}
-                    style={STAGING}>
+        let staging = self.staged(ctx).map(|pipeline| {
+            html! {
+                <div class="staging" aria-hidden="true" ref={self.staging.clone()} style={STAGING}>
                     { view::grid(pipeline, &view::GridLayout::default(), html! {}) }
                 </div>
-            },
-            None => html! {},
-        };
+            }
+        });
         html! {
             <>
                 { view::header(crumbs, start, account()) }
                 { view::notice(&self.notice) }
                 <main ref={self.main.clone()}>{ body }</main>
-                { tabs }
-                { staging }
+                { for tabs }
+                { for staging }
             </>
         }
     }

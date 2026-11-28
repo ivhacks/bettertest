@@ -103,19 +103,14 @@ impl Component for SettingsPage {
             e.prevent_default();
             SettingsMsg::Save
         });
-        let form = match &self.settings {
-            Some(settings) => view::settings(settings, &self.artifacts, &self.logs, onsubmit),
-            None => html! {},
-        };
-        let saved = match &self.saved {
-            Some(text) => html! { <p class="saved">{ text }</p> },
-            None => html! {},
-        };
+        let form = (self.settings.as_ref())
+            .map(|settings| view::settings(settings, &self.artifacts, &self.logs, onsubmit));
+        let saved = (self.saved.iter()).map(|text| html! { <p class="saved">{ text }</p> });
         html! {
             <>
                 { view::header(html! {}, html! {}, account()) }
                 { view::notice(&self.notice) }
-                <main>{ form }{ saved }{ for self.https.as_ref().map(view::https) }</main>
+                <main>{ for form }{ for saved }{ for self.https.as_ref().map(view::https) }</main>
             </>
         }
     }
