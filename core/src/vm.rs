@@ -42,16 +42,12 @@ const EMULATED_KERNEL_ARGS: &str =
 pub struct Vms {
     // Where this worker listens, so a vm can call back at 10.0.2.2.
     pub port: u16,
-    // cloud-init may ask for its config on any boot, so it is served for the vm's whole life.
-    cloud_init: Mutex<HashMap<String, CloudInit>>,
+    // cloud-init may ask for its config (user-data, meta-data) on any boot, so it is served for the
+    // vm's whole life.
+    cloud_init: Mutex<HashMap<String, (String, String)>>,
     // Who is waiting for a vm to finish booting, the first time or after a reboot.
     waiting: Mutex<HashMap<String, oneshot::Sender<()>>>,
     running: Mutex<HashMap<String, Vm>>,
-}
-
-struct CloudInit {
-    user_data: String,
-    meta_data: String,
 }
 
 struct Vm {
@@ -135,13 +131,9 @@ impl Vms {
             .map_err(|e| e.to_string())?
             .port();
         let host = format!("http://10.0.2.2:{}/vm/{id}", self.port);
-        lock(&self.cloud_init).insert(
-            id.to_string(),
-            CloudInit {
-                user_data: user_data(public_key.trim(), &host),
-                meta_data: format!("instance-id: {id}\nlocal-hostname: bettertest-vm\n"),
-            },
-        );
+        let meta_data = format!("instance-id: {id}\nlocal-hostname: bettertest-vm\n");
+        let config = (user_data(public_key.trim(), &host), meta_data);
+        lock(&self.cloud_init).insert(id.to_string(), config);
         let booted = self.wait_for_boot(id);
 
         let console = dir.join("console.log");
@@ -257,10 +249,10 @@ impl Vms {
 
     pub fn cloud_init(&self, id: &str, file: &str) -> Option<String> {
         let cloud_init = lock(&self.cloud_init);
-        let vm = cloud_init.get(id)?;
+        let (user_data, meta_data) = cloud_init.get(id)?;
         match file {
-            "user-data" => Some(vm.user_data.clone()),
-            "meta-data" => Some(vm.meta_data.clone()),
+            "user-data" => Some(user_data.clone()),
+            "meta-data" => Some(meta_data.clone()),
             _ => None,
         }
     }
