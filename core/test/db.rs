@@ -259,6 +259,5 @@ fn each_user_comes_with_their_own_certificates_and_passkeys() {
     assert!(keys(&users[1]).is_empty());
     assert!(certs(&users[2]).is_empty());
     assert_eq!(keys(&users[2]), ["bob 1"]);
-    assert_eq!((users[1].certificates, users[2].passkeys), (2, 1));
     assert!(users[0].certs.is_empty() && users[0].keys.is_empty());
 }

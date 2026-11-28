@@ -715,8 +715,6 @@ fn users_show_how_each_can_log_in() {
             role: Role::Admin,
             builtin: true,
             passwords: 0,
-            certificates: 0,
-            passkeys: 0,
             tokens: 0,
             certs: vec![],
             keys: vec![],
@@ -727,8 +725,6 @@ fn users_show_how_each_can_log_in() {
             role: Role::Write,
             builtin: false,
             passwords: 1,
-            certificates: 0,
-            passkeys: 1,
             tokens: 1,
             certs: vec![Certificate {
                 id: 9,

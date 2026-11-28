@@ -480,14 +480,13 @@ impl Db {
         Ok((log.map(from_sql), artifacts.map(from_sql)))
     }
 
-    /// Every user, the logged-out one first, with how many credentials of each kind they have.
+    /// Every user, the logged-out one first, with their credentials and how many API tokens they
+    /// have.
     pub fn users(&self) -> rusqlite::Result<Vec<User>> {
         self.conn
             .prepare_cached(
                 "SELECT id, name, role, id = 0,
                     (SELECT count(*) FROM credentials c WHERE c.user_id = u.id AND kind = 'password'),
-                    (SELECT count(*) FROM credentials c WHERE c.user_id = u.id AND kind = 'certificate'),
-                    (SELECT count(*) FROM credentials c WHERE c.user_id = u.id AND kind = 'passkey'),
                     (SELECT count(*) FROM api_tokens t WHERE t.user_id = u.id)
                  FROM users u ORDER BY id != 0, name",
             )?
@@ -499,9 +498,7 @@ impl Db {
                     role: text(row, 2, Role::parse)?,
                     builtin: row.get(3)?,
                     passwords: row.get(4)?,
-                    certificates: row.get(5)?,
-                    passkeys: row.get(6)?,
-                    tokens: row.get(7)?,
+                    tokens: row.get(5)?,
                     certs: self.certificates(id)?,
                     keys: self.passkeys(id)?,
                 })

@@ -59,7 +59,7 @@ pub fn needed(method: &str, path: &str) -> Option<Role> {
 /// undoing it would take editing the db by hand.
 pub fn locks_out(users: &[User]) -> bool {
     let open = users.iter().any(|u| u.builtin && u.role == Role::Admin);
-    let can_log_in = |u: &User| u.passwords + u.certificates + u.passkeys > 0;
+    let can_log_in = |u: &User| u.passwords > 0 || !u.certs.is_empty() || !u.keys.is_empty();
     !open
         && !users
             .iter()

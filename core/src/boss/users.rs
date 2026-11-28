@@ -398,14 +398,8 @@ pub(super) async fn revoke_credential(
 ) -> Result<StatusCode, Failure> {
     check_lockout(&boss, |users| {
         for u in users.iter_mut() {
-            if u.certs.iter().any(|c| c.id == credential.id) {
-                u.certificates = u.certificates.saturating_sub(1);
-                u.certs.retain(|c| c.id != credential.id);
-            }
-            if u.keys.iter().any(|k| k.id == credential.id) {
-                u.passkeys = u.passkeys.saturating_sub(1);
-                u.keys.retain(|k| k.id != credential.id);
-            }
+            u.certs.retain(|c| c.id != credential.id);
+            u.keys.retain(|k| k.id != credential.id);
         }
     })?;
     boss.db()

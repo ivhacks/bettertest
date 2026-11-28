@@ -2,6 +2,7 @@
 // reach what it keeps private.
 
 use super::*;
+use bettertest_shared::{Certificate, Passkey};
 
 fn user(name: &str, role: Role, builtin: bool, passwords: u32) -> User {
     User {
@@ -10,8 +11,6 @@ fn user(name: &str, role: Role, builtin: bool, passwords: u32) -> User {
         role,
         builtin,
         passwords,
-        certificates: 0,
-        passkeys: 0,
         tokens: 0,
         certs: vec![],
         keys: vec![],
@@ -61,8 +60,22 @@ fn nobody_can_lock_everyone_out() {
     // Closed, with an admin who can log in: fine.
     assert!(!locks_out(&[closed.clone(), iv]));
     // Closed, with only an admin who cannot log in, or none at all: refused.
-    assert!(locks_out(&[closed.clone(), no_password]));
-    assert!(locks_out(&[closed, writer]));
+    assert!(locks_out(&[closed.clone(), no_password.clone()]));
+    assert!(locks_out(&[closed.clone(), writer]));
+    // A certificate or a passkey logs an admin in as well as a password does.
+    let mut certificate = no_password.clone();
+    certificate.certs.push(Certificate {
+        id: 1,
+        label: "intern 1".into(),
+        expires: "2028-01-01".into(),
+    });
+    assert!(!locks_out(&[closed.clone(), certificate]));
+    let mut passkey = no_password;
+    passkey.keys.push(Passkey {
+        id: 2,
+        label: "intern 1".into(),
+    });
+    assert!(!locks_out(&[closed, passkey]));
 }
 
 #[test]
