@@ -8,8 +8,10 @@ use std::{
 };
 
 // The tests of the boss's own modules, children of these so they share the helpers below.
+#[path = "artifacts.rs"]
+mod artifact_tests;
 #[path = "users.rs"]
-mod users;
+mod user_tests;
 
 fn task(name: &str) -> Task {
     Task {
