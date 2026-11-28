@@ -367,7 +367,9 @@ fn menu() -> Html {
         spawn_local(async {
             let _ = Request::post("/api/logout").send().await;
             load_me().await;
-            navigate("/");
+            // A page drawn new, its header saying who is logged in now. The page this was on
+            // keeps its header until it shows again.
+            navigate("/login");
         });
     });
     // A passkey for the user logged in, made by this browser's authenticator.

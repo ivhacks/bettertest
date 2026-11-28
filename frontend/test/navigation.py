@@ -255,6 +255,33 @@ def test_pages_fit_and_fill_the_width(browser, base, device):
     assert not failures, "\n".join(failures)
 
 
+def test_logging_out_shows_it(browser, base, device):
+    """Log Out, from the menu over the pipeline page, ends on the login page, whose header has the
+    way back in. No page shows the account of someone no longer logged in."""
+    context = browser.new_context(**device)
+    page = context.new_page()
+    try:
+        page.goto(base + "/pipeline/app")
+        page.wait_for_selector(PAGES["pipelines"][2])
+        icon(page, "Account, iv").click()
+        logged_in = shell.ME
+        shell.ME = b'{"name":"logged out","role":"admin","logged_in":false}'
+        try:
+            page.locator("#account button", has_text="Log Out").click()
+            page.wait_for_url("**/login")
+            icon(page, "Log In").wait_for()
+            assert icon(page, "Account, iv").count() == 0
+            # Back on the page left, the header has caught up too.
+            icon(page, "Pipelines").click()
+            page.wait_for_url("**/pipeline/app")
+            icon(page, "Log In").wait_for()
+            assert icon(page, "Account, iv").count() == 0
+        finally:
+            shell.ME = logged_in
+    finally:
+        context.close()
+
+
 def main():
     if shell.dist_stale():
         raise SystemExit(
@@ -281,6 +308,7 @@ def main():
                     test_header_icons_are_one_control,
                     test_a_page_comes_back_before_any_request,
                     test_pages_fit_and_fill_the_width,
+                    test_logging_out_shows_it,
                 ]
                 for test in tests:
                     for engine, device in [("chromium", desktop), ("webkit", iphone)]:
