@@ -28,9 +28,10 @@ pub enum WorkersMsg {
     Forget,
 }
 
+// Kept up once left, following the boss's workers all along, so coming back paints them at once.
 impl Component for WorkersPage {
     type Message = WorkersMsg;
-    type Properties = ();
+    type Properties = crate::Shown;
 
     fn create(ctx: &Context<Self>) -> Self {
         let link = ctx.link();
@@ -65,7 +66,8 @@ impl Component for WorkersPage {
                 }
             }
             WorkersMsg::Notice(text) => self.notice = Some(text),
-            WorkersMsg::Tick => {}
+            // Hidden, the clock moves nothing anyone sees; showing the page again renders it.
+            WorkersMsg::Tick => return ctx.props().shown,
             WorkersMsg::Add => {
                 let Some(url) =
                     gloo::dialogs::prompt("Worker url", Some("http://worker-host:7358"))

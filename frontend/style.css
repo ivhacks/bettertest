@@ -71,6 +71,16 @@ a {
     text-decoration: none;
 }
 
+/* Each page's header, main and tabs lay out in the body. A page left stays in the document,
+   hidden, so coming back to it paints at once. */
+.page {
+    display: contents;
+}
+
+.page[hidden] {
+    display: none;
+}
+
 /* One row: the mark, the page's own path and buttons, then an icon for each page and the account.
    The mark and the icons sit at the same place on every page. */
 header {
@@ -119,22 +129,11 @@ header .links {
     margin-left: auto;
 }
 
-header .icon,
-header .account {
-    --fill: transparent;
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    color: var(--text);
-}
-
-header .menu {
+.menu {
     display: none;
 }
 
-header .menu:popover-open {
+.menu:popover-open {
     --cut: 16px;
     display: flex;
     flex-direction: column;
@@ -150,8 +149,10 @@ header .menu:popover-open {
    Hovered, a button lights up at once: its fill mixes in a little white (brightness cannot lift
    pure red). Pressed, it turns white with black type the moment the mouse goes down, and fades back
    over --fade once released. The fade is an animation, not a transition, so that it runs only on
-   release: CSS cannot tell a release from a hover, so main.rs marks the released button. */
-button {
+   release: CSS cannot tell a release from a hover, so main.rs marks the released button.
+   The header's icons, links or not, are such buttons. */
+button,
+.icon {
     --cut: 10px;
     --fill: var(--line);
     position: relative;
@@ -168,13 +169,15 @@ button {
 }
 
 button,
+.icon,
 .window,
-header .menu:popover-open {
+.menu:popover-open {
     clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)),
             calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 
 button::before,
+.icon::before,
 .window::before {
     --inner: calc(var(--cut) - 0.586px);
     content: "";
@@ -206,6 +209,16 @@ button.small {
     font-size: 16px;
 }
 
+/* A 44px square around a 24px line drawing, outlined only while lit. */
+.icon {
+    --fill: transparent;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+}
+
 button:hover,
 button:focus-visible,
 .cell a:hover,
@@ -214,8 +227,17 @@ button:focus-visible,
     background: color-mix(in srgb, var(--fill), #ffffff 22%);
 }
 
+/* Its outline is the text's color, so it shows on a white ground as well as on black. */
+.icon:hover,
+.icon:focus-visible {
+    outline: none;
+    background: color-mix(in srgb, var(--text) 22%, transparent);
+}
+
 button:active,
 button:active::before,
+.icon:active,
+.icon:active::before,
 .cell a:active {
     background: #ffffff;
     color: #000000;
@@ -223,6 +245,8 @@ button:active::before,
 
 button.released,
 button.released::before,
+.icon.released,
+.icon.released::before,
 .cell a.released {
     animation: released var(--fade) ease-out;
 }
@@ -547,16 +571,12 @@ input:focus {
     border-color: var(--highlight);
 }
 
-/* A little too wide, they scroll sideways on their own. On a phone, see below, each row is a block
-   of labelled values instead, so no text is cut off. */
-.workers,
-.users {
-    display: block;
-    overflow-x: auto;
-}
-
+/* As wide as the page, their cells wrapping rather than scrolling it sideways. On a phone, see
+   below, each row is a block of labelled values instead, so no text is cut off. */
 :is(.workers, .users, .results) {
+    width: 100%;
     border-collapse: collapse;
+    overflow-wrap: anywhere;
 }
 
 :is(.workers, .users, .results) th {
@@ -694,6 +714,12 @@ input:focus {
 
 /* Settings */
 
+/* Lines of prose a reader can follow across, however wide the screen. */
+.https,
+.settings {
+    max-width: 720px;
+}
+
 .https {
     margin-top: 32px;
 }
@@ -720,8 +746,9 @@ input:focus {
     gap: 12px;
 }
 
+/* Room for "forever", the placeholder, beside the number input's arrows. */
 .settings input {
-    width: 90px;
+    width: 130px;
 }
 
 .hint,
@@ -730,7 +757,8 @@ input:focus {
     color: var(--muted);
 }
 
-.saved {
+.saved,
+main > .hint {
     margin-top: 12px;
 }
 
@@ -741,11 +769,11 @@ input:focus {
     font-size: 14px;
 }
 
-.users .actions {
-    white-space: nowrap;
+/* They wrap onto more lines where the page is too narrow for one. */
+.users .actions button {
+    margin: 3px 6px 3px 0;
 }
 
-.users .actions button + button,
 .users .cert button {
     margin-left: 6px;
 }
@@ -766,7 +794,7 @@ select {
     gap: 10px;
 }
 
-header .me {
+.menu .me {
     color: var(--muted);
 }
 

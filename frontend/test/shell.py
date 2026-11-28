@@ -245,6 +245,9 @@ TASKS = {
     OTHER: snapshot(task_body(OTHER, "spell", "docs")),
 }
 WORKERS = snapshot({"now": 10_000, "workers": []})
+# Who /api/me says the browser is, and what /api/users lists. Other tests change them.
+ME = b'{"name":"logged out","role":"admin","logged_in":false}'
+USERS = b"[]"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -270,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             RESUMED.append(self.connection.session_reused)
         path = urlparse(self.path).path
         if path == "/api/me":
-            self._json(b'{"name":"logged out","role":"admin","logged_in":false}')
+            self._json(ME)
             return
         if path == "/api/pipelines":
             self._json(b'["app","docs"]')
@@ -282,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(b"null")
             return
         if path == "/api/users":
-            self._json(b"[]")
+            self._json(USERS)
             return
         if path == "/api/pipelines/events":
             every = [json.loads(body)["Snapshot"] for body in PIPELINES.values()]
@@ -561,7 +564,7 @@ def test_in_app_navigation_does_not_redownload_the_shell(browser, base):
         page.assert_no_shell_transfer("open task")
 
         page.resources_since_clear()
-        page.page.locator("header a[href='/workers']").click()
+        page.page.locator("header a[href='/workers']:visible").click()
         page.page.wait_for_selector("text=No workers yet")
         assert page.page.url.endswith("/workers")
         page.assert_no_shell_transfer("workers")
@@ -589,7 +592,7 @@ def test_back_and_forward_restore_the_page_without_a_shell_reload(browser, base)
         page.page.evaluate("() => history.forward()")
         page.page.wait_for_url(f"**/task/{TASK}")
         page.page.wait_for_selector("text=shell-nav-marker")
-        assert "unit" in page.page.locator("header").inner_text()
+        assert "unit" in page.page.locator("header:visible").inner_text()
         page.assert_no_shell_transfer("forward")
     finally:
         page.close()
@@ -830,8 +833,8 @@ FRAME_BOXES = """() => {
         header: box("header"),
         home: box("header .home"),
         links: box("header nav.links"),
-        account: box("header .account"),
-        icons: document.querySelectorAll("header .icon").length,
+        account: box("header .links > .icon:last-child"),
+        icons: document.querySelectorAll("header .links > .icon").length,
         text: document.body.innerText.replace(/\\s+/g, " ").trim(),
         scroll: width - root.clientWidth,
         flex: getComputedStyle(document.querySelector("header")).display,
@@ -879,7 +882,7 @@ def wait_frame(page):
 
 
 def settled(page, kind):
-    page.wait_for_selector("body[data-started] header .account", timeout=30_000)
+    page.wait_for_selector("body[data-started] header .links > .icon:last-child", timeout=30_000)
     if kind == "pipeline":
         page.wait_for_selector(f"a[href='/task/{TASK}']", timeout=30_000)
     elif kind == "workers":
@@ -926,7 +929,7 @@ def test_the_frame_matches_the_app_before_wasm_loads(browser, webkit, playwright
                         assert held, f"{name} {width} {path}: wasm was not held"
                         frame = page.evaluate(FRAME_BOXES)
                         assert frame["flex"] == "flex", frame
-                        assert frame["icons"] == 4, frame
+                        assert frame["icons"] == 5, frame
                         assert frame["account"] is not None, frame
                         assert frame["text"] and frame["text"] != "bettertest", frame["text"]
                         assert frame["scroll"] <= 0, (

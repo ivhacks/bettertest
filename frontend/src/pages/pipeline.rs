@@ -19,6 +19,8 @@ pub struct PipelineProps {
     pub id: String,
     // `?run=`, the results to show instead of the grid.
     pub run: Option<String>,
+    // Whether the page is on screen. Left, it stays up, hidden, with every pipeline kept live.
+    pub shown: bool,
 }
 
 pub struct PipelinePage {
@@ -75,7 +77,7 @@ impl Component for PipelinePage {
         let fonts = gloo::utils::document().fonts();
         let run = ctx.props().run.clone();
         draw_views(ctx, run.as_deref());
-        // The streams stop when the page is destroyed, which leaving it for another page does too.
+        // The streams stop only when the page is destroyed: left for another page, it stays live.
         let url = format!("/api/pipeline/{}/events", ctx.props().id);
         let first = follow(
             &url,
@@ -101,6 +103,10 @@ impl Component for PipelinePage {
     }
 
     fn changed(&mut self, ctx: &Context<Self>, old: &Self::Properties) -> bool {
+        // Hidden, nothing could be measured: the window may have changed size meanwhile.
+        if ctx.props().shown && !old.shown {
+            self.measure = true;
+        }
         if ctx.props().id != old.id {
             self.settle(ctx);
             return true;
@@ -111,7 +117,7 @@ impl Component for PipelinePage {
             draw_views(ctx, self.run.as_deref());
             return true;
         }
-        false
+        ctx.props().shown != old.shown
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -195,6 +201,10 @@ impl Component for PipelinePage {
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        // Hidden, everything measures 0 wide. It measures once shown again.
+        if !ctx.props().shown {
+            return;
+        }
         // The next pipeline is in the page, hidden, at the width the grid will have. Measuring it
         // here and swapping on the next render is one visible frame: the grid that is up stays
         // until then.
