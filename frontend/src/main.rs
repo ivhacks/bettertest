@@ -23,8 +23,9 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event, HtmlAnchorElement, MouseEvent, wasm_bindgen::JsCast};
 use yew::prelude::*;
 
-// The shell (this wasm, its JS, the CSS) stays loaded. Links between pages push history and swap
-// the page component; they do not load the document again. The boss still serves index.html for
+// The shell (this wasm, its JS, the CSS) stays loaded. Links between pages push history and show
+// the page component, which a page with data keeps, hidden, once left (`App::pages`); they do not
+// load the document again. The boss still serves index.html for
 // every page, so a refresh or a pasted URL starts at the right place, and serves `/` as the first
 // pipeline's page.
 // Who this browser is. The header reads it on every page.
@@ -316,11 +317,14 @@ impl App {
     /// Puts the page at `url` on screen, in the place of the page of its kind; pages that are not
     /// kept go once left.
     fn show(&mut self, url: String, replace: bool) {
+        let to = kind(&url).to_string();
+        if to != kind(&self.url) {
+            unmark_released();
+        }
         if url != self.url {
             write_history(&url, replace);
             self.url = url.clone();
         }
-        let to = kind(&url).to_string();
         self.pages.retain(|page| kept(page) || kind(page) == to);
         match self.pages.iter_mut().find(|page| kind(page) == to) {
             Some(page) => *page = url,
@@ -391,6 +395,22 @@ fn menu() -> Html {
         Some(me) => view::menu(me, logout, passkey),
         None => html! {},
     })
+}
+
+/// Takes the released mark off every button, as the page on screen changes. The page left keeps
+/// its buttons, hidden, and showing it again would play the fade of the one pressed to leave it.
+fn unmark_released() {
+    let Ok(marked) = gloo::utils::document().query_selector_all(".released") else {
+        return;
+    };
+    for i in 0..marked.length() {
+        if let Some(button) = marked
+            .item(i)
+            .and_then(|node| node.dyn_into::<Element>().ok())
+        {
+            let _ = button.class_list().remove_1("released");
+        }
+    }
 }
 
 /// A pressed button, or grid cell, fades back from white once released (`@keyframes released` in

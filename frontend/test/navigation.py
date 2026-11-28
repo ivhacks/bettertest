@@ -93,8 +93,14 @@ def test_header_icons_are_one_control(browser, base, device):
     try:
         page.goto(base + "/pipeline/app")
         page.wait_for_selector(PAGES["pipelines"][2])
+        # Pressed and released, an icon goes nowhere: what it looks like is what is under test.
+        page.evaluate(
+            "addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); }, true)"
+        )
         controls = page.locator("header:visible .links > :is(a, button)")
-        names = [controls.nth(i).get_attribute("aria-label") for i in range(controls.count())]
+        names = [
+            controls.nth(i).get_attribute("aria-label") for i in range(controls.count())
+        ]
         assert names == ICONS, names
         failures = []
         classes = {name: icon(page, name).get_attribute("class") for name in ICONS}
@@ -111,9 +117,8 @@ def test_header_icons_are_one_control(browser, base, device):
             hovered = control.evaluate(LOOK)
             page.mouse.down()
             pressed = control.evaluate(LOOK)
-            handle = control.element_handle()
             page.mouse.up()
-            released = handle.evaluate(
+            released = control.evaluate(
                 "(icon) => [icon.classList.contains('released'), getComputedStyle(icon).animationName]"
             )
             looks[name] = (resting, hovered, pressed["background"], released)
@@ -127,11 +132,6 @@ def test_header_icons_are_one_control(browser, base, device):
                 failures.append(f"{name}: not white while pressed: {pressed}")
             if released != [True, "released"]:
                 failures.append(f"{name}: no release fade: {released}")
-            # Whatever the icon opened, go on from the same pipeline page.
-            page.keyboard.press("Escape")
-            if name != ICONS[-1]:
-                page.goto(base + "/pipeline/app")
-                page.wait_for_selector(PAGES["pipelines"][2])
         first = looks[ICONS[0]]
         for name, look in looks.items():
             if look != first:
@@ -141,7 +141,8 @@ def test_header_icons_are_one_control(browser, base, device):
         context.close()
 
 
-ARM = """([path, selector]) => {
+ARM = (
+    """([path, selector]) => {
     const shown = %s;
     const ready = () => location.pathname === path && !!shown(selector);
     const seen = (window.__revisit = { requests: [], blank: false, ready: false, started: false });
@@ -164,13 +165,17 @@ ARM = """([path, selector]) => {
         if (ready()) seen.ready = true;
         else seen.blank = true;
     }).observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-}""" % SHOWN
+}"""
+    % SHOWN
+)
 
 
 def visit(page, name):
     label, path, selector = PAGES[name]
     icon(page, label).click()
-    page.wait_for_function(f"() => location.pathname === {path!r} && ({SHOWN})({selector!r})")
+    page.wait_for_function(
+        f"() => location.pathname === {path!r} && ({SHOWN})({selector!r})"
+    )
 
 
 def test_a_page_comes_back_before_any_request(browser, base, device):
@@ -194,7 +199,18 @@ def test_a_page_comes_back_before_any_request(browser, base, device):
                 failures.append(f"{name}: on screen without its content: {seen}")
             early = [r["url"] for r in seen["requests"] if not r["ready"]]
             if early:
-                failures.append(f"{name}: asked the boss before painting what it had: {early}")
+                failures.append(
+                    f"{name}: asked the boss before painting what it had: {early}"
+                )
+            # The icon pressed to leave this page last time stays in it, hidden. It must not fade
+            # back from white again now that it shows.
+            fading = page.evaluate(
+                "() => [...document.querySelectorAll('.released')].filter((e) => e.checkVisibility()).map((e) => e.outerHTML.slice(0, 60))"
+            )
+            if fading:
+                failures.append(
+                    f"{name}: fades a button released on an earlier visit: {fading}"
+                )
         assert not failures, "\n".join(failures)
     finally:
         context.close()
@@ -221,7 +237,9 @@ def test_pages_fit_and_fill_the_width(browser, base, device):
     screen the tables span the page rather than float in a corner of it."""
     failures = []
     for width in [320, 390, 1280]:
-        context = browser.new_context(**{**device, "viewport": {"width": width, "height": 800}})
+        context = browser.new_context(
+            **{**device, "viewport": {"width": width, "height": 800}}
+        )
         page = context.new_page()
         for name, (_, path, selector) in PAGES.items():
             page.goto(base + path)
@@ -248,11 +266,16 @@ def main():
     failed = 0
     try:
         with sync_playwright() as playwright:
-            chromium = playwright.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            chromium = playwright.chromium.launch(
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
             webkit = playwright.webkit.launch()
             desktop = {"viewport": {"width": 1280, "height": 800}}
             # An iPhone's screen, but a mouse: hover is what the test is about.
-            iphone = {"viewport": {"width": 390, "height": 800}, "user_agent": playwright.devices["iPhone 15"]["user_agent"]}
+            iphone = {
+                "viewport": {"width": 390, "height": 800},
+                "user_agent": playwright.devices["iPhone 15"]["user_agent"],
+            }
             try:
                 tests = [
                     test_header_icons_are_one_control,

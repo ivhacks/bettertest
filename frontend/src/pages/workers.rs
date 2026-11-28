@@ -66,7 +66,8 @@ impl Component for WorkersPage {
                 }
             }
             WorkersMsg::Notice(text) => self.notice = Some(text),
-            WorkersMsg::Tick => {}
+            // Hidden, the clock moves nothing anyone sees; showing the page again renders it.
+            WorkersMsg::Tick => return ctx.props().shown,
             WorkersMsg::Add => {
                 let Some(url) =
                     gloo::dialogs::prompt("Worker url", Some("http://worker-host:7358"))

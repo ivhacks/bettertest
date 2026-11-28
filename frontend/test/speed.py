@@ -78,17 +78,23 @@ class Test(Stage):
 """
 
 
+def shown(selector):
+    """JS: the elements `selector` matches on screen. Pages left stay in the document, hidden."""
+    return f'[...document.querySelectorAll("{selector}")].filter((e) => e.checkVisibility())'
+
+
 def rows(pipeline):
-    return f"document.querySelectorAll(\"tbody th.run a[href^='/pipeline/{pipeline}?']\").length >= {RUNS}"
+    runs = shown(f"tbody th.run a[href^='/pipeline/{pipeline}?']")
+    return f"{runs}.length >= {RUNS}"
 
 
 # What each page shows once its data is in.
 LOADED = {
     "pipeline": rows("app"),
-    "task": "document.querySelector('pre.log')?.textContent.includes('done')",
-    "workers": "document.querySelector('table.workers tbody tr') !== null",
-    "settings": "document.querySelector('form.settings input') !== null",
-    "users": "document.querySelector('table.users tbody tr') !== null",
+    "task": f"{shown('pre.log')}.some((log) => log.textContent.includes('done'))",
+    "workers": f"{shown('table.workers tbody tr')}.length > 0",
+    "settings": f"{shown('form.settings input')}.length > 0",
+    "users": f"{shown('table.users tbody tr')}.length > 0",
 }
 
 
@@ -216,7 +222,8 @@ def navigation(page, pages):
         if name == "pipeline":
             continue
         link = "tbody" if name == "task" else "header"
-        click = f"document.querySelector(\"{link} a[href='{path}']\").click()"
+        links = shown(f"{link} a[href='{path}']")
+        click = f"{links}[0].click()"
         there, back = [], []
         for _ in range(TRIES):
             there.append(timed(page, click, LOADED[name]))
