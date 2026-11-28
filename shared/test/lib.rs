@@ -63,6 +63,45 @@ fn an_event_replaces_only_the_run_it_changes() {
 }
 
 #[test]
+fn a_run_takes_only_events_about_itself() {
+    let mut one = run(1);
+    let state = |run: Uuid, task: Uuid| Event::TaskState {
+        pipeline: "app".into(),
+        run,
+        task,
+        state: TaskState::Pass,
+        at: 7,
+    };
+    let finished = |run: Uuid| Event::RunFinished {
+        pipeline: "app".into(),
+        run,
+        state: RunState::Pass,
+    };
+    let log = Event::Log {
+        task: Uuid::from_u128(101),
+        line: LogLine {
+            stream: LogStream::Stdout,
+            line: "hi".into(),
+        },
+    };
+    // Another run's task of the same id, another run finishing, a log line: no change.
+    for event in [
+        state(Uuid::from_u128(9), Uuid::from_u128(101)),
+        finished(Uuid::from_u128(9)),
+        log,
+    ] {
+        one.apply(&event);
+        assert_eq!(one, run(1));
+    }
+    one.apply(&state(Uuid::from_u128(1), Uuid::from_u128(101)));
+    assert_eq!(one.stages[0].tasks[0].state, TaskState::Pass);
+    assert_eq!(one.stages[0].tasks[0].ended, Some(7));
+    assert_eq!(one.state, RunState::Running);
+    one.apply(&finished(Uuid::from_u128(1)));
+    assert_eq!(one.state, RunState::Pass);
+}
+
+#[test]
 fn test_counts_land_on_their_task() {
     let tests = Tests {
         total: 1234,

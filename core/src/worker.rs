@@ -55,17 +55,14 @@ pub(crate) fn listen_url(port: u16) -> String {
 // Every container we start carries this label, so ones a crashed worker left behind can be found.
 const CONTAINER_LABEL: &str = "bettertest.worker";
 
+/// What `start-container` and `start-vm` take. The pipedef names the image's source, and the worker
+/// fetches it.
 #[derive(Serialize, Deserialize)]
-pub struct StartContainer {
-    // A docker image name, or the URL of a `docker save` tarball. The pipedef names that source.
+pub struct StartSandbox {
+    // A docker image name or the URL of a `docker save` tarball; for a vm, the URL of a qcow2 disk
+    // image, the image's own.
     pub image: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct StartVm {
-    // URL of a qcow2 disk image, the image's own. The worker downloads it.
-    pub image: String,
-    // None means this worker's own.
+    // A vm's architecture. None means this worker's own.
     pub arch: Option<Arch>,
 }
 
@@ -274,7 +271,7 @@ async fn events(
     Sse::new(stream.map(Ok::<_, Infallible>)).keep_alive(KeepAlive::default())
 }
 
-async fn start_container(Json(req): Json<StartContainer>) -> Result<Json<Started>, Failure> {
+async fn start_container(Json(req): Json<StartSandbox>) -> Result<Json<Started>, Failure> {
     let image = if is_url(&req.image) {
         load_image(&req.image).await?
     } else {
@@ -317,7 +314,7 @@ fn channel(id: &str) -> Result<PathBuf, String> {
 
 async fn delete_container(Path(id): Path<Uuid>) -> Result<(), Failure> {
     let id = id.to_string();
-    output(Command::new("docker").args(["rm", "--force", "--volumes", &id]))
+    docker(&["rm", "--force", "--volumes", &id])
         .await
         .map_err(internal)?;
     fs::remove_dir_all(channel(&id).map_err(internal)?).map_err(internal)?;
@@ -326,19 +323,18 @@ async fn delete_container(Path(id): Path<Uuid>) -> Result<(), Failure> {
 
 async fn remove_leftover_containers() -> Result<(), String> {
     let label = format!("label={CONTAINER_LABEL}");
-    let ids =
-        output(Command::new("docker").args(["ps", "--all", "--quiet", "--filter", &label])).await?;
+    let ids = docker(&["ps", "--all", "--quiet", "--filter", &label]).await?;
     let ids: Vec<&str> = ids.split_whitespace().collect();
     if !ids.is_empty() {
         println!("removing {} leftover containers", ids.len());
-        output(
-            Command::new("docker")
-                .args(["rm", "--force", "--volumes"])
-                .args(&ids),
-        )
-        .await?;
+        docker(&[&["rm", "--force", "--volumes"][..], &ids].concat()).await?;
     }
     Ok(())
+}
+
+/// Runs docker to completion, as `output` does.
+async fn docker(args: &[&str]) -> Result<String, String> {
+    output(Command::new("docker").args(args)).await
 }
 
 /// Runs a command to completion. Ok is its stdout; Err explains what went wrong.
@@ -378,10 +374,7 @@ pub fn cache_key(url: &str) -> String {
 /// first time. Returns the local image name.
 async fn load_image(url: &str) -> Result<String, Failure> {
     let name = format!("bettertest-artifact:{}", cache_key(url));
-    if output(Command::new("docker").args(["image", "inspect", &name]))
-        .await
-        .is_ok()
-    {
+    if docker(&["image", "inspect", &name]).await.is_ok() {
         return Ok(name);
     }
 
@@ -395,7 +388,7 @@ async fn load_image(url: &str) -> Result<String, Failure> {
     }) else {
         return Err(internal(format!("unexpected docker load output: {stdout}")));
     };
-    output(Command::new("docker").args(["tag", loaded.trim(), &name]))
+    docker(&["tag", loaded.trim(), &name])
         .await
         .map_err(internal)?;
     Ok(name)
@@ -472,7 +465,7 @@ pub async fn download(url: &str) -> Result<reqwest::Response, String> {
 
 async fn start_vm(
     State(vms): State<Arc<vm::Vms>>,
-    Json(req): Json<StartVm>,
+    Json(req): Json<StartSandbox>,
 ) -> Result<Json<Started>, Failure> {
     let id = vms.start(&req.image, req.arch).await.map_err(internal)?;
     Ok(Json(Started { id }))

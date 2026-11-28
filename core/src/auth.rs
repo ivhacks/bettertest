@@ -57,10 +57,8 @@ pub fn needed(method: &str, path: &str) -> Option<Role> {
 pub fn locks_out(users: &[User]) -> bool {
     let open = users.iter().any(|u| u.builtin && u.role == Role::Admin);
     let can_log_in = |u: &User| u.passwords > 0 || !u.certs.is_empty() || !u.keys.is_empty();
-    !open
-        && !users
-            .iter()
-            .any(|u| !u.builtin && u.role == Role::Admin && can_log_in(u))
+    let admin = |u: &User| !u.builtin && u.role == Role::Admin && can_log_in(u);
+    !open && !users.iter().any(admin)
 }
 
 /// A password's Argon2id hash, as a PHC string (`$argon2id$v=19$m=19456,t=2,p=1$salt$hash`): the

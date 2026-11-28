@@ -482,10 +482,9 @@ pub fn carried(snapshot: &TaskSnapshot) -> Html {
     let (Some(task), Some(run)) = (snapshot.task.carried_from, snapshot.carried_from) else {
         return html! {};
     };
-    let short: String = run.simple().to_string().chars().take(6).collect();
     html! {
         <p class="note">
-            { "Carried over from run " }<a href={format!("/task/{task}")}>{ short }</a>
+            { "Carried over from run " }<a href={format!("/task/{task}")}>{ short_id(run) }</a>
             { ", not started again." }
         </p>
     }
@@ -753,13 +752,10 @@ fn worker_row(worker: &Worker, now: u64, forget: &Callback<String>) -> Html {
             { about }
             <td class="since">{ format!("{state} {}", duration(now.saturating_sub(worker.since))) }</td>
             <td class="tasks">
-                { for worker.tasks.iter().map(|t| {
-                    let run: String = t.run.simple().to_string().chars().take(6).collect();
-                    html! {
-                        <a href={format!("/task/{}", t.id)}>
-                            { format!("{} {run} {}.{}", t.pipeline, t.stage, t.task) }
-                        </a>
-                    }
+                { for worker.tasks.iter().map(|t| html! {
+                    <a href={format!("/task/{}", t.id)}>
+                        { format!("{} {} {}.{}", t.pipeline, short_id(t.run), t.stage, t.task) }
+                    </a>
                 }) }
             </td>
             <td><button class="small" {onclick}>{ "Forget" }</button></td>

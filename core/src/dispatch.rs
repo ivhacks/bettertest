@@ -60,8 +60,4 @@ impl client::TaskIo for Terminal {
     fn outputs(&self) -> Result<PathBuf, String> {
         Ok(PathBuf::from("."))
     }
-
-    fn boss_port(&self) -> u16 {
-        crate::boss::LISTEN_PORT
-    }
 }

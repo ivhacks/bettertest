@@ -26,16 +26,9 @@ async fn logged_in() {
     let search = window().location().search().unwrap_or_default();
     let next = search.strip_prefix("?next=").unwrap_or("");
     let path = next.split(['?', '#']).next().unwrap_or(next);
-    let next = if next.starts_with('/')
-        && !next.starts_with("//")
-        && path != "/login"
-        && crate::is_app_path(path)
-    {
-        next
-    } else {
-        "/"
-    };
-    crate::navigate(next);
+    let local = next.starts_with('/') && !next.starts_with("//");
+    let app = local && path != "/login" && crate::is_app_path(path);
+    crate::navigate(if app { next } else { "/" });
 }
 
 /// Logs in through `how`, then goes back to where the browser came from, or says why not.

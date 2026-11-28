@@ -242,11 +242,9 @@ pub(super) fn begin_run(
     if let Some(new) = &run.commit {
         let reason = format!("cancelled: {} replaced it", new.label());
         for other in going.values_mut() {
-            let replaced = other.pipeline == run.pipeline
-                && other
-                    .commit
-                    .as_ref()
-                    .is_some_and(|old| old.branch == new.branch && old.sha != new.sha);
+            let older = |old: &Commit| old.branch == new.branch && old.sha != new.sha;
+            let replaced =
+                other.pipeline == run.pipeline && other.commit.as_ref().is_some_and(older);
             if replaced {
                 other.interrupted = false;
                 other.cancel.send_replace(Some(reason.clone()));
@@ -430,11 +428,10 @@ pub(super) async fn push_hook(
     if push.after.chars().all(|c| c == '0') {
         return Ok(Json(vec![]));
     }
-    let index = boss
-        .repos
-        .iter()
-        .position(|r| r.full_name.eq_ignore_ascii_case(&push.repository.full_name))
-        .ok_or_else(|| not_found(format!("repo {}", push.repository.full_name)))?;
+    let pushed = &push.repository.full_name;
+    let same = |r: &Repo| r.full_name.eq_ignore_ascii_case(pushed);
+    let index = boss.repos.iter().position(same);
+    let index = index.ok_or_else(|| not_found(format!("repo {pushed}")))?;
     boss.fetch(index).await;
     let repo = boss.repo(index)?;
 
@@ -542,10 +539,8 @@ pub(super) fn restart_start<'a>(
         }
     }
     // A task that runs in a sandbox builds on the tasks before it there: they restart with it.
-    let in_sandbox = pipeline
-        .stages
-        .get(at)
-        .is_some_and(|s| !sandboxes(s, task).is_empty());
+    let stage = pipeline.stages.get(at);
+    let in_sandbox = stage.is_some_and(|s| !sandboxes(s, task).is_empty());
     match start == at && !(task.is_some() && in_sandbox) {
         true => (at, task),
         false => (start, None),
@@ -852,10 +847,8 @@ pub(super) fn last_used_in(pipeline: &Pipeline, index: usize) -> BTreeSet<String
 
 /// The pipeline's sandboxes the tasks of `stage` run in, or only its task `only`.
 fn sandboxes(stage: &Stage, only: Option<&str>) -> BTreeSet<String> {
-    let tasks = stage
-        .tasks
-        .iter()
-        .filter(|t| only.is_none_or(|only| t.name == only));
+    let wanted = |t: &&Task| only.is_none_or(|only| t.name == only);
+    let tasks = stage.tasks.iter().filter(wanted);
     tasks.filter_map(|t| t.sandbox.clone()).collect()
 }
 
@@ -1107,28 +1100,14 @@ impl client::TaskIo for BossTask<'_> {
         self.boss.add_artifact(self.id, artifact);
     }
 
-    fn run(&self) -> Option<&Run> {
-        Some(self.run)
-    }
-
-    fn boss_name(&self) -> Option<&str> {
-        self.boss.tls.as_ref().map(|tls| tls.name.as_str())
-    }
-
-    fn boss_port(&self) -> u16 {
-        self.boss.port
-    }
-
-    fn cancelled(&self) -> Option<Cancelled> {
-        Some(self.cancelled.clone())
-    }
-
-    fn boss_token(&self) -> Option<&str> {
-        self.token.as_deref()
-    }
-
-    fn wait_when_busy(&self) -> bool {
-        true
+    fn boss(&self) -> Option<client::FromBoss<'_>> {
+        Some(client::FromBoss {
+            run: self.run,
+            name: self.boss.tls.as_ref().map(|tls| tls.name.as_str()),
+            port: self.boss.port,
+            token: self.token.as_deref(),
+            cancelled: self.cancelled.clone(),
+        })
     }
 }
 
@@ -1192,10 +1171,8 @@ pub(super) async fn get_source(
     };
     let mut git = boss.repo(repo)?.archive(&commit.sha).map_err(internal)?;
     let mut archive = git.spawn().map_err(internal)?;
-    let stdout = archive
-        .stdout
-        .take()
-        .ok_or_else(|| internal("git archive has no stdout"))?;
+    let stdout = archive.stdout.take();
+    let stdout = stdout.ok_or_else(|| internal("git archive has no stdout"))?;
     // The stream reads stdout after this returns, so git must live on until it is done.
     spawn(async move {
         let _ = archive.wait().await;
@@ -1251,13 +1228,8 @@ pub(super) async fn task_events(
         }))
     };
     let wanted = |snapshot: &TaskSnapshot, event: &Event| match event {
-        Event::TaskStarted { task, .. }
-        | Event::TaskState { task, .. }
-        | Event::TaskTests { task, .. }
-        | Event::Log { task, .. }
-        | Event::Artifact { task, .. } => *task == snapshot.task.id,
         Event::RunFinished { run, .. } => *run == snapshot.run.id,
-        Event::RunStarted(_) | Event::Worker(_) | Event::WorkerForgotten { .. } => false,
+        _ => event.task() == Some(snapshot.task.id),
     };
     live(boss, &headers, snapshot, wanted)
 }

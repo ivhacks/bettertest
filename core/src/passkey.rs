@@ -15,10 +15,8 @@ pub const CEREMONY_MS: u64 = 5 * 60 * 1000;
 /// boss speaks it. Passkeys are bound to that host name, so a passkey made at one name does not log
 /// in at another.
 pub fn webauthn(headers: &HeaderMap, https: bool) -> Result<Webauthn, String> {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .ok_or("no Host header")?;
+    let host = headers.get(header::HOST).and_then(|h| h.to_str().ok());
+    let host = host.ok_or("no Host header")?;
     let scheme = if https { "https" } else { "http" };
     let origin = Url::parse(&format!("{scheme}://{host}")).map_err(|e| e.to_string())?;
     let rp_id = origin.host_str().ok_or("no host name in the Host header")?;

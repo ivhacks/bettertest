@@ -72,10 +72,8 @@ pub(super) fn who(
 ) -> Result<(Me, Option<i64>), Failure> {
     let db = boss.db();
     let users = db.users().map_err(internal)?;
-    let logged_out = users
-        .iter()
-        .find(|u| u.builtin)
-        .map_or(Role::None, |u| u.role);
+    let builtin = users.iter().find(|u| u.builtin);
+    let logged_out = builtin.map_or(Role::None, |u| u.role);
     let cookies = text_header(headers, header::COOKIE);
     let now = now();
     let authorization = text_header(headers, header::AUTHORIZATION);
@@ -131,11 +129,8 @@ pub(super) async fn guard(
     let Some(needed) = auth::needed(request.method().as_str(), request.uri().path()) else {
         return next.run(request).await;
     };
-    let peer = request
-        .extensions()
-        .get::<ConnectInfo<tls::Peer>>()
-        .map(|c| &c.0);
-    let me = match who(&boss, request.headers(), peer) {
+    let peer = request.extensions().get::<ConnectInfo<tls::Peer>>();
+    let me = match who(&boss, request.headers(), peer.map(|c| &c.0)) {
         Ok((me, _)) => me,
         Err(failure) => return failure.into_response(),
     };

@@ -36,14 +36,10 @@ impl Boss {
             let run_name = format!("run {} of {}", run.short_id(), run.pipeline);
             (run_name.clone(), format!(" in {run_name}"), String::new())
         };
-        let Some(id) = run
-            .stages
-            .iter()
-            .find(|s| s.name == stage)
-            .and_then(|s| s.tasks.iter().find(|t| t.name == task))
-            // A task a restart carried over published nothing itself: the run it came from did.
-            .map(|t| t.carried_from.unwrap_or(t.id))
-        else {
+        let stage_run = run.stages.iter().find(|s| s.name == stage);
+        let found = stage_run.and_then(|s| s.tasks.iter().find(|t| t.name == task));
+        // A task a restart carried over published nothing itself: the run it came from did.
+        let Some(id) = found.map(|t| t.carried_from.unwrap_or(t.id)) else {
             return Err(format!("{cant}: {run_name} has no task {producer}."));
         };
         let db = self.db();
@@ -74,9 +70,8 @@ impl Boss {
                 "{producer} published no artifact named '{name}'{in_run}. It published: {names}."
             ));
         }
-        Ok(task_artifacts_dir(id)
-            .map_err(|e| e.to_string())?
-            .join(name))
+        let dir = task_artifacts_dir(id).map_err(|e| e.to_string())?;
+        Ok(dir.join(name))
     }
 
     /// The run of `pipeline` that `run` names: `latest`, the newest one in which `stage.task`
@@ -91,34 +86,26 @@ impl Boss {
     ) -> Result<Run, String> {
         let cant = format!("Can't get artifact {name} of {pipeline} {stage}.{task}");
         let db = self.db();
-        let known = self.pipedef(pipeline).is_some()
-            || !db.runs(pipeline, 1).map_err(|e| e.to_string())?.is_empty();
+        let text = |e: rusqlite::Error| e.to_string();
+        let known =
+            self.pipedef(pipeline).is_some() || !db.runs(pipeline, 1).map_err(text)?.is_empty();
         if !known {
             return Err(format!("{cant}: there is no pipeline named '{pipeline}'."));
         }
         let id = if run == "latest" {
-            let latest = db
-                .latest_run_with_artifact(pipeline, stage, task, name)
-                .map_err(|e| e.to_string())?;
-            latest.ok_or_else(|| {
-                format!(
-                    "{cant}: no run of {pipeline} has {stage}.{task} passing with an artifact \
-                     named '{name}'."
-                )
-            })?
+            let latest = db.latest_run_with_artifact(pipeline, stage, task, name);
+            let passing = format!("{stage}.{task} passing with an artifact named '{name}'");
+            let none = || format!("{cant}: no run of {pipeline} has {passing}.");
+            latest.map_err(text)?.ok_or_else(none)?
         } else {
             let prefix = run.replace('-', "").to_ascii_lowercase();
-            if prefix.is_empty()
-                || prefix.len() > 32
-                || !prefix.chars().all(|c| c.is_ascii_hexdigit())
-            {
+            let hex = prefix.chars().all(|c| c.is_ascii_hexdigit());
+            if prefix.is_empty() || prefix.len() > 32 || !hex {
                 return Err(format!(
                     "{cant}: '{run}' is not a run id. Use LATEST, or a run's id like 6dfde7."
                 ));
             }
-            let found = db
-                .runs_by_prefix(pipeline, &prefix, 10)
-                .map_err(|e| e.to_string())?;
+            let found = db.runs_by_prefix(pipeline, &prefix, 10).map_err(text)?;
             match found.as_slice() {
                 [] => return Err(format!("{cant}: {pipeline} has no run {run}.")),
                 [id] => *id,
@@ -134,7 +121,7 @@ impl Boss {
                 }
             }
         };
-        let run = db.run(id).map_err(|e| e.to_string())?;
+        let run = db.run(id).map_err(text)?;
         run.ok_or_else(|| format!("{cant}: run {id} vanished."))
     }
 }
