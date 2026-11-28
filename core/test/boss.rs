@@ -1546,3 +1546,174 @@ fn install_arch_is_x86_64_or_aarch64() {
             .ends_with("bettertest-x86_64")
     );
 }
+
+/// A client too slow to keep up with the events gets a fresh snapshot instead of a gap, and the
+/// events after it.
+#[tokio::test]
+async fn a_client_that_falls_behind_gets_a_fresh_snapshot() {
+    let boss = boss(BTreeMap::new());
+    let snapshot = |db: &Db| db.settings().map(Some);
+    let response = live(boss.clone(), &HeaderMap::new(), snapshot, |_, _| true).unwrap();
+    let mut body = response.into_body().into_data_stream();
+    // Nobody reads the stream meanwhile: more events than the broadcast keeps.
+    let forgotten = |n: usize| Event::WorkerForgotten {
+        url: format!("http://w{n}"),
+    };
+    for n in 0..5000 {
+        boss.events.send(forgotten(n)).unwrap();
+    }
+    let mut messages: Vec<Live<Settings>> = vec![];
+    let mut text = String::new();
+    let snapshots = |messages: &[Live<Settings>]| {
+        let is_snapshot = |m: &&Live<Settings>| matches!(m, Live::Snapshot(_));
+        messages.iter().filter(is_snapshot).count()
+    };
+    let mut after = None;
+    let read = async {
+        while let Some(chunk) = body.next().await {
+            text.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+            while let Some((message, rest)) = text.split_once("\n\n") {
+                let data = message
+                    .lines()
+                    .find_map(|l| l.strip_prefix("data: "))
+                    .unwrap();
+                messages.push(serde_json::from_str(data).unwrap());
+                text = rest.to_string();
+            }
+            if snapshots(&messages) == 2 && after.is_none() {
+                // Caught up: what happens now arrives.
+                after = Some(messages.len());
+                boss.events.send(forgotten(9999)).unwrap();
+            }
+            if after.is_some_and(|after| messages.len() > after) {
+                return;
+            }
+        }
+    };
+    timeout(Duration::from_secs(10), read).await.unwrap();
+    assert!(matches!(messages[0], Live::Snapshot(_)));
+    // Fewer events than were sent before the fresh snapshot: the ones it skipped are in it.
+    let gap = messages
+        .iter()
+        .skip(1)
+        .position(|m| matches!(m, Live::Snapshot(_)));
+    assert!(gap.unwrap() < 5000, "{gap:?}");
+    assert_eq!(messages.last(), Some(&Live::Event(forgotten(9999))));
+}
+
+/// Saving the settings applies them at once, a batch of tasks at a time, files and all.
+#[tokio::test]
+async fn saved_settings_delete_what_they_no_longer_keep() {
+    let boss = boss(BTreeMap::new());
+    let put = |settings: Settings| put_settings(State(boss.clone()), Json(settings));
+    for days in [0, 36501] {
+        let settings = Settings {
+            artifact_days: Some(days),
+            log_days: None,
+        };
+        let refused = put(settings).await.map(|_| ()).unwrap_err();
+        let why = format!("keep things 1 to 36500 days, or forever, not {days} days");
+        assert_eq!(refused, bad_request(why));
+    }
+    // 25 runs of 5 tasks, more than a batch, each ended two days ago with a log and an artifact.
+    let day = 24 * 60 * 60 * 1000;
+    let ended = now() - 2 * day;
+    let mut tasks = vec![];
+    for _ in 0..25 {
+        let run = (boss.db())
+            .insert_run("app", &pipeline(), None, &BTreeMap::new())
+            .unwrap();
+        tasks.extend(run.stages.iter().flat_map(|s| s.tasks.iter().map(|t| t.id)));
+    }
+    let line = LogLine {
+        stream: LogStream::Stdout,
+        line: "built".into(),
+    };
+    for task in &tasks {
+        let mut db = boss.db();
+        db.set_task_state(*task, Pass, ended).unwrap();
+        db.append_log(*task, std::slice::from_ref(&line)).unwrap();
+        let artifact = Artifact {
+            name: "app.deb".into(),
+            size: 3,
+        };
+        db.add_artifact(*task, &artifact).unwrap();
+        let dir = task_artifacts_dir(*task).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("app.deb"), "deb").unwrap();
+    }
+    let keep = |days| Settings {
+        artifact_days: Some(days),
+        log_days: Some(days),
+    };
+    let Json(swept) = put(keep(3)).await.unwrap();
+    assert_eq!((swept.logs, swept.artifacts), (0, 0));
+    let Json(swept) = put(keep(1)).await.unwrap();
+    assert_eq!((swept.logs, swept.artifacts), (125, 125));
+    for task in &tasks {
+        assert!(!task_artifacts_dir(*task).unwrap().exists());
+        let (log, artifacts) = boss.db().deleted(*task).unwrap();
+        assert!(log.is_some() && artifacts.is_some());
+        assert!(log_text(&boss, *task).is_empty());
+    }
+    assert_eq!(boss.db().settings().unwrap(), keep(1));
+    // Nothing is deleted twice.
+    let Json(swept) = put(keep(1)).await.unwrap();
+    assert_eq!((swept.logs, swept.artifacts), (0, 0));
+}
+
+/// Cancelling a run hangs up on its running task, skips the rest, and the run fails. Once it is
+/// over there is nothing to cancel.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_run_skips_what_is_left_and_fails() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = worker_hanging_once(1, calls.clone()).await;
+    let (boss, pipeline, source) = two_stages_on(&url).await;
+    let mut events = boss.events.subscribe();
+    let loaded = (source, Ok(pipeline));
+    let run = begin_run(
+        &boss,
+        &HeaderMap::new(),
+        "app",
+        loaded,
+        None,
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let once = run.stages[0].tasks[0].id;
+    let running = async {
+        loop {
+            if let Ok(Event::Log { line, .. }) = events.recv().await
+                && line.line == "first try"
+            {
+                return;
+            }
+        }
+    };
+    timeout(Duration::from_secs(20), running).await.unwrap();
+    let cancel = |id: String| {
+        let peer = ConnectInfo(tls::Peer { certificate: None });
+        cancel_run(State(boss.clone()), AxumPath(id), peer, HeaderMap::new())
+    };
+    assert_eq!(cancel(run.id.to_string()).await, Ok(StatusCode::NO_CONTENT));
+    assert_eq!(finished(&mut events, run.id).await, RunState::Fail);
+    let kept = boss.db().run(run.id).unwrap().unwrap();
+    let states: Vec<TaskState> = kept.stages.iter().map(|s| s.tasks[0].state).collect();
+    assert_eq!(states, [Skipped, Skipped]);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "Second.twice never started"
+    );
+    let log = log_text(&boss, once);
+    assert_eq!(log.first().map(String::as_str), Some("first try"));
+    assert!(
+        log.iter().any(|l| l.contains("cancelled from the web ui")),
+        "{log:?}"
+    );
+
+    let again = cancel(run.id.to_string()).await.unwrap_err();
+    assert_eq!(again, conflict(format!("run {} is not running", run.id)));
+    let nonsense = cancel("6dfde7".into()).await.unwrap_err();
+    assert_eq!(nonsense, not_found("run 6dfde7"));
+}
