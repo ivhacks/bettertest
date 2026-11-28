@@ -35,11 +35,8 @@ pub async fn entry(
 
     let http = client::http()?;
     let passed = client::execute_task(&http, &worker, &source, stage, task, &mut Terminal).await;
-    Ok(if passed {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    // 0 for a pass, 1 for a fail.
+    Ok(ExitCode::from(u8::from(!passed)))
 }
 
 /// Prints the pipedef's stages and tasks as JSON. Does not touch a worker.
