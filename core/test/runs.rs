@@ -1,10 +1,11 @@
-// Tests of boss/runs.rs: stages whose tasks share a sandbox, and a pipeline's sandboxes that live
-// across stages, run against a stand-in worker. A child of the boss's tests (see the #[path] in
-// test/boss.rs), so it reaches what the boss keeps private.
+// Tests of boss/runs.rs: stages whose tasks share a sandbox, a pipeline's sandboxes that live across
+// stages, and runs a forge's pushes start, against stand-in workers and a stand-in forge. A child of
+// the boss's tests (see the #[path] in test/boss.rs), so it reaches what the boss keeps private.
 
 use super::*;
 use axum::extract::Multipart;
-use serde_json::json;
+use serde_json::{Value, json};
+use std::{path::Path, process::Command};
 
 type Calls = Arc<Mutex<Vec<String>>>;
 
@@ -222,4 +223,280 @@ async fn a_failed_run_still_stops_a_pipeline_sandbox() {
     assert_eq!(calls.first().map(String::as_str), Some("start c1"));
     assert_eq!(calls.last().map(String::as_str), Some("stop c1"));
     assert_eq!(calls.iter().filter(|c| c.starts_with("stop")).count(), 1);
+}
+
+/// git in `dir`, as a test commits: with a name of its own, touching nobody's config.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@bettertest.dev",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// A forge in miniature: repo team/app served over git's dumb HTTP, a work tree to commit to it
+/// from, and the commit statuses posted to its API.
+struct Forge {
+    root: PathBuf,
+    work: PathBuf,
+    url: String,
+    statuses: Arc<Mutex<Vec<(String, Value)>>>,
+}
+
+impl Forge {
+    async fn new() -> Forge {
+        let root = std::env::temp_dir().join(format!("forge-{}", Uuid::new_v4().simple()));
+        let work = root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        git(&work, &["init", "--quiet", "--initial-branch=main"]);
+        let statuses: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+        let (files, posted) = (root.clone(), statuses.clone());
+        let serve = move |AxumPath(path): AxumPath<String>| async move {
+            match fs::read(files.join(&path)) {
+                Ok(bytes) => (StatusCode::OK, bytes),
+                Err(_) => (StatusCode::NOT_FOUND, vec![]),
+            }
+        };
+        let status = move |AxumPath(sha): AxumPath<String>, Json(body): Json<Value>| async move {
+            lock(&posted).push((sha, body));
+            StatusCode::CREATED
+        };
+        let app = Router::new()
+            .route("/api/v1/repos/team/app/statuses/{sha}", post(status))
+            .route("/{*path}", get(serve));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/team/app.git", listener.local_addr().unwrap());
+        spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Forge {
+            root,
+            work,
+            url,
+            statuses,
+        }
+    }
+
+    /// Commits `files` to main and publishes it. The commit's sha.
+    fn commit(&self, files: &[(&str, &str)]) -> String {
+        for (path, text) in files {
+            let path = self.work.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        git(&self.work, &["add", "."]);
+        git(&self.work, &["commit", "--quiet", "-m", "change"]);
+        let bare = self.root.join("team/app.git");
+        fs::remove_dir_all(&bare).ok();
+        let (work, bare_path) = (self.work.to_str().unwrap(), bare.to_str().unwrap());
+        git(&self.root, &["clone", "--quiet", "--bare", work, bare_path]);
+        git(&bare, &["update-server-info"]);
+        git(&self.work, &["rev-parse", "HEAD"])
+    }
+
+    /// The statuses posted so far, as (sha, context, state, description).
+    fn statuses(&self) -> BTreeSet<(String, String, String, String)> {
+        let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
+        let posted = lock(&self.statuses);
+        (posted.iter())
+            .map(|(sha, b)| {
+                let fields = (
+                    text(&b["context"]),
+                    text(&b["state"]),
+                    text(&b["description"]),
+                );
+                (sha.clone(), fields.0, fields.1, fields.2)
+            })
+            .collect()
+    }
+}
+
+impl Drop for Forge {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+/// A push starts every pipeline the pushed commit has, at that commit, and tells the forge how each
+/// does. A newer commit on the branch replaces the run of the older one. Tags, deleted branches and
+/// other repos start nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_runs_its_commit_and_a_newer_one_replaces_it() {
+    let forge = Forge::new().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let worker = worker_hanging_once(1, calls.clone()).await;
+    let app = format!(
+        "from bettertest import Stage, task\n\n\nclass Test(Stage):\n    worker = \"{worker}\"\n\n    \
+         @task()\n    def unit():\n        pass\n"
+    );
+    let first = forge.commit(&[
+        (".bettertest/app.py", &app),
+        (".bettertest/broken.py", "this is not python("),
+        ("README", "one"),
+    ]);
+    let repo = Repo::new(&forge.url).unwrap();
+    let mirror = workdir::dir("repos")
+        .unwrap()
+        .join(crate::worker::cache_key(&repo.public));
+    let mut owned = Arc::into_inner(boss(workers(&[(&worker, &["x86"], 0, 4)]))).unwrap();
+    owned.repos = vec![repo];
+    let boss = Arc::new(owned);
+    boss.fetch(0).await;
+    assert_eq!(boss.pipelines(), ["app", "broken"]);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, "ci.example:7357".parse().unwrap());
+    let push = |git_ref: &str, after: &str, repo: &str| {
+        let push = Push {
+            git_ref: git_ref.into(),
+            after: after.into(),
+            repository: PushedRepo {
+                full_name: repo.into(),
+            },
+        };
+        push_hook(State(boss.clone()), headers.clone(), Json(push))
+    };
+    let nothing = |pushed: Result<Json<Vec<Run>>, Failure>| pushed.unwrap().0.is_empty();
+    assert!(nothing(push("refs/tags/v1", &first, "team/app").await));
+    assert!(nothing(
+        push("refs/heads/main", &"0".repeat(40), "team/app").await
+    ));
+    let other = push("refs/heads/main", &first, "team/other").await;
+    assert_eq!(other.map(|_| ()).unwrap_err(), not_found("repo team/other"));
+
+    let mut events = boss.events.subscribe();
+    let Json(runs) = push("refs/heads/main", &first, "Team/App").await.unwrap();
+    let [replaced] = &runs[..] else {
+        panic!("{runs:?}")
+    };
+    let commit = |sha: &str| {
+        Some(Commit {
+            sha: sha.into(),
+            branch: "main".into(),
+        })
+    };
+    assert_eq!(
+        (replaced.pipeline.as_str(), &replaced.commit),
+        ("app", &commit(&first))
+    );
+    let running = async {
+        loop {
+            if let Ok(Event::Log { line, .. }) = events.recv().await
+                && line.line == "first try"
+            {
+                return;
+            }
+        }
+    };
+    timeout(Duration::from_secs(20), running).await.unwrap();
+
+    let second = forge.commit(&[("README", "two")]);
+    let Json(runs) = push("refs/heads/main", &second, "team/app").await.unwrap();
+    let [newer] = &runs[..] else {
+        panic!("{runs:?}")
+    };
+    assert_eq!(newer.commit, commit(&second));
+    let mut ended = BTreeMap::new();
+    let both = async {
+        while ended.len() < 2 {
+            if let Ok(Event::RunFinished { run, state, .. }) = events.recv().await {
+                ended.insert(run, state);
+            }
+        }
+    };
+    timeout(Duration::from_secs(20), both).await.unwrap();
+    assert_eq!(ended[&replaced.id], RunState::Fail);
+    assert_eq!(ended[&newer.id], RunState::Pass);
+    let label = format!("main @ {}", &second[..7]);
+    let cancelled = format!("cancelled: {label} replaced it");
+    let unit = replaced.stages[0].tasks[0].id;
+    let log = log_text(&boss, unit);
+    assert!(log.contains(&cancelled), "{log:?}");
+
+    // The source a task of the newer run unpacks is that commit's.
+    let source = get_source(State(boss.clone()), AxumPath(newer.id.to_string()))
+        .await
+        .unwrap();
+    let tar = axum::body::to_bytes(source.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let names = tar_names(&tar);
+    assert_eq!(
+        names,
+        [
+            ".bettertest/",
+            ".bettertest/app.py",
+            ".bettertest/broken.py",
+            "README"
+        ]
+    );
+    // git archive names the commit in its first header.
+    assert!(tar.windows(40).any(|w| w == second.as_bytes()));
+
+    // What the forge heard, once the last report is in.
+    let expected = BTreeSet::from(
+        [
+            (&first, "broken", "failure", "the pipedef is broken"),
+            (&first, "app", "pending", "running"),
+            (&first, "app", "warning", cancelled.as_str()),
+            (&second, "broken", "failure", "the pipedef is broken"),
+            (&second, "app", "pending", "running"),
+            (&second, "app", "success", "passed"),
+        ]
+        .map(|(sha, context, state, said)| {
+            let context = format!("bettertest/{context}");
+            (sha.clone(), context, state.to_string(), said.to_string())
+        }),
+    );
+    let heard = async {
+        while forge.statuses().len() < expected.len() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    };
+    timeout(Duration::from_secs(10), heard).await.unwrap();
+    assert_eq!(forge.statuses(), expected);
+    let links: BTreeSet<String> = lock(&forge.statuses)
+        .iter()
+        .map(|(_, body)| body["target_url"].to_string())
+        .collect();
+    assert_eq!(
+        links,
+        BTreeSet::from([
+            "\"http://ci.example:7357/pipeline/app\"".to_string(),
+            "\"http://ci.example:7357/pipeline/broken\"".to_string()
+        ])
+    );
+    fs::remove_dir_all(mirror).unwrap();
+}
+
+/// The names of the files in a tar archive, in order.
+fn tar_names(tar: &[u8]) -> Vec<String> {
+    let mut names = vec![];
+    let mut at = 0;
+    while let Some(header) = tar.get(at..at + 512) {
+        let name: Vec<u8> = header[..100]
+            .iter()
+            .copied()
+            .take_while(|&b| b != 0)
+            .collect();
+        if name.is_empty() {
+            break;
+        }
+        let size = std::str::from_utf8(&header[124..135]).unwrap();
+        let size = usize::from_str_radix(size.trim_matches(['\0', ' ']), 8).unwrap_or(0);
+        let name = String::from_utf8(name).unwrap();
+        // git archive starts with a pax header holding the commit id.
+        if name != "pax_global_header" {
+            names.push(name);
+        }
+        at += 512 + size.div_ceil(512) * 512;
+    }
+    names
 }
