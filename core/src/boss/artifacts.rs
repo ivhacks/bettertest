@@ -190,10 +190,8 @@ pub(super) async fn get_run_artifact(
     State(boss): State<Shared>,
     AxumPath((id, stage, task, name)): AxumPath<(String, String, String, String)>,
 ) -> Result<Response, Failure> {
-    let id = parse_id(&id)?;
+    let run = find_run(&boss, &id)?;
     check_artifact_name(&name)?;
-    let run = boss.db().run(id).map_err(internal)?;
-    let run = run.ok_or_else(|| not_found(format!("run {id}")))?;
     let path = boss
         .find_artifact(&run, true, &stage, &task, &name)
         .map_err(|reason| (StatusCode::NOT_FOUND, reason))?;
@@ -205,13 +203,7 @@ pub(super) async fn get_run_artifact(
 /// came from is in the `bettertest-run` header. 404 says why there is none.
 pub(super) async fn get_pipeline_artifact(
     State(boss): State<Shared>,
-    AxumPath((pipeline, run, stage, task, name)): AxumPath<(
-        String,
-        String,
-        String,
-        String,
-        String,
-    )>,
+    AxumPath([pipeline, run, stage, task, name]): AxumPath<[String; 5]>,
 ) -> Result<Response, Failure> {
     check_artifact_name(&name)?;
     let not_there = |reason| (StatusCode::NOT_FOUND, reason);
@@ -233,13 +225,10 @@ pub(super) async fn file_response(
     name: &str,
     disposition: Option<String>,
 ) -> Result<Response, Failure> {
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| match e.kind() {
-            ErrorKind::NotFound => not_found(format!("artifact {name}")),
-            _ => internal(e),
-        })?;
-    let length = file.metadata().await.map_err(internal)?.len();
+    let (length, body) = file_body(path).await.map_err(|e| match e.kind() {
+        ErrorKind::NotFound => not_found(format!("artifact {name}")),
+        _ => internal(e),
+    })?;
     let kind = match name.ends_with(".html") {
         true => "text/html; charset=utf-8",
         false => "application/octet-stream",
@@ -254,7 +243,6 @@ pub(super) async fn file_response(
         ),
     ];
     let saved = disposition.map(|d| [(header::CONTENT_DISPOSITION, d)]);
-    let body = Body::from_stream(ReaderStream::new(file));
     Ok((headers, saved, body).into_response())
 }
 

@@ -909,8 +909,9 @@ async fn a_run_cut_short_by_a_restarting_worker_goes_on_and_passes() {
     let url = worker_hanging_once(2, calls.clone()).await;
     let (boss, pipeline, source) = two_stages_on(&url).await;
     let mut events = boss.events.subscribe();
-    let none = BTreeMap::new();
-    let run = begin_run(&boss, "app", pipeline, source, None, None, &none).expect("run");
+    let loaded = (source, Ok(pipeline));
+    let headers = HeaderMap::new();
+    let run = begin_run(&boss, &headers, "app", loaded, None, BTreeMap::new()).expect("run");
     // Second.twice is running when the worker says it is stopping.
     let running = async {
         loop {
@@ -1183,9 +1184,7 @@ async fn an_artifact_names_its_file_and_its_run() {
     assert_eq!(header(&download, "content-length").as_deref(), Some("3"));
 
     let path = [name.as_str(), "latest", "Stage0", "task_0_0", "app.deb"].map(str::to_string);
-    let (pipeline, latest, stage, task_name, file_name) = path.into();
-    let path = AxumPath((pipeline, latest, stage, task_name, file_name));
-    let fetched = artifacts::get_pipeline_artifact(State(boss.clone()), path)
+    let fetched = artifacts::get_pipeline_artifact(State(boss.clone()), AxumPath(path))
         .await
         .expect("fetch");
     let id = run.id.to_string();
@@ -1198,6 +1197,27 @@ async fn an_artifact_names_its_file_and_its_run() {
         .await
         .unwrap();
     assert_eq!(body, "deb");
+
+    // The same through the router, which fills the handler's path from the url's five parts.
+    let router = Router::new()
+        .route(
+            "/api/pipeline/{name}/run/{run}/artifact/{stage}/{task}/{artifact}",
+            get(artifacts::get_pipeline_artifact),
+        )
+        .with_state(boss.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    spawn(async move { axum::serve(listener, router).await });
+    let url =
+        format!("http://{address}/api/pipeline/{name}/run/latest/artifact/Stage0/task_0_0/app.deb");
+    let served = reqwest::get(&url).await.expect("get");
+    assert_eq!(served.status(), StatusCode::OK);
+    assert_eq!(
+        served.headers()["bettertest-run"].to_str().unwrap(),
+        id.as_str()
+    );
+    assert_eq!(served.text().await.unwrap(), "deb");
+
     std::fs::remove_dir_all(&dir).expect("clean up");
     std::fs::remove_file(&file).expect("remove pipedef");
 }
@@ -1463,6 +1483,11 @@ fn install_arch_is_x86_64_or_aarch64() {
     );
     assert!(download_arch(Some("arch=arm64")).is_err());
     assert!(download_arch(Some("arch=x86_64&arch=aarch64")).is_err());
+    assert!(download_arch(Some("arch=x86_64&arch=x86_64")).is_err());
+    assert_eq!(download_arch(Some("")).unwrap(), "x86_64");
+    assert_eq!(download_arch(Some("arch&x=1")).unwrap(), "x86_64");
+    assert!(download_arch(Some("arch=")).is_err());
+    assert!(download_arch(Some("arch=aarch64=x")).is_err());
     assert!(binary_file("../etc/passwd").is_none());
     assert!(
         binary_file("bettertest-x86_64")
