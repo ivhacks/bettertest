@@ -1,10 +1,11 @@
 // The settings page: retention, and whether the boss speaks HTTPS.
 
-use crate::{account, load, value, view};
+use crate::{load, submit, top, value, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
 use yew::prelude::*;
 
+#[derive(Default)]
 pub struct SettingsPage {
     settings: Option<Settings>,
     // Outer None until it loads; inner None when the boss speaks plain HTTP.
@@ -49,14 +50,7 @@ impl Component for SettingsPage {
 
     fn create(ctx: &Context<Self>) -> Self {
         Self::read(ctx);
-        Self {
-            settings: None,
-            https: None,
-            saved: None,
-            notice: None,
-            artifacts: NodeRef::default(),
-            logs: NodeRef::default(),
-        }
+        Self::default()
     }
 
     fn changed(&mut self, ctx: &Context<Self>, _old: &Self::Properties) -> bool {
@@ -99,17 +93,13 @@ impl Component for SettingsPage {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let onsubmit = ctx.link().callback(|e: SubmitEvent| {
-            e.prevent_default();
-            SettingsMsg::Save
-        });
+        let onsubmit = submit(ctx.link(), || SettingsMsg::Save);
         let form = (self.settings.as_ref())
             .map(|settings| view::settings(settings, &self.artifacts, &self.logs, onsubmit));
         let saved = (self.saved.iter()).map(|text| html! { <p class="saved">{ text }</p> });
         html! {
             <>
-                { view::header(html! {}, html! {}, account()) }
-                { view::notice(&self.notice) }
+                { top(html! {}, html! {}, &self.notice) }
                 <main>{ for form }{ for saved }{ for self.https.as_ref().map(view::https) }</main>
             </>
         }

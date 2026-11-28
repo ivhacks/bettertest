@@ -42,5 +42,5 @@ pub async fn ceremony(create: bool, body: serde_json::Value) -> Result<String, S
     let credential: serde_json::Value =
         serde_json::from_str(&answer.as_string().unwrap_or_default()).map_err(|e| e.to_string())?;
     let finish = serde_json::json!({ "ceremony": options["ceremony"], "credential": credential });
-    crate::post_json(url, &finish).await
+    crate::send(Request::post(url).json(&finish)).await
 }

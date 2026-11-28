@@ -1,6 +1,6 @@
 // The task page: one task of one run, its live log, artifacts and restart buttons.
 
-use crate::{PageProps, account, cancel_run, fetch, follow, monotonic, view};
+use crate::{PageProps, cancel_run, fetch, follow, monotonic, top, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
 use gloo_net::http::Request;
@@ -144,8 +144,7 @@ impl Component for TaskPage {
         };
         html! {
             <>
-                { view::header(crumbs, right, account()) }
-                { view::notice(&self.notice) }
+                { top(crumbs, right, &self.notice) }
                 { carried }
                 { artifacts }
                 // column-reverse makes the browser keep the newest lines in view while the user

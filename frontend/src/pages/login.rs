@@ -1,10 +1,12 @@
 // The login page: a name and password, or a passkey.
 
-use crate::{account, passkey, post_json, value, view};
+use crate::{passkey, send, submit, top, value};
 use gloo::utils::window;
+use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
+#[derive(Default)]
 pub struct LoginPage {
     notice: Option<String>,
     name: NodeRef,
@@ -36,57 +38,50 @@ async fn logged_in() {
     crate::navigate(next);
 }
 
+/// Logs in `how` says, then goes back to where the browser came from, or says why not.
+fn log_in(
+    link: &yew::html::Scope<LoginPage>,
+    how: impl Future<Output = Result<String, String>> + 'static,
+) {
+    let link = link.clone();
+    spawn_local(async move {
+        match how.await {
+            Ok(_) => logged_in().await,
+            Err(e) => link.send_message(LoginMsg::Refused(e)),
+        }
+    });
+}
+
 impl Component for LoginPage {
     type Message = LoginMsg;
     type Properties = ();
 
     fn create(_: &Context<Self>) -> Self {
-        Self {
-            notice: None,
-            name: NodeRef::default(),
-            password: NodeRef::default(),
-        }
+        Self::default()
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             LoginMsg::Refused(why) => {
                 self.notice = Some(why);
-                true
+                return true;
             }
             LoginMsg::Submit => {
                 let body = serde_json::json!({ "name": value(&self.name), "password": value(&self.password) });
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    match post_json("/api/login", &body).await {
-                        Ok(_) => logged_in().await,
-                        Err(e) => link.send_message(LoginMsg::Refused(e)),
-                    }
-                });
-                false
+                log_in(ctx.link(), send(Request::post("/api/login").json(&body)));
             }
             LoginMsg::Passkey => {
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    match passkey::ceremony(false, serde_json::json!({})).await {
-                        Ok(_) => logged_in().await,
-                        Err(e) => link.send_message(LoginMsg::Refused(e)),
-                    }
-                });
-                false
+                log_in(ctx.link(), passkey::ceremony(false, serde_json::json!({})))
             }
         }
+        false
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let onsubmit = ctx.link().callback(|e: SubmitEvent| {
-            e.prevent_default();
-            LoginMsg::Submit
-        });
+        let onsubmit = submit(ctx.link(), || LoginMsg::Submit);
         html! {
             <>
-                { view::header(html! {}, html! {}, account()) }
-                { view::notice(&self.notice) }
+                { top(html! {}, html! {}, &self.notice) }
                 <main>
                     <form class="login" {onsubmit}>
                         <input ref={self.name.clone()} type="text" placeholder="name" autocomplete="username" required=true />

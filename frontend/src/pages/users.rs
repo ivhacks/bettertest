@@ -1,6 +1,6 @@
 // The users page: who may do what, and how each logs in.
 
-use crate::{account, load, passkey, post_json, value, view};
+use crate::{load, passkey, send, submit, top, value, view};
 use bettertest_shared::*;
 use gloo_net::http::Request;
 use serde_json::json;
@@ -8,6 +8,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
+#[derive(Default)]
 pub struct UsersPage {
     users: Vec<User>,
     // Bumped by every load, to rebuild the table: a dropdown the boss refused a change for must
@@ -48,7 +49,7 @@ impl UsersPage {
     fn change(ctx: &Context<Self>, url: &'static str, body: serde_json::Value) {
         let link = ctx.link().clone();
         spawn_local(async move {
-            match post_json(url, &body).await {
+            match send(Request::post(url).json(&body)).await {
                 Ok(_) => link.send_message(UsersMsg::Load),
                 Err(e) => {
                     link.send_message(UsersMsg::Notice(e));
@@ -61,10 +62,7 @@ impl UsersPage {
 
     /// The name of user `id`.
     fn name(&self, id: i64) -> &str {
-        self.users
-            .iter()
-            .find(|u| u.id == id)
-            .map_or("", |u| u.name.as_str())
+        (self.users.iter().find(|u| u.id == id)).map_or("", |u| u.name.as_str())
     }
 }
 
@@ -76,18 +74,7 @@ impl Component for UsersPage {
     // them and when it comes back on screen, not live. What it read before stays up meanwhile.
     fn create(ctx: &Context<Self>) -> Self {
         ctx.link().send_message(UsersMsg::Load);
-        Self {
-            users: vec![],
-            loads: 0,
-            notice: None,
-            password_for: None,
-            new_token: None,
-            new_certificate: None,
-            new_name: NodeRef::default(),
-            new_role: NodeRef::default(),
-            new_password: NodeRef::default(),
-            password: NodeRef::default(),
-        }
+        Self::default()
     }
 
     fn changed(&mut self, ctx: &Context<Self>, _old: &Self::Properties) -> bool {
@@ -180,12 +167,8 @@ impl Component for UsersPage {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
-        let onsubmit = link.callback(|e: SubmitEvent| {
-            e.prevent_default();
-            UsersMsg::Add
-        });
         let add = html! {
-            <form class="add" {onsubmit}>
+            <form class="add" onsubmit={submit(link, || UsersMsg::Add)}>
                 <input ref={self.new_name.clone()} type="text" placeholder="name" required=true />
                 <select ref={self.new_role.clone()}>
                     <option value="read">{ "read" }</option>
@@ -198,13 +181,9 @@ impl Component for UsersPage {
         };
         let window = self.password_for.map(|id| {
             let name = self.name(id);
-            let onsubmit = link.callback(|e: SubmitEvent| {
-                e.prevent_default();
-                UsersMsg::SetPassword
-            });
             html! {
                 <div class="backdrop">
-                    <form class="window" role="dialog" {onsubmit}>
+                    <form class="window" role="dialog" onsubmit={submit(link, || UsersMsg::SetPassword)}>
                         <h2>{ format!("Password for {name}") }</h2>
                         <p><input ref={self.password.clone()} type="password" placeholder="8 or more characters" autocomplete="new-password" required=true /></p>
                         <div class="buttons">
@@ -257,8 +236,7 @@ impl Component for UsersPage {
         let table = view::users(&self.users, &actions);
         html! {
             <>
-                { view::header(html! {}, html! {}, account()) }
-                { view::notice(&self.notice) }
+                { top(html! {}, html! {}, &self.notice) }
                 <main>
                     { add }
                     <div key={self.loads.to_string()}>{ table }</div>

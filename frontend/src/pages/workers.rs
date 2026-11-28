@@ -1,6 +1,6 @@
 // The workers page: every worker the boss knows, up or down, and what runs on it.
 
-use crate::{account, act, follow, monotonic, view};
+use crate::{act, follow, monotonic, top, view};
 use bettertest_shared::*;
 use gloo::timers::callback::Interval;
 use gloo_net::http::Request;
@@ -109,8 +109,7 @@ impl Component for WorkersPage {
         let body = (self.snapshot.as_ref()).map(|s| view::workers(&s.workers, now, &forget));
         html! {
             <>
-                { view::header(html! {}, add, account()) }
-                { view::notice(&self.notice) }
+                { top(html! {}, add, &self.notice) }
                 <main>{ for body }</main>
                 { for window }
             </>
