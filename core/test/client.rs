@@ -26,6 +26,8 @@ struct Memo {
     lines: Vec<String>,
     wait: bool,
     tests: Vec<Tests>,
+    run: Run,
+    cancel: tokio::sync::watch::Sender<Option<String>>,
 }
 
 impl TaskIo for Memo {
@@ -43,28 +45,34 @@ impl TaskIo for Memo {
         self.tests.push(tests);
     }
 
-    fn run(&self) -> Option<&Run> {
-        None
+    // A task of a run, when the test plays the boss: the boss waits on a busy worker.
+    fn boss(&self) -> Option<FromBoss<'_>> {
+        self.wait.then(|| FromBoss {
+            run: &self.run,
+            name: Some("boss.example"),
+            port: 7357,
+            token: Some("t0ken"),
+            cancelled: self.cancel.subscribe(),
+        })
     }
+}
 
-    fn boss_name(&self) -> Option<&str> {
-        None
-    }
-
-    fn boss_port(&self) -> u16 {
-        7357
-    }
-
-    fn cancelled(&self) -> Option<tokio::sync::watch::Receiver<Option<String>>> {
-        None
-    }
-
-    fn boss_token(&self) -> Option<&str> {
-        None
-    }
-
-    fn wait_when_busy(&self) -> bool {
-        self.wait
+fn memo(wait: bool) -> Memo {
+    Memo {
+        lines: vec![],
+        wait,
+        tests: vec![],
+        run: Run {
+            id: uuid::Uuid::new_v4(),
+            pipeline: "p".to_string(),
+            state: bettertest_shared::RunState::Running,
+            stages: vec![],
+            commit: Some(bettertest_shared::Commit {
+                sha: "3fe66e3".to_string(),
+                branch: "main".to_string(),
+            }),
+        },
+        cancel: tokio::sync::watch::channel(None).0,
     }
 }
 
@@ -81,12 +89,12 @@ fn task() -> Task {
     }
 }
 
-/// Serves `replies` in order, one HTTP request each, and counts how many arrived.
-fn serve(replies: Vec<Vec<u8>>) -> (String, Arc<Mutex<usize>>) {
+/// Serves `replies` in order, one HTTP request each, and keeps the requests that arrived.
+fn serve(replies: Vec<Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let seen = Arc::new(Mutex::new(0));
-    let count = seen.clone();
+    let seen = Arc::new(Mutex::new(vec![]));
+    let requests = seen.clone();
     std::thread::spawn(move || {
         for reply in replies {
             let Ok((mut sock, _)) = listener.accept() else {
@@ -117,7 +125,10 @@ fn serve(replies: Vec<Vec<u8>>) -> (String, Arc<Mutex<usize>>) {
                     }
                 }
             }
-            *count.lock().unwrap() += 1;
+            requests
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&got).into_owned());
             let _ = sock.write_all(&reply);
         }
     });
@@ -140,11 +151,7 @@ async fn the_boss_retries_when_the_worker_is_briefly_busy() {
         http_reply("409 Conflict", busy),
         http_reply("200 OK", "event: exit\ndata: 0\n\n"),
     ]);
-    let mut io = Memo {
-        lines: vec![],
-        wait: true,
-        tests: vec![],
-    };
+    let mut io = memo(true);
     let passed = run_task(
         &http().unwrap(),
         &url,
@@ -163,7 +170,7 @@ async fn the_boss_retries_when_the_worker_is_briefly_busy() {
         "{:?}",
         io.lines
     );
-    assert_eq!(*seen.lock().unwrap(), 2);
+    assert_eq!(seen.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -171,11 +178,7 @@ async fn dispatch_does_not_retry_a_busy_worker() {
     let busy =
         "this worker is busy: it runs as many tasks at once as it was started to (worker --tasks)";
     let (url, seen) = serve(vec![http_reply("409 Conflict", busy)]);
-    let mut io = Memo {
-        lines: vec![],
-        wait: false,
-        tests: vec![],
-    };
+    let mut io = memo(false);
     let passed = run_task(
         &http().unwrap(),
         &url,
@@ -197,7 +200,7 @@ async fn dispatch_does_not_retry_a_busy_worker() {
         "{:?}",
         io.lines
     );
-    assert_eq!(*seen.lock().unwrap(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -218,11 +221,7 @@ async fn test_counts_are_logged_and_kept() {
         "200 OK",
         "event: stdout\ndata: 2 errors out of 1234 tests\n\nevent: tests\ndata: {\"total\":1234,\"failed\":2}\n\nevent: exit\ndata: 1\n\n",
     )]);
-    let mut io = Memo {
-        lines: vec![],
-        wait: false,
-        tests: vec![],
-    };
+    let mut io = memo(false);
     let passed = run_task(
         &http().unwrap(),
         &url,
@@ -245,4 +244,75 @@ async fn test_counts_are_logged_and_kept() {
         io.lines[..2],
         ["2 errors out of 1234 tests", "1234 tests, 2 failed"]
     );
+}
+
+/// The fields of the multipart form in `request`, in order.
+fn form_fields(request: &str) -> Vec<(String, String)> {
+    let parts = request.split("form-data; name=\"").skip(1);
+    parts
+        .filter_map(|part| {
+            let (name, rest) = part.split_once('"')?;
+            let (_, value) = rest.split_once("\r\n\r\n")?;
+            let (value, _) = value.split_once("\r\n--")?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_task_of_a_run_tells_the_worker_about_its_boss_and_dispatch_does_not() {
+    let exit = || http_reply("200 OK", "event: exit\ndata: 0\n\n");
+    let (url, seen) = serve(vec![exit(), exit()]);
+    let mut of_run = memo(true);
+    let run_id = of_run.run.id.to_string();
+    let target = Target::Container("c1".to_string());
+    assert!(
+        run_task(
+            &http().unwrap(),
+            &url,
+            "P",
+            "T",
+            &task(),
+            &target,
+            &mut of_run
+        )
+        .await
+    );
+    let mut dispatched = memo(false);
+    assert!(
+        run_task(
+            &http().unwrap(),
+            &url,
+            "P",
+            "T",
+            &task(),
+            &Target::None,
+            &mut dispatched
+        )
+        .await
+    );
+    let seen = seen.lock().unwrap();
+    let pair = |name: &str, value: &str| (name.to_string(), value.to_string());
+    let mut sent = form_fields(&seen[0]);
+    sent.sort();
+    let mut expected = vec![
+        pair("boss_name", "boss.example"),
+        pair("boss_port", "7357"),
+        pair("boss_token", "t0ken"),
+        pair("commit", "3fe66e3"),
+        pair("pipedef", "P"),
+        pair("pipeline", "p"),
+        pair("run", &run_id),
+        pair("stage", "T"),
+        pair("target", "container:c1"),
+        pair("task", "noop"),
+    ];
+    expected.sort();
+    assert_eq!(sent, expected);
+    let dispatch = vec![
+        pair("pipedef", "P"),
+        pair("stage", "T"),
+        pair("task", "noop"),
+    ];
+    assert_eq!(form_fields(&seen[1]), dispatch);
 }

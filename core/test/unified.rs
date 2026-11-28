@@ -464,7 +464,11 @@ async fn unified_restarted_mid_run_goes_on_and_passes() {
     let restarting = Instant::now();
     unified.restart();
     // It stopped on SIGTERM, rather than being killed 10 s later.
-    assert!(restarting.elapsed() < Duration::from_secs(8), "{}", unified.logs());
+    assert!(
+        restarting.elapsed() < Duration::from_secs(8),
+        "{}",
+        unified.logs()
+    );
     let over = until_over(&unified, run.id).await;
     let log = task_log(&unified, sleepy).await;
     assert_eq!(over.state, RunState::Pass, "{log}\n{}", unified.logs());

@@ -1107,28 +1107,14 @@ impl client::TaskIo for BossTask<'_> {
         self.boss.add_artifact(self.id, artifact);
     }
 
-    fn run(&self) -> Option<&Run> {
-        Some(self.run)
-    }
-
-    fn boss_name(&self) -> Option<&str> {
-        self.boss.tls.as_ref().map(|tls| tls.name.as_str())
-    }
-
-    fn boss_port(&self) -> u16 {
-        self.boss.port
-    }
-
-    fn cancelled(&self) -> Option<Cancelled> {
-        Some(self.cancelled.clone())
-    }
-
-    fn boss_token(&self) -> Option<&str> {
-        self.token.as_deref()
-    }
-
-    fn wait_when_busy(&self) -> bool {
-        true
+    fn boss(&self) -> Option<client::FromBoss<'_>> {
+        Some(client::FromBoss {
+            run: self.run,
+            name: self.boss.tls.as_ref().map(|tls| tls.name.as_str()),
+            port: self.boss.port,
+            token: self.token.as_deref(),
+            cancelled: self.cancelled.clone(),
+        })
     }
 }
 

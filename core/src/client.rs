@@ -47,36 +47,27 @@ pub trait TaskIo {
     /// An artifact the task published is saved in `outputs()`.
     fn saved(&mut self, _artifact: Artifact) {}
 
-    /// The run the task belongs to. Its task can fetch artifacts from the boss. None outside any
-    /// run.
-    fn run(&self) -> Option<&Run> {
+    /// The boss of the run the task is in. None for dispatch, which has neither: nothing cancels
+    /// it, and a worker that says it is full (409) is the answer, where the boss would wait.
+    fn boss(&self) -> Option<FromBoss<'_>> {
         None
     }
+}
 
+/// What a task of a run gets from its boss.
+pub struct FromBoss<'a> {
+    /// The task can fetch artifacts of this run from the boss.
+    pub run: &'a Run,
     /// The name the boss's HTTPS certificate is for, when it speaks HTTPS. The task reaches the boss
     /// at the address the worker saw it call from, and checks the certificate against this name.
-    fn boss_name(&self) -> Option<&str> {
-        None
-    }
-
+    pub name: Option<&'a str>,
     /// The port the boss listens on. The worker combines it with the IP of the start-task
     /// connection; TCP's source port is ephemeral, so this has to come along in the form.
-    fn boss_port(&self) -> u16;
-
-    /// Says why, once the run is cancelled. None when nothing can cancel it.
-    fn cancelled(&self) -> Option<watch::Receiver<Option<String>>> {
-        None
-    }
-
-    /// What the task shows the boss to fetch its checkout and artifacts, when there is a boss.
-    fn boss_token(&self) -> Option<&str> {
-        None
-    }
-
-    /// The boss waits when the worker says it is full. Dispatch does not: a 409 is the answer.
-    fn wait_when_busy(&self) -> bool {
-        false
-    }
+    pub port: u16,
+    /// What the task shows the boss to fetch its checkout and artifacts.
+    pub token: Option<&'a str>,
+    /// Says why, once the run is cancelled.
+    pub cancelled: watch::Receiver<Option<String>>,
 }
 
 /// How long the boss waits before asking a worker again after it answered 409. The slot it still
@@ -114,7 +105,7 @@ pub async fn execute_task(
         arch: task.arch,
         parallel: false,
     });
-    let cancelled = io.cancelled();
+    let cancelled = io.boss().map(|boss| boss.cancelled);
     let mut log = |stream, line| io.log(stream, line);
     let target = match start_sandbox(http, worker, &sandbox, &mut log, cancelled).await {
         Ok(target) => target,
@@ -219,12 +210,12 @@ pub async fn run_task(
                 Err(StartError::Failed(e)) => return Err(e),
                 // The boss's own count said this worker had a slot. The worker disagreed: a task
                 // that just exited still held its permit, or a dispatch is using one. Wait.
-                Err(StartError::Busy(why)) if io.wait_when_busy() => {
+                Err(StartError::Busy(why)) if io.boss().is_some() => {
                     if !said {
                         io.log(LogStream::Bettertest, format!("waiting: {why}"));
                         said = true;
                     }
-                    let mut cancelled = io.cancelled();
+                    let mut cancelled = io.boss().map(|boss| boss.cancelled);
                     tokio::select! {
                         () = tokio::time::sleep(BUSY_AGAIN) => {}
                         reason = cancellation(&mut cancelled) => return Err(reason),
@@ -274,20 +265,20 @@ async fn start_task(
         Target::Container(id) => form = form.text("target", format!("container:{id}")),
         Target::Vm(id) => form = form.text("target", format!("vm:{id}")),
     }
-    if let Some(run) = io.run() {
+    if let Some(boss) = io.boss() {
         form = form
-            .text("pipeline", run.pipeline.clone())
-            .text("run", run.id.to_string());
-        if let Some(commit) = &run.commit {
+            .text("pipeline", boss.run.pipeline.clone())
+            .text("run", boss.run.id.to_string())
+            .text("boss_port", boss.port.to_string());
+        if let Some(commit) = &boss.run.commit {
             form = form.text("commit", commit.sha.clone());
         }
-        if let Some(token) = io.boss_token() {
+        if let Some(token) = boss.token {
             form = form.text("boss_token", token.to_string());
         }
-        form = form.text("boss_port", io.boss_port().to_string());
-    }
-    if let Some(name) = io.boss_name() {
-        form = form.text("boss_name", name.to_string());
+        if let Some(name) = boss.name {
+            form = form.text("boss_name", name.to_string());
+        }
     }
 
     let url = format!("{worker}/start-task");
@@ -304,7 +295,7 @@ async fn start_task(
     let mut response = check_response(&url, sent).await?;
 
     let mut events = SseDecoder::default();
-    let mut cancelled = io.cancelled();
+    let mut cancelled = io.boss().map(|boss| boss.cancelled);
     // What the task printed waits up to LINES_WAIT to be logged with what it prints next.
     let mut lines = vec![];
     let mut log_at = None;
