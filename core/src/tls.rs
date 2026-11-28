@@ -54,19 +54,14 @@ pub struct Tls {
 pub fn load(cert: &Path, key: &Path) -> Result<Tls, String> {
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
         .map_err(|e| format!("could not set up TLS: {e}"))?;
+    let (cert_name, key_name) = (cert.display(), key.display());
     acceptor
         .set_certificate_chain_file(cert)
-        .map_err(|e| format!("could not use {} as a PEM certificate: {e}", cert.display()))?;
+        .map_err(|e| format!("could not use {cert_name} as a PEM certificate: {e}"))?;
     // OpenSSL checks the key against the certificate here too.
     acceptor
         .set_private_key_file(key, SslFiletype::PEM)
-        .map_err(|e| {
-            format!(
-                "could not use {} as the PEM key of {}: {e}",
-                key.display(),
-                cert.display()
-            )
-        })?;
+        .map_err(|e| format!("could not use {key_name} as the PEM key of {cert_name}: {e}"))?;
     // Ask every browser for a client certificate, without insisting, and take any it offers: the
     // boss decides whose it is by its fingerprint (certificate login), so it needs no CA.
     acceptor.set_verify_callback(SslVerifyMode::PEER, |_, _| true);

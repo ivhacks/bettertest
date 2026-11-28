@@ -40,7 +40,7 @@ impl Boss {
         &self,
         headers: &HeaderMap,
     ) -> Result<webauthn_rs::prelude::Webauthn, Failure> {
-        passkey::webauthn(headers, self.tls.is_some()).map_err(|e| (StatusCode::BAD_REQUEST, e))
+        passkey::webauthn(headers, self.tls.is_some()).map_err(bad_request)
     }
 }
 
@@ -246,10 +246,7 @@ pub(super) async fn add_user(
 ) -> Result<StatusCode, Failure> {
     let name = new.name.trim();
     if name.is_empty() || name == "logged out" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("{name:?} cannot be a user's name"),
-        ));
+        return Err(bad_request(format!("{name:?} cannot be a user's name")));
     }
     let hash = hash_password(new.password).await?;
     let mut db = boss.db();
@@ -257,10 +254,7 @@ pub(super) async fn add_user(
         rusqlite::Error::SqliteFailure(f, _)
             if f.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            (
-                StatusCode::CONFLICT,
-                format!("there is a user named {name} already"),
-            )
+            conflict(format!("there is a user named {name} already"))
         }
         e => internal(e),
     })?;
@@ -272,8 +266,7 @@ pub(super) async fn add_user(
 /// purpose: off the async threads.
 async fn hash_password(password: String) -> Result<String, Failure> {
     if password.chars().count() < 8 {
-        let short = "a password has at least 8 characters";
-        return Err((StatusCode::BAD_REQUEST, short.into()));
+        return Err(bad_request("a password has at least 8 characters"));
     }
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&password));
     hash.await.map_err(internal)?.map_err(internal)
@@ -294,11 +287,9 @@ pub(super) fn check_lockout(
     let mut users = boss.db().users().map_err(internal)?;
     change(&mut users);
     if auth::locks_out(&users) {
-        return Err((
-            StatusCode::CONFLICT,
+        return Err(conflict(
             "that would leave nobody able to administer bettertest: add an admin who can log in \
-             first, or keep logged out at admin"
-                .into(),
+             first, or keep logged out at admin",
         ));
     }
     Ok(())
@@ -334,7 +325,7 @@ pub(super) async fn set_password(
     Json(set): Json<SetPassword>,
 ) -> Result<StatusCode, Failure> {
     if set.id == 0 {
-        return Err((StatusCode::BAD_REQUEST, "logged out has no password".into()));
+        return Err(bad_request("logged out has no password"));
     }
     let hash = hash_password(set.password).await?;
     boss.db().set_password(set.id, &hash).map_err(internal)?;
@@ -352,9 +343,8 @@ pub(super) async fn remove_user(
     Json(user): Json<Id>,
 ) -> Result<StatusCode, Failure> {
     if user.id == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "logged out is always there; lower its role instead".into(),
+        return Err(bad_request(
+            "logged out is always there; lower its role instead",
         ));
     }
     check_lockout(&boss, |users| users.retain(|u| u.id != user.id))?;
@@ -369,7 +359,7 @@ pub(super) async fn new_token(
     Json(user): Json<Id>,
 ) -> Result<Json<NewToken>, Failure> {
     if user.id == 0 {
-        return Err((StatusCode::BAD_REQUEST, "logged out needs no token".into()));
+        return Err(bad_request("logged out needs no token"));
     }
     let (token, hash) = auth::new_token().map_err(internal)?;
     boss.db().add_api_token(&hash, user.id).map_err(internal)?;
@@ -391,30 +381,21 @@ pub(super) async fn new_certificate(
     Json(user): Json<Id>,
 ) -> Result<Json<NewCertificate>, Failure> {
     if boss.tls.is_none() {
-        return Err((
-            StatusCode::CONFLICT,
-            "certificate login needs HTTPS: start the boss with --cert and --key".into(),
-        ));
+        let why = "certificate login needs HTTPS: start the boss with --cert and --key";
+        return Err(conflict(why));
     }
     let users = boss.db().users().map_err(internal)?;
     let Some(owner) = users.iter().find(|u| u.id == user.id && !u.builtin) else {
         return Err(not_found(format!("user {}", user.id)));
     };
     if owner.certs.len() >= MOST_CERTIFICATES {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "{} has {MOST_CERTIFICATES} certificates already: revoke one first",
-                owner.name
-            ),
-        ));
+        let name = &owner.name;
+        let why = format!("{name} has {MOST_CERTIFICATES} certificates already: revoke one first");
+        return Err(conflict(why));
     }
     let label = next_label(&owner.name, owner.certs.iter().map(|c| &c.label));
-    let name = owner.name.clone();
-    let made = tokio::task::spawn_blocking({
-        let label = label.clone();
-        move || tls::client_certificate(&name, &label)
-    });
+    let (name, made_label) = (owner.name.clone(), label.clone());
+    let made = tokio::task::spawn_blocking(move || tls::client_certificate(&name, &made_label));
     let made = made.await.map_err(internal)?.map_err(internal)?;
     boss.db()
         .add_certificate(user.id, &label, &made.fingerprint, &made.expires)
@@ -515,7 +496,7 @@ fn room_for_passkey(name: &str, count: usize) -> Result<(), Failure> {
         return Ok(());
     }
     let why = format!("{name} has {MOST_PASSKEYS} passkeys already: revoke one first");
-    Err((StatusCode::CONFLICT, why))
+    Err(conflict(why))
 }
 
 /// What the browser sends back to finish a ceremony: its id, and the credential in its JSON form

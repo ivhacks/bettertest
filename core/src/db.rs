@@ -469,18 +469,15 @@ impl Db {
 
     /// When retention deleted the log and the artifacts of a task, if it did.
     pub fn deleted(&self, task: Uuid) -> rusqlite::Result<(Option<u64>, Option<u64>)> {
-        let deleted = self
+        let (log, artifacts): (Option<i64>, Option<i64>) = self
             .conn
             .prepare_cached(
                 "SELECT log_deleted_at, artifacts_deleted_at FROM task_runs WHERE id = ?1",
             )?
-            .query_row([task.to_string()], |row| {
-                let log: Option<i64> = row.get(0)?;
-                let artifacts: Option<i64> = row.get(1)?;
-                Ok((log.map(from_sql), artifacts.map(from_sql)))
-            })
-            .optional()?;
-        Ok(deleted.unwrap_or_default())
+            .query_row([task.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?
+            .unwrap_or_default();
+        Ok((log.map(from_sql), artifacts.map(from_sql)))
     }
 
     /// Every user, the logged-out one first, with how many credentials of each kind they have.
@@ -495,8 +492,9 @@ impl Db {
                  FROM users u ORDER BY id != 0, name",
             )?
             .query_map([], |row| {
+                let id = row.get(0)?;
                 Ok(User {
-                    id: row.get(0)?,
+                    id,
                     name: row.get(1)?,
                     role: text(row, 2, Role::parse)?,
                     builtin: row.get(3)?,
@@ -504,18 +502,11 @@ impl Db {
                     certificates: row.get(5)?,
                     passkeys: row.get(6)?,
                     tokens: row.get(7)?,
-                    certs: vec![],
-                    keys: vec![],
+                    certs: self.certificates(id)?,
+                    keys: self.passkeys(id)?,
                 })
             })?
-            .collect::<rusqlite::Result<Vec<User>>>()
-            .and_then(|mut users| {
-                for user in &mut users {
-                    user.certs = self.certificates(user.id)?;
-                    user.keys = self.passkeys(user.id)?;
-                }
-                Ok(users)
-            })
+            .collect()
     }
 
     /// A user's client certificates, oldest first.

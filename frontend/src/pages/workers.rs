@@ -98,31 +98,21 @@ impl Component for WorkersPage {
         let (boss_then, then) = self.clock;
         let now = boss_then + (monotonic() - then).max(0.0) as u64;
         let link = ctx.link();
-        let window = match &self.forgetting {
-            Some(url) => view::forget_window(
-                url,
-                link.callback(|_| WorkersMsg::Cancel),
-                link.callback(|_| WorkersMsg::Forget),
-            ),
-            None => html! {},
-        };
+        let window = self.forgetting.as_ref().map(|url| {
+            let cancel = link.callback(|_| WorkersMsg::Cancel);
+            view::forget_window(url, cancel, link.callback(|_| WorkersMsg::Forget))
+        });
         let add = html! {
             <button class="primary" onclick={link.callback(|_| WorkersMsg::Add)}>{ "New Worker" }</button>
         };
-        let body = match &self.snapshot {
-            Some(snapshot) => view::workers(
-                &snapshot.workers,
-                now,
-                &link.callback(WorkersMsg::AskForget),
-            ),
-            None => html! {},
-        };
+        let forget = link.callback(WorkersMsg::AskForget);
+        let body = (self.snapshot.as_ref()).map(|s| view::workers(&s.workers, now, &forget));
         html! {
             <>
                 { view::header(html! {}, add, account()) }
                 { view::notice(&self.notice) }
-                <main>{ body }</main>
-                { window }
+                <main>{ for body }</main>
+                { for window }
             </>
         }
     }

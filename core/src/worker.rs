@@ -3,7 +3,7 @@
 // shared by several tasks or started early to have them warm.
 
 use crate::{
-    boss::{self, Failure, internal},
+    boss::{self, Failure, bad_request, conflict, internal},
     client, lock, pipedef, tools, vm, workdir,
 };
 use axum::{
@@ -449,8 +449,7 @@ async fn check_out(
         return Err(format!("could not download {url}: {status} {why}"));
     }
     let mut tar = Command::new("tar")
-        .arg("-x")
-        .arg("-C")
+        .args(["-x", "-C"])
         .arg(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -542,36 +541,31 @@ fn remove_leftovers(name: &str) -> io::Result<()> {
 }
 
 async fn read_start_task(mut form: Multipart) -> Result<StartTask, Failure> {
-    let bad = |e: MultipartError| (StatusCode::BAD_REQUEST, e.body_text());
+    let bad = |e: MultipartError| bad_request(e.body_text());
     let (mut pipedef, mut stage, mut task, mut target) = (None, None, None, None);
     let (mut pipeline, mut run, mut commit) = (None, None, None);
     let (mut boss_token, mut boss_name, mut boss_port) = (None, None, None);
     while let Some(field) = form.next_field().await.map_err(bad)? {
         let name = field.name().unwrap_or_default().to_string();
-        let value = Some(field.text().await.map_err(bad)?);
+        let text = field.text().await.map_err(bad)?;
         match name.as_str() {
-            "pipedef" => pipedef = value,
-            "stage" => stage = value,
-            "task" => task = value,
-            "target" => target = value,
-            "pipeline" => pipeline = value,
-            "run" => run = value,
-            "commit" => commit = value,
-            "boss_token" => boss_token = value,
-            "boss_name" => boss_name = value,
-            "boss_port" => {
-                let text = value.as_deref().unwrap_or("");
-                match text.parse::<u16>() {
-                    Ok(port) if port != 0 => boss_port = Some(port),
-                    _ => {
-                        return Err((StatusCode::BAD_REQUEST, format!("bad boss_port {text:?}")));
-                    }
-                }
-            }
-            _ => return Err((StatusCode::BAD_REQUEST, format!("unknown field {name:?}"))),
+            "pipedef" => pipedef = Some(text),
+            "stage" => stage = Some(text),
+            "task" => task = Some(text),
+            "target" => target = Some(text),
+            "pipeline" => pipeline = Some(text),
+            "run" => run = Some(text),
+            "commit" => commit = Some(text),
+            "boss_token" => boss_token = Some(text),
+            "boss_name" => boss_name = Some(text),
+            "boss_port" => match text.parse::<u16>() {
+                Ok(port) if port != 0 => boss_port = Some(port),
+                _ => return Err(bad_request(format!("bad boss_port {text:?}"))),
+            },
+            _ => return Err(bad_request(format!("unknown field {name:?}"))),
         }
     }
-    let missing = |field: &str| (StatusCode::BAD_REQUEST, format!("{field} is missing"));
+    let missing = |field: &str| bad_request(format!("{field} is missing"));
     Ok(StartTask {
         pipedef: pipedef.ok_or_else(|| missing("pipedef"))?,
         stage: stage.ok_or_else(|| missing("stage"))?,
@@ -599,10 +593,8 @@ async fn start_task(
     // stays open until the boss has read it. Holding the permit until hangup makes the next
     // start-task a 409 on a worker that takes one task at a time.
     let Ok(slot) = shared.slots.clone().try_acquire_owned() else {
-        return Err((
-            StatusCode::CONFLICT,
-            "this worker is busy: it runs as many tasks at once as it was started to (worker --tasks)"
-                .into(),
+        return Err(conflict(
+            "this worker is busy: it runs as many tasks at once as it was started to (worker --tasks)",
         ));
     };
     let vms = shared.vms;
@@ -617,6 +609,7 @@ async fn start_task(
         req.boss_port.unwrap_or(boss::LISTEN_PORT),
     );
     let boss = boss_url(&req, address)?;
+    let src = files.dir.join("src");
     if let (Some(_), Some(boss), Some(run)) = (&req.commit, &boss, &req.run) {
         let mut http = reqwest::Client::builder();
         if let Some(name) = &req.boss_name {
@@ -624,14 +617,10 @@ async fn start_task(
         }
         let http = http.build().map_err(internal)?;
         let url = format!("{boss}/api/run/{run}/source.tar");
-        check_out(
-            &http,
-            &url,
-            req.boss_token.as_deref(),
-            &files.dir.join("src"),
-        )
-        .await
-        .map_err(internal)?;
+        let token = req.boss_token.as_deref();
+        check_out(&http, &url, token, &src)
+            .await
+            .map_err(internal)?;
     }
 
     let ready = lock(&shared.ready).pop();
@@ -667,7 +656,6 @@ async fn start_task(
         "run": req.run,
     });
     let task = Some((req.stage.as_str(), req.task.as_str()));
-    let src = files.dir.join("src");
     let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src), None);
 
     let (tx, rx) = mpsc::channel::<Event>(64);
@@ -710,11 +698,8 @@ async fn start_task(
         };
         for name in published {
             let artifact = format!("{}/{name}", files.id);
-            if tx
-                .send(Event::default().event("artifact").data(artifact))
-                .await
-                .is_err()
-            {
+            let event = Event::default().event("artifact").data(artifact);
+            if tx.send(event).await.is_err() {
                 return;
             }
         }
@@ -722,9 +707,8 @@ async fn start_task(
         if let Ok(tests) = fs::read_to_string(files.dir.join("tests")) {
             let _ = tx.send(Event::default().event("tests").data(tests)).await;
         }
-        let _ = tx
-            .send(Event::default().event("exit").data(code.to_string()))
-            .await;
+        let exit = Event::default().event("exit").data(code.to_string());
+        let _ = tx.send(exit).await;
         // Dropping `files` removes them, so wait until the caller has what it wants.
         tx.closed().await;
     });
@@ -775,7 +759,7 @@ fn python_target(vms: &vm::Vms, target: Option<&str>) -> Result<serde_json::Valu
                 "kind": "vm", "port": port, "key": key, "reboot": reboot, "ssh": ssh, "scp": scp,
             })
         }
-        Some(_) => return Err((StatusCode::BAD_REQUEST, "bad target".into())),
+        Some(_) => return Err(bad_request("bad target")),
     })
 }
 
@@ -792,12 +776,7 @@ fn boss_url(req: &StartTask, address: SocketAddr) -> Result<Option<String>, Fail
             Some(format!("https://{name}:{}", address.port()))
         }
         (None, None, None) => None,
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "bad pipeline, run or boss name".into(),
-            ));
-        }
+        _ => return Err(bad_request("bad pipeline, run or boss name")),
     })
 }
 
@@ -827,10 +806,7 @@ fn valid_host(name: &str) -> bool {
 
 async fn get_output(Path((id, name)): Path<(String, String)>) -> Result<Response, Failure> {
     let (Ok(id), true) = (Uuid::parse_str(&id), valid_artifact_name(&name)) else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "bad task id or artifact name".into(),
-        ));
+        return Err(bad_request("bad task id or artifact name"));
     };
     let path = workdir::root()
         .map_err(internal)?

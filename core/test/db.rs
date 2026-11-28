@@ -237,3 +237,28 @@ fn test_counts_stay_with_their_task_and_carry_over() {
     assert_eq!(restart.stages[0].tasks[0].tests, Some(tests));
     assert_eq!(restart.stages[0].tasks[1].tests, None);
 }
+
+#[test]
+fn each_user_comes_with_their_own_certificates_and_passkeys() {
+    let db = db();
+    let ada = db.add_user("ada", Role::Admin).unwrap();
+    let bob = db.add_user("bob", Role::Read).unwrap();
+    db.add_certificate(ada, "ada 1", "aa", "2028-01-01")
+        .unwrap();
+    db.add_certificate(ada, "ada 2", "ab", "2028-02-01")
+        .unwrap();
+    db.add_passkey(bob, "bob 1", "cred", &serde_json::json!({}))
+        .unwrap();
+    let users = db.users().unwrap();
+    let names: Vec<&str> = users.iter().map(|u| u.name.as_str()).collect();
+    assert_eq!(names, ["logged out", "ada", "bob"]);
+    let certs = |u: &User| -> Vec<String> { u.certs.iter().map(|c| c.label.clone()).collect() };
+    let keys = |u: &User| -> Vec<String> { u.keys.iter().map(|k| k.label.clone()).collect() };
+    assert_eq!(certs(&users[1]), ["ada 1", "ada 2"]);
+    assert_eq!(users[1].certs[1].expires, "2028-02-01");
+    assert!(keys(&users[1]).is_empty());
+    assert!(certs(&users[2]).is_empty());
+    assert_eq!(keys(&users[2]), ["bob 1"]);
+    assert_eq!((users[1].certificates, users[2].passkeys), (2, 1));
+    assert!(users[0].certs.is_empty() && users[0].keys.is_empty());
+}

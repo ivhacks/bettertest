@@ -368,11 +368,10 @@ fn rewind(boss: &Boss, run: &Run, task: &TaskRun, why: &str) {
         );
     }
     // Files first, as retention does: should forgetting them fail, nothing refers to them anyway.
-    match task_artifacts_dir(task.id).and_then(fs::remove_dir_all) {
-        Err(e) if e.kind() != ErrorKind::NotFound => {
-            eprintln!("could not delete the artifacts of task {}: {e}", task.id);
-        }
-        _ => {}
+    if let Err(e) = task_artifacts_dir(task.id).and_then(fs::remove_dir_all)
+        && e.kind() != ErrorKind::NotFound
+    {
+        eprintln!("could not delete the artifacts of task {}: {e}", task.id);
     }
     let rewound = boss.record(|db| {
         db.rewind_task(task.id)?;
@@ -508,7 +507,7 @@ pub(super) async fn cancel_run(
             going.cancel.send_replace(Some(reason));
             Ok(StatusCode::NO_CONTENT)
         }
-        None => Err((StatusCode::CONFLICT, format!("run {run} is not running"))),
+        None => Err(conflict(format!("run {run} is not running"))),
     }
 }
 
@@ -526,13 +525,9 @@ pub(super) async fn restart(
     let earlier = boss.db().run(id).map_err(internal)?;
     let earlier = earlier.ok_or_else(|| not_found(format!("run {id}")))?;
     if earlier.state == RunState::Running {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "run {} is still running. Restart it once it is over.",
-                earlier.short_id()
-            ),
-        ));
+        let short = earlier.short_id();
+        let why = format!("run {short} is still running. Restart it once it is over.");
+        return Err(conflict(why));
     }
     let commit = earlier.commit.as_ref();
     let (source, pipeline) = load_pipeline(&boss, &earlier.pipeline, commit).await?;
@@ -609,19 +604,16 @@ pub(super) fn carry_over(
     let Some(stage) = stage else {
         return Ok(carried);
     };
+    let pipeline_name = &earlier.pipeline;
     let Some(at) = pipeline.stages.iter().position(|s| s.name == stage) else {
-        return Err(not_found(format!("stage {stage} in {}", earlier.pipeline)));
+        return Err(not_found(format!("stage {stage} in {pipeline_name}")));
     };
+    let has =
+        |task| (pipeline.stages.get(at)).is_some_and(|s| s.tasks.iter().any(|t| t.name == task));
     if let Some(task) = task
-        && !pipeline
-            .stages
-            .get(at)
-            .is_some_and(|s| s.tasks.iter().any(|t| t.name == task))
+        && !has(task)
     {
-        return Err(not_found(format!(
-            "task {stage}.{task} in {}",
-            earlier.pipeline
-        )));
+        return Err(not_found(format!("task {stage}.{task} in {pipeline_name}")));
     }
     let (at, task) = restart_start(pipeline, at, task);
     let earlier_task = |stage: &str, task: &str| {
@@ -645,17 +637,12 @@ pub(super) fn carry_over(
                     TaskState::Fail => "failed",
                     _ => "did not run",
                 };
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!(
-                        "{}.{} {what} in run {}, so the stages after it have nothing to build \
-                         on. Restart {} instead.",
-                        this.name,
-                        t.name,
-                        earlier.short_id(),
-                        this.name
-                    ),
-                ));
+                let (stage_name, task_name, run) = (&this.name, &t.name, earlier.short_id());
+                let why = format!(
+                    "{stage_name}.{task_name} {what} in run {run}, so the stages after it have \
+                     nothing to build on. Restart {stage_name} instead."
+                );
+                return Err(conflict(why));
             }
             carried_here.push(was);
         }
@@ -713,26 +700,17 @@ pub(super) async fn execute_run(r: Running, pipeline: Pipeline, link: Option<Str
     let going = lock(&boss.going).remove(&run.id);
     let reason = r.cancelled.borrow().clone();
     if going.is_some_and(|going| going.interrupted) {
-        let link = link.map(str::to_string);
-        spawn(resume(
-            boss.clone(),
-            run.id,
-            reason.unwrap_or_default(),
-            link,
-        ));
+        let (why, link) = (reason.unwrap_or_default(), link.map(str::to_string));
+        spawn(resume(boss.clone(), run.id, why, link));
         return;
     }
-    let state = if failed || reason.is_some() {
-        RunState::Fail
-    } else {
-        RunState::Pass
+    let (state, status, said) = match &reason {
+        Some(reason) => (RunState::Fail, "warning", reason.as_str()),
+        None if failed => (RunState::Fail, "failure", "failed"),
+        None => (RunState::Pass, "success", "passed"),
     };
     boss.set_run_state(run, state);
-    match reason {
-        Some(reason) => boss.report(run, "warning", &reason, link).await,
-        None if failed => boss.report(run, "failure", "failed", link).await,
-        None => boss.report(run, "success", "passed", link).await,
-    }
+    boss.report(run, status, said, link).await;
 }
 
 /// What every task of a run needs to run: the boss, the run, the pipedef's source, the run's
@@ -781,10 +759,9 @@ impl Running {
         named: Option<&str>,
         labels: &[String],
     ) -> Result<String, String> {
-        let claimed = self
-            .boss
-            .claim_worker(&self.run, id, named, labels, &self.cancelled);
-        claimed.await
+        (self.boss)
+            .claim_worker(&self.run, id, named, labels, &self.cancelled)
+            .await
     }
 
     /// Starts `sandbox` on `worker` for task `id`, whose log shows it.
@@ -829,16 +806,8 @@ impl Running {
         target: &client::Target,
     ) -> bool {
         let mut io = BossTask::new(&self.boss, &self.run, id, self.cancelled.clone());
-        let ran = client::run_task(
-            &self.boss.http,
-            worker,
-            &self.source,
-            stage,
-            task,
-            target,
-            &mut io,
-        );
-        ran.await
+        let http = &self.boss.http;
+        client::run_task(http, worker, &self.source, stage, task, target, &mut io).await
     }
 }
 
@@ -896,9 +865,7 @@ pub(super) async fn run_parallel_stage(
     let carried = stage_run.tasks.iter().filter(|t| t.carried_from.is_some());
     let mut passed = carried.into_iter().all(|t| t.state == TaskState::Pass);
     while let Some(joined) = tasks.join_next().await {
-        if !matches!(joined, Ok(true)) {
-            passed = false;
-        }
+        passed &= matches!(joined, Ok(true));
     }
     passed
 }
@@ -1021,8 +988,10 @@ pub(super) async fn run_shared_stage(
         }
         false
     };
-    let claimed = r.claim(first.id, sandbox.worker.as_deref(), &sandbox.labels);
-    let worker = match claimed.await {
+    let worker = match r
+        .claim(first.id, sandbox.worker.as_deref(), &sandbox.labels)
+        .await
+    {
         Ok(worker) => worker,
         Err(e) => return none_ran(e),
     };
@@ -1059,16 +1028,13 @@ pub(super) async fn run_shared_stage(
         last = task_run.id;
     }
 
-    // A sandbox that will not stop is leaking worker resources. The stage did not pass cleanly.
-    if let Err(e) = client::stop_sandbox(&r.boss.http, &worker, &target).await {
-        r.boss.log(last, LogStream::Bettertest, e);
-        ended = Some((last, false));
-        passed = false;
-    }
-    if let Some((id, passed)) = ended {
+    // A sandbox that will not stop is leaking worker resources. The stage did not pass cleanly:
+    // the last task that ran fails for it.
+    let stopped = r.stop_sandbox(&worker, &target, Some(last)).await;
+    if let Some((id, passed)) = ended.filter(|_| stopped) {
         r.end(id, passed);
     }
-    passed
+    passed && stopped
 }
 
 /// The tasks of a `parallel` stage, all at once in its sandbox, which is up on `worker` already.
@@ -1309,21 +1275,14 @@ pub(super) async fn task_events(
         let Some((run, stage)) = db.task(id)? else {
             return Ok(None);
         };
-        let Some(task) = run
-            .stages
-            .iter()
-            .flat_map(|s| &s.tasks)
-            .find(|t| t.id == id)
-            .cloned()
-        else {
+        let mut tasks = run.stages.iter().flat_map(|s| &s.tasks);
+        let Some(task) = tasks.find(|t| t.id == id).cloned() else {
             return Ok(None);
         };
         // A task a restart carried over shows the log and artifacts of the run that ran it.
         let ran = task.carried_from.unwrap_or(id);
-        let carried_from = match task.carried_from {
-            Some(earlier) => db.task(earlier)?.map(|(run, _)| run.id),
-            None => None,
-        };
+        let earlier = task.carried_from.map(|from| db.task(from)).transpose()?;
+        let carried_from = earlier.flatten().map(|(run, _)| run.id);
         let lines = db.log(ran)?;
         let artifacts = db.artifacts(ran)?;
         let (log_deleted, artifacts_deleted) = db.deleted(ran)?;

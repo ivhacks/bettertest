@@ -150,9 +150,8 @@ impl Boss {
 pub(super) fn check_artifact_name(name: &str) -> Result<(), Failure> {
     match valid_artifact_name(name) {
         true => Ok(()),
-        false => Err((
-            StatusCode::BAD_REQUEST,
-            "artifact names are letters, digits, '.', '-' and '_', not starting with '.'".into(),
+        false => Err(bad_request(
+            "artifact names are letters, digits, '.', '-' and '_', not starting with '.'",
         )),
     }
 }
@@ -265,10 +264,7 @@ pub(super) async fn put_artifact(
 ) -> Result<StatusCode, Failure> {
     let path = artifact_path(&name)?;
     if path.exists() {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("artifact {name} already exists"),
-        ));
+        return Err(conflict(format!("artifact {name} already exists")));
     }
     // Upload beside the final name (a leading '.' keeps it out of the artifact namespace), then
     // hard link into place: that fails rather than overwrites if someone else got there first.
@@ -279,10 +275,7 @@ pub(super) async fn put_artifact(
     let _ = fs::remove_file(&partial);
     match linked {
         Ok(()) => Ok(StatusCode::CREATED),
-        Err(e) if path.exists() => Err((
-            StatusCode::CONFLICT,
-            format!("artifact {name} already exists: {e}"),
-        )),
+        Err(e) if path.exists() => Err(conflict(format!("artifact {name} already exists: {e}"))),
         Err(e) => Err(internal(e)),
     }
 }
