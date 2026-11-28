@@ -315,7 +315,7 @@ fn picked(up: &BTreeMap<String, Watched>, labels: &[&str]) -> String {
 
 fn picked_on(up: &BTreeMap<String, Watched>, named: Option<&str>, labels: &[&str]) -> String {
     let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
-    match pick_worker(up, named, &labels, now()) {
+    match pick_worker(up, named, &labels, now(), &[]) {
         Ok(Pick::Worker(url)) => url,
         Ok(Pick::Busy(why)) => format!("busy: {why}"),
         Err(why) => format!("none: {why}"),
@@ -684,6 +684,7 @@ fn boss(up: BTreeMap<String, Watched>) -> Shared {
         ceremonies: Mutex::new(HashMap::new()),
         events: broadcast::channel(4096).0,
         freed: Notify::new(),
+        waiting: Mutex::new(BTreeMap::new()),
         http: client::http().unwrap(),
         tls: None,
         port: LISTEN_PORT,
@@ -976,6 +977,128 @@ async fn a_run_the_previous_boss_left_going_goes_on_and_passes() {
         ["the boss restarted: running this again", "exit code 0"]
     );
     assert!(boss.db().running_runs().expect("db").is_empty());
+}
+
+/// A restart cut Second.twice short, as the boss dying leaves it (running) or as a restarting
+/// worker does (skipped once it had started), and the pipedef has changed since, so the run cannot
+/// go on. It fails, and so does the task the restart cut short, its log saying why: a failed run
+/// shows which task it failed at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_cannot_go_on_after_a_restart_fails_the_task_it_cut_short() {
+    let url = worker_hanging_once(0, Arc::new(AtomicUsize::new(0))).await;
+    let (boss, pipeline, source) = two_stages_on(&url).await;
+    let Some(Pipedef::File(file)) = boss.pipedef("app") else {
+        panic!("app is a file");
+    };
+    std::fs::write(&file, source.replace("Second", "Renamed")).expect("edit the pipedef");
+    for cut_short in [TaskState::Running, Skipped] {
+        let run = boss
+            .db()
+            .insert_run("app", &pipeline, None, &BTreeMap::new())
+            .expect("run");
+        let (once, twice) = (run.stages[0].tasks[0].id, run.stages[1].tasks[0].id);
+        {
+            let db = boss.db();
+            db.start_task(once, &url, 1).expect("start");
+            db.set_task_state(once, Pass, 2).expect("pass");
+            db.start_task(twice, &url, 3).expect("start");
+            if cut_short == Skipped {
+                db.set_task_state(twice, Skipped, 4).expect("skip");
+            }
+        }
+        let mut events = boss.events.subscribe();
+        spawn(resume(
+            boss.clone(),
+            run.id,
+            "the boss restarted".into(),
+            None,
+        ));
+        assert_eq!(finished(&mut events, run.id).await, RunState::Fail);
+        let kept = boss.db().run(run.id).expect("db").expect("run");
+        let states: Vec<TaskState> = kept.stages.iter().map(|s| s.tasks[0].state).collect();
+        assert_eq!(states, [Pass, Fail], "cut short as {cut_short:?}");
+        assert_eq!(
+            log_text(&boss, twice),
+            [
+                "the boss restarted, and the run cannot go on: its pipedef no longer has the stages \
+              and tasks it had"
+            ]
+        );
+    }
+}
+
+/// A pipeline of one stage, Build, with one task, compile, that needs label x86.
+fn one_task() -> Pipeline {
+    Pipeline {
+        stages: vec![Stage {
+            name: "Build".into(),
+            sandbox: None,
+            tasks: vec![task("compile")],
+        }],
+        sandboxes: Default::default(),
+    }
+}
+
+/// When the worker's one slot frees, the oldest run waiting for it gets it, even when a newer run
+/// asks before that run's task has woken up. Otherwise a run the boss went on with after a restart
+/// waits behind every run started since, its tasks pending for hours.
+#[tokio::test]
+async fn a_freed_slot_goes_to_the_oldest_run_waiting_for_it() {
+    // The worker takes one task, and runs one.
+    let boss = boss(workers(&[("http://w", &["x86"], 1, 1)]));
+    let insert = || {
+        let none = BTreeMap::new();
+        boss.db()
+            .insert_run("app", &one_task(), None, &none)
+            .expect("run")
+    };
+    let (older, newer) = (insert(), insert());
+    let compile = |run: &Run| run.stages[0].tasks[0].id;
+    let (_cancel, cancelled) = watch::channel(None);
+    let labels = vec!["x86".to_string()];
+
+    let mut events = boss.events.subscribe();
+    let waiting = {
+        let (boss, older, labels, cancelled) = (
+            boss.clone(),
+            older.clone(),
+            labels.clone(),
+            cancelled.clone(),
+        );
+        spawn(async move {
+            let task = compile(&older);
+            boss.claim_worker(&older, task, None, &labels, &cancelled)
+                .await
+        })
+    };
+    let says_waiting = async {
+        loop {
+            if let Ok(Event::Log { task, line }) = events.recv().await
+                && task == compile(&older)
+                && line.line.starts_with("waiting")
+            {
+                return;
+            }
+        }
+    };
+    timeout(Duration::from_secs(5), says_waiting)
+        .await
+        .expect("the older run's task waits");
+
+    // The slot frees, and the newer run asks for it before the older one's task has run again.
+    boss.task_ended(Uuid::nil());
+    let asking = boss.claim_worker(&newer, compile(&newer), None, &labels, &cancelled);
+    let got = tokio::select! {
+        biased;
+        got = asking => Some(got),
+        () = std::future::ready(()) => None,
+    };
+    assert_eq!(got, None, "the newer run waits");
+    let got = timeout(Duration::from_secs(5), waiting).await;
+    assert_eq!(
+        got.expect("in time").expect("joined"),
+        Ok("http://w".into())
+    );
 }
 
 #[tokio::test]

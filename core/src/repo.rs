@@ -63,9 +63,8 @@ impl Repo {
             .map_err(|e| format!("could not run git: {e}"))?;
         if !output.status.success() {
             let complaint = String::from_utf8_lossy(&output.stderr);
-            return Err(
-                self.hide_credentials(&format!("git {} failed: {complaint}", args.join(" ")))
-            );
+            let failed = format!("git {} failed: {complaint}", args.join(" "));
+            return Err(self.hide_credentials(&failed));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }

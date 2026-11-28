@@ -5,7 +5,9 @@ use super::*;
 impl Boss {
     /// The worker for task `task` of `run`: the one it names, or one whose labels cover `labels`
     /// (see `pick_worker`), once it has a free slot. Waits while every match is busy, and says so
-    /// in the task's log. Err says why there is none, or that the run was cancelled meanwhile.
+    /// in the task's log. A slot goes to the oldest run waiting that can use it, so newer runs
+    /// never keep a run waiting (one the boss went on with after a restart, say). Err says why
+    /// there is none, or that the run was cancelled meanwhile.
     pub(super) async fn claim_worker(
         &self,
         run: &Run,
@@ -14,6 +16,11 @@ impl Boss {
         labels: &[String],
         cancelled: &Cancelled,
     ) -> Result<String, String> {
+        let order = self.db().run_order(run.id).map_err(|e| e.to_string())?;
+        let waiting = Waiting {
+            boss: self,
+            key: (order, task),
+        };
         let mut said = false;
         loop {
             // Listening before looking, so a slot freed in between is not missed.
@@ -23,14 +30,17 @@ impl Boss {
             let (busy, wake) = {
                 let db = self.db();
                 let mut workers = lock(&self.workers);
+                let mut queue = lock(&self.waiting);
                 let at = now();
-                match pick_worker(&workers, named, labels, at)? {
+                let older: Vec<&Wants> = queue.range(..waiting.key).map(|(_, w)| w).collect();
+                match pick_worker(&workers, named, labels, at, &older)? {
                     Pick::Worker(worker) => {
                         self.start_task_on(&db, &mut workers, run, task, &worker);
                         return Ok(worker);
                     }
                     // A worker waited for that is not back in time no longer is: look again then.
                     Pick::Busy(busy) => {
+                        queue.insert(waiting.key, (named.map(str::to_string), labels.to_vec()));
                         let wake = workers.values().filter_map(back_by).filter(|&by| by > at);
                         (busy, wake.min().map(|by| Duration::from_millis(by - at)))
                     }
@@ -202,9 +212,8 @@ impl Boss {
                 .any(|up| worker_key(&up.worker) == url);
             if (runs.contains(id) || sandbox_there) && going.cancel.borrow().is_none() {
                 going.interrupted = true;
-                going
-                    .cancel
-                    .send_replace(Some(format!("{url} is restarting")));
+                let reason = format!("{url} is restarting");
+                going.cancel.send_replace(Some(reason));
             }
         }
     }
@@ -223,6 +232,24 @@ impl Boss {
         });
         if let Err(e) = changed {
             eprintln!("could not record that task {id} is over: {e}");
+        }
+    }
+}
+
+/// What a waiting task needs: the worker it names, or the labels a worker must have.
+pub(super) type Wants = (Option<String>, Vec<String>);
+
+/// Keeps task `key` in Boss::waiting until its claim ends, however it ends: then a newer run's
+/// task may take the slot it was waiting for.
+struct Waiting<'a> {
+    boss: &'a Boss,
+    key: (i64, Uuid),
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if lock(&self.boss.waiting).remove(&self.key).is_some() {
+            self.boss.freed.notify_waiters();
         }
     }
 }
@@ -253,16 +280,26 @@ pub(super) enum Pick {
 /// the worker a sandbox of this run is already on: the task runs there. Otherwise, of the connected
 /// workers whose labels are a superset of `labels` and that have a free slot, any one, uniformly at
 /// random. Err says why no connected worker matches, for the task's log. A worker the task did not
-/// ask for is never returned. `now` is the time, for workers that went away (see back_by).
+/// ask for is never returned. `now` is the time, for workers that went away (see back_by). A worker
+/// that the tasks of `older` runs are waiting for is theirs first.
 pub(super) fn pick_worker(
     workers: &BTreeMap<String, Watched>,
     named: Option<&str>,
     labels: &[String],
     now: u64,
+    older: &[&Wants],
 ) -> Result<Pick, String> {
+    let has = |w: &Watched, labels: &[String]| {
+        let info = w.worker.info.as_ref();
+        info.is_some_and(|info| labels.iter().all(|l| info.labels.contains(l)))
+    };
     let full = |w: &Watched| {
         let capacity = w.worker.info.as_ref().map_or(0, |i| i.capacity as usize);
-        w.worker.tasks.len() >= capacity
+        let wanted = older.iter().any(|(url, labels)| match url {
+            Some(url) => worker_key(url) == w.worker.url,
+            None => has(w, labels),
+        });
+        w.worker.tasks.len() >= capacity || wanted
     };
     // The boss's first try at reaching a worker is still under way (it takes at most QUIET), or the
     // worker went away so recently it may be restarting: until it says how many tasks it takes, or
@@ -282,11 +319,7 @@ pub(super) fn pick_worker(
             _ => Pick::Worker(url.to_string()),
         });
     }
-    let fits = |w: &&Watched| {
-        let info = w.worker.info.as_ref();
-        info.is_some_and(|info| labels.iter().all(|l| info.labels.contains(l)))
-    };
-    let mut fitting = workers.values().filter(fits).peekable();
+    let mut fitting = workers.values().filter(|w| has(w, labels)).peekable();
     if fitting.peek().is_some() {
         let free: Vec<&Watched> = fitting.filter(|w| !full(w)).collect();
         return Ok(match fastrand::choice(free) {

@@ -814,6 +814,12 @@ impl Db {
             .collect()
     }
 
+    /// Where run `id` comes in the order runs were started.
+    pub fn run_order(&self, id: Uuid) -> rusqlite::Result<i64> {
+        let sql = "SELECT rowid FROM pl_runs WHERE id = ?1";
+        self.conn.query_row(sql, [id.to_string()], |row| row.get(0))
+    }
+
     /// Puts a task back to pending, as if it had never run, but for its log: a resumed run runs it
     /// again. Its artifacts' files are the caller's to delete.
     pub fn rewind_task(&mut self, task: Uuid) -> rusqlite::Result<()> {

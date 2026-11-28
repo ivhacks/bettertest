@@ -535,15 +535,12 @@ impl Pipeline {
     /// Worker urls the pipedef names. The boss enrolls each one when the pipeline is loaded.
     pub fn workers(&self) -> Vec<&str> {
         let mut urls: Vec<&str> = vec![];
-        let named =
-            self.stages
-                .iter()
-                .filter_map(|stage| stage.sandbox.as_ref())
-                .chain(self.sandboxes.values())
-                .filter_map(|sandbox| sandbox.worker.as_deref())
-                .chain(self.stages.iter().flat_map(|stage| {
-                    stage.tasks.iter().filter_map(|task| task.worker.as_deref())
-                }));
+        let stages = self.stages.iter();
+        let sandboxes = stages.clone().filter_map(|stage| stage.sandbox.as_ref());
+        let sandboxes = sandboxes.chain(self.sandboxes.values());
+        let tasks = stages.flat_map(|stage| &stage.tasks);
+        let named = (sandboxes.filter_map(|sandbox| sandbox.worker.as_deref()))
+            .chain(tasks.filter_map(|task| task.worker.as_deref()));
         for url in named {
             if !urls.contains(&url) {
                 urls.push(url);

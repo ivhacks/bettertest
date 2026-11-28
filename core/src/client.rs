@@ -179,10 +179,8 @@ async fn start(http: Client, worker: String, sandbox: Sandbox) -> Result<Target,
     }
     if let Some(image) = sandbox.vm {
         let url = format!("{worker}/start-vm");
-        let request = http.post(&url).json(&StartVm {
-            image,
-            arch: sandbox.arch,
-        });
+        let arch = sandbox.arch;
+        let request = http.post(&url).json(&StartVm { image, arch });
         let started: Started = json(check(&url, request.send().await).await?, &url).await?;
         return Ok(Target::Vm(started.id));
     }
@@ -342,14 +340,10 @@ async fn start_task(
         };
         for (event, data) in events.feed(&chunk) {
             match event.as_str() {
-                "stdout" => lines.push(LogLine {
-                    stream: LogStream::Stdout,
-                    line: data,
-                }),
-                "stderr" => lines.push(LogLine {
-                    stream: LogStream::Stderr,
-                    line: data,
-                }),
+                "stdout" | "stderr" => {
+                    let stream = LogStream::parse(&event).unwrap_or(LogStream::Stdout);
+                    lines.push(LogLine { stream, line: data });
+                }
                 "artifact" => {
                     io.log_lines(std::mem::take(&mut lines));
                     let outputs = io.outputs()?;

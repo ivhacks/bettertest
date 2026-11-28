@@ -82,8 +82,12 @@ struct Boss {
     // Passkey ceremonies under way, by the id the boss handed out for each.
     ceremonies: Mutex<HashMap<String, Pending>>,
     events: broadcast::Sender<Event>,
-    // Woken whenever a worker changes, which is when a task waiting for a busy worker may get one.
+    // Woken whenever a worker changes, or a task stops waiting for one, which is when a task waiting
+    // for a busy worker may get one.
     freed: Notify,
+    // The tasks waiting for a busy worker, by run order (see Db::run_order) and task, with the
+    // worker or labels each needs. A freed slot goes to the oldest run that can use it.
+    waiting: Mutex<BTreeMap<(i64, Uuid), Wants>>,
     http: reqwest::Client,
     // The certificate the boss presents, when it speaks HTTPS.
     tls: Option<tls::Tls>,
@@ -182,6 +186,7 @@ pub async fn entry(
         ceremonies: Mutex::new(HashMap::new()),
         events,
         freed: Notify::new(),
+        waiting: Mutex::new(BTreeMap::new()),
         http: client::http()?,
         tls,
         port,
@@ -312,7 +317,7 @@ pub(crate) fn internal(e: impl ToString) -> Failure {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
-fn not_found(what: impl std::fmt::Display) -> Failure {
+pub(crate) fn not_found(what: impl std::fmt::Display) -> Failure {
     (StatusCode::NOT_FOUND, format!("no {what}"))
 }
 
@@ -322,6 +327,10 @@ pub(crate) fn bad_request(why: impl ToString) -> Failure {
 
 pub(crate) fn conflict(why: impl ToString) -> Failure {
     (StatusCode::CONFLICT, why.to_string())
+}
+
+fn unauthorized(why: impl ToString) -> Failure {
+    (StatusCode::UNAUTHORIZED, why.to_string())
 }
 
 fn parse_id(id: &str) -> Result<Uuid, Failure> {
@@ -572,23 +581,20 @@ exec "$bindir/bettertest" unified "$HOME/bettertest/hello.py"
     )
 }
 
-async fn install_sh(State(boss): State<Shared>, headers: HeaderMap, uri: Uri) -> Response {
-    let arch = match download_arch(uri.query()) {
-        Ok(arch) => arch,
-        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
-    };
+async fn install_sh(
+    State(boss): State<Shared>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Failure> {
+    let arch = download_arch(uri.query()).map_err(bad_request)?;
     let host = text_header(&headers, header::HOST);
-    let Some(origin) = public_origin(boss.tls.is_some(), host) else {
-        return (StatusCode::BAD_REQUEST, "need a plain host header").into_response();
-    };
-    (
-        [
-            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        install_script(&origin, arch),
-    )
-        .into_response()
+    let origin = public_origin(boss.tls.is_some(), host);
+    let origin = origin.ok_or_else(|| bad_request("need a plain host header"))?;
+    let headers = [
+        (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+        (header::CACHE_CONTROL, "no-cache"),
+    ];
+    Ok((headers, install_script(&origin, arch)).into_response())
 }
 
 async fn download_binary(AxumPath(name): AxumPath<String>) -> Result<Response, Failure> {
