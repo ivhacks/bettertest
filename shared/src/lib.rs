@@ -386,7 +386,7 @@ pub struct NewCertificate {
 /// A worker the boss knows: one a pipedef named, or one added on the workers page. The boss keeps
 /// a connection to each (the worker's `/events` stream) for as long as it can, which is what makes
 /// it connected.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Worker {
     pub url: String,
     // What the worker said about itself. None while the boss cannot reach it.
@@ -498,11 +498,15 @@ impl Event {
     }
 }
 
+/// The first 6 hex digits of a run's id, the way git abbreviates commit hashes. For people to read;
+/// links and the API use the full id.
+pub fn short_id(id: Uuid) -> String {
+    id.simple().to_string().chars().take(6).collect()
+}
+
 impl Run {
-    /// The first 6 hex digits of the id, the way git abbreviates commit hashes. For people to read;
-    /// links and the API use the full id.
     pub fn short_id(&self) -> String {
-        self.id.simple().to_string().chars().take(6).collect()
+        short_id(self.id)
     }
 
     pub fn apply(&mut self, event: &Event) {

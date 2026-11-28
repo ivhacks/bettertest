@@ -3,7 +3,7 @@
 
 use crate::{
     workdir,
-    worker::{StartContainer, StartVm, Started},
+    worker::{StartSandbox, Started},
 };
 use bettertest_shared::{
     Artifact, LogLine, LogStream, Run, Sandbox, Stage, Task, Tests, duration, valid_artifact_name,
@@ -135,47 +135,37 @@ pub async fn start_sandbox(
     log: &mut impl FnMut(LogStream, String),
     mut cancelled: Option<watch::Receiver<Option<String>>>,
 ) -> Result<Target, String> {
-    let (kind, image) = match (&sandbox.image, &sandbox.vm) {
-        (Some(image), _) => ("container", image),
-        (None, Some(image)) => ("vm", image),
+    let (kind, image, target): (_, _, fn(String) -> Target) = match (&sandbox.image, &sandbox.vm) {
+        (Some(image), _) => ("container", image, Target::Container),
+        (None, Some(image)) => ("vm", image, Target::Vm),
         (None, None) => return Ok(Target::None),
     };
     log(LogStream::Bettertest, format!("starting {kind} {image}"));
-    let mut starting = tokio::spawn(start(http.clone(), worker.to_string(), sandbox.clone()));
-    let target = tokio::select! {
+    let url = format!("{worker}/start-{kind}");
+    let (image, arch) = (image.clone(), sandbox.arch);
+    let mut starting = tokio::spawn(start(http.clone(), url, StartSandbox { image, arch }));
+    let id = tokio::select! {
         started = &mut starting => started.map_err(|e| e.to_string())??,
         reason = cancellation(&mut cancelled) => {
             let (http, worker) = (http.clone(), worker.to_string());
             tokio::spawn(async move {
-                if let Ok(Ok(target)) = starting.await {
-                    let _ = stop_sandbox(&http, &worker, &target).await;
+                if let Ok(Ok(id)) = starting.await {
+                    let _ = stop_sandbox(&http, &worker, &target(id)).await;
                 }
             });
             return Err(reason);
         }
     };
-    if let Target::Container(id) | Target::Vm(id) = &target {
-        log(LogStream::Bettertest, format!("started {kind} {id}"));
-    }
-    Ok(target)
+    log(LogStream::Bettertest, format!("started {kind} {id}"));
+    Ok(target(id))
 }
 
-/// Asks the worker for the sandbox and waits until it is up.
-async fn start(http: Client, worker: String, sandbox: Sandbox) -> Result<Target, String> {
-    if let Some(image) = sandbox.image {
-        let url = format!("{worker}/start-container");
-        let request = http.post(&url).json(&StartContainer { image });
-        let started: Started = json(check(&url, request.send().await).await?, &url).await?;
-        return Ok(Target::Container(started.id));
-    }
-    if let Some(image) = sandbox.vm {
-        let url = format!("{worker}/start-vm");
-        let arch = sandbox.arch;
-        let request = http.post(&url).json(&StartVm { image, arch });
-        let started: Started = json(check(&url, request.send().await).await?, &url).await?;
-        return Ok(Target::Vm(started.id));
-    }
-    Ok(Target::None)
+/// Asks the worker at `url` for the sandbox and waits until it is up. Ok is its id.
+async fn start(http: Client, url: String, sandbox: StartSandbox) -> Result<String, String> {
+    let response = check(&url, http.post(&url).json(&sandbox).send().await).await?;
+    let started: Started =
+        (response.json().await).map_err(|e| format!("bad response from {url}: {e}"))?;
+    Ok(started.id)
 }
 
 pub async fn stop_sandbox(http: &Client, worker: &str, target: &Target) -> Result<(), String> {
@@ -457,13 +447,6 @@ async fn check_response(url: &str, response: Response) -> Result<Response, Strin
     }
     let body = response.text().await.unwrap_or_default();
     Err(format!("{url} said {status}: {body}"))
-}
-
-async fn json<T: serde::de::DeserializeOwned>(response: Response, url: &str) -> Result<T, String> {
-    response
-        .json()
-        .await
-        .map_err(|e| format!("bad response from {url}: {e}"))
 }
 
 /// Reassembles server-sent events from network chunks. A chunk can end anywhere, even in the middle

@@ -151,10 +151,8 @@ impl Boss {
             let since = db.last_heartbeat(url)?.unwrap_or_else(now);
             let worker = Worker {
                 url: url.to_string(),
-                info: None,
                 since,
-                problem: None,
-                tasks: vec![],
+                ..Worker::default()
             };
             let watched = Watched {
                 worker: worker.clone(),

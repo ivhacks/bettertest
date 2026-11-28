@@ -55,17 +55,14 @@ pub(crate) fn listen_url(port: u16) -> String {
 // Every container we start carries this label, so ones a crashed worker left behind can be found.
 const CONTAINER_LABEL: &str = "bettertest.worker";
 
+/// What `start-container` and `start-vm` take. The pipedef names the image's source, and the worker
+/// fetches it.
 #[derive(Serialize, Deserialize)]
-pub struct StartContainer {
-    // A docker image name, or the URL of a `docker save` tarball. The pipedef names that source.
+pub struct StartSandbox {
+    // A docker image name or the URL of a `docker save` tarball; for a vm, the URL of a qcow2 disk
+    // image, the image's own.
     pub image: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct StartVm {
-    // URL of a qcow2 disk image, the image's own. The worker downloads it.
-    pub image: String,
-    // None means this worker's own.
+    // A vm's architecture. None means this worker's own.
     pub arch: Option<Arch>,
 }
 
@@ -274,7 +271,7 @@ async fn events(
     Sse::new(stream.map(Ok::<_, Infallible>)).keep_alive(KeepAlive::default())
 }
 
-async fn start_container(Json(req): Json<StartContainer>) -> Result<Json<Started>, Failure> {
+async fn start_container(Json(req): Json<StartSandbox>) -> Result<Json<Started>, Failure> {
     let image = if is_url(&req.image) {
         load_image(&req.image).await?
     } else {
@@ -472,7 +469,7 @@ pub async fn download(url: &str) -> Result<reqwest::Response, String> {
 
 async fn start_vm(
     State(vms): State<Arc<vm::Vms>>,
-    Json(req): Json<StartVm>,
+    Json(req): Json<StartSandbox>,
 ) -> Result<Json<Started>, Failure> {
     let id = vms.start(&req.image, req.arch).await.map_err(internal)?;
     Ok(Json(Started { id }))
