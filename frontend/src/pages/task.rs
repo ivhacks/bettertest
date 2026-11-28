@@ -73,10 +73,7 @@ impl Component for TaskPage {
                 spawn_local(async move {
                     match fetch::<Run>(Request::post(&url).build()).await {
                         Ok(restart) => {
-                            let same = restart
-                                .stages
-                                .iter()
-                                .filter(|s| s.name == stage)
+                            let same = (restart.stages.iter().filter(|s| s.name == stage))
                                 .flat_map(|s| &s.tasks)
                                 .find(|t| t.name == task);
                             let page = match same {
@@ -107,10 +104,8 @@ impl Component for TaskPage {
             TaskMsg::Notice(text) => self.notice = Some(text),
             // Only a running task's time changes.
             TaskMsg::Tick => {
-                return self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|s| s.task.state == TaskState::Running);
+                let shown = self.snapshot.as_ref();
+                return shown.is_some_and(|s| s.task.state == TaskState::Running);
             }
         }
         true
