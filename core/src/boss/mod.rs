@@ -492,10 +492,8 @@ const NAMES: &str = "pipedef names are letters, digits, '-' and '_'";
 
 /// Pipeline names end up in URLs.
 fn valid_pipeline_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_');
+    !name.is_empty() && name.chars().all(plain)
 }
 
 /// A browser that could not start the web ui says why, and the boss logs it: the page alone would

@@ -222,11 +222,8 @@ pub struct Artifact {
 
 /// Artifact names end up in file paths and URLs.
 pub fn valid_artifact_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    !name.is_empty() && !name.starts_with('.') && name.chars().all(plain)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -129,7 +129,7 @@ async fn an_enrolled_worker_is_watched_until_forgotten() {
     let add = |url: &str| add_worker(State(boss.clone()), Json(WorkerUrl { url: url.into() }));
     assert_eq!(add(&url).await, Ok(StatusCode::NO_CONTENT));
     assert_eq!(add(&format!(" {url}/ ")).await, Ok(StatusCode::NO_CONTENT));
-    assert_eq!(boss.db().workers().unwrap(), [url.clone()]);
+    assert_eq!(boss.db().workers().unwrap(), std::slice::from_ref(&url));
     assert_eq!(boss.worker_list().len(), 1);
     for bad in ["worker-host:7358", "ftp://worker-host", ""] {
         let refused = add(bad).await.unwrap_err();

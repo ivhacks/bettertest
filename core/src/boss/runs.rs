@@ -536,15 +536,10 @@ pub(super) fn restart_start<'a>(
             let only = task.filter(|_| index == at && start == at);
             needed.extend(sandboxes(stage, only));
         }
-        let earliest = needed
-            .iter()
-            .filter_map(|n| first_use(n))
-            .min()
-            .unwrap_or(start);
-        if earliest >= start {
-            break;
+        match needed.iter().filter_map(|n| first_use(n)).min() {
+            Some(earliest) if earliest < start => start = earliest,
+            _ => break,
         }
-        start = earliest;
     }
     // A task that runs in a sandbox builds on the tasks before it there: they restart with it.
     let in_sandbox = pipeline
@@ -849,13 +844,9 @@ pub(super) struct Up {
 /// The pipeline's sandboxes that no stage after stage `index` uses: they stop once it is over.
 pub(super) fn last_used_in(pipeline: &Pipeline, index: usize) -> BTreeSet<String> {
     let used = |stage: &Stage| sandboxes(stage, None);
-    let here = pipeline.stages.get(index).map(used).unwrap_or_default();
-    let later: BTreeSet<String> = pipeline
-        .stages
-        .iter()
-        .skip(index + 1)
-        .flat_map(used)
-        .collect();
+    let mut stages = pipeline.stages.iter().skip(index);
+    let here = stages.next().map(used).unwrap_or_default();
+    let later: BTreeSet<String> = stages.flat_map(used).collect();
     here.difference(&later).cloned().collect()
 }
 
