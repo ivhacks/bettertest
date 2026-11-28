@@ -155,10 +155,7 @@ pub async fn entry(
             return Err(format!("{} is not a file", path.display()).into());
         };
         if !valid_pipeline_name(&name) {
-            let path = path.display();
-            return Err(
-                format!("rename {path}: pipedef names are letters, digits, '-' and '_'").into(),
-            );
+            return Err(format!("rename {}: {NAMES}", path.display()).into());
         }
         if let Some(Pipedef::File(other)) = names.insert(name.clone(), Pipedef::File(path.clone()))
         {
@@ -489,6 +486,9 @@ impl Wire {
     }
 }
 
+/// What valid_pipeline_name lets through, for whoever named one it does not.
+const NAMES: &str = "pipedef names are letters, digits, '-' and '_'";
+
 /// Pipeline names end up in URLs.
 fn valid_pipeline_name(name: &str) -> bool {
     !name.is_empty()
@@ -755,10 +755,7 @@ impl Boss {
             let mut pipedefs = lock(&self.pipedefs);
             for (name, path) in found {
                 if !valid_pipeline_name(&name) {
-                    eprintln!(
-                        "{} has {path}: pipedef names are letters, digits, '-' and '_'",
-                        repo.public
-                    );
+                    eprintln!("{} has {path}: {NAMES}", repo.public);
                     continue;
                 }
                 match pipedefs.get(&name) {
@@ -792,17 +789,9 @@ impl Boss {
         let (Some(commit), Some(repo)) = (&run.commit, self.repos.get(repo)) else {
             return;
         };
-        let reported = repo
-            .report(
-                &self.http,
-                &commit.sha,
-                &run.pipeline,
-                state,
-                description,
-                link,
-            )
-            .await;
-        if let Err(e) = reported {
+        let (http, sha, pipeline) = (&self.http, &commit.sha, &run.pipeline);
+        let reported = repo.report(http, sha, pipeline, state, description, link);
+        if let Err(e) = reported.await {
             eprintln!("could not tell {} about run {}: {e}", repo.public, run.id);
         }
     }

@@ -68,11 +68,8 @@ impl Boss {
         }
         if !published.iter().any(|a| a.name == name) {
             let names: Vec<&str> = published.iter().map(|a| a.name.as_str()).collect();
-            let names = if names.is_empty() {
-                "nothing".to_string()
-            } else {
-                names.join(", ")
-            };
+            let names = Some(names.join(", ")).filter(|names| !names.is_empty());
+            let names = names.unwrap_or_else(|| "nothing".into());
             return Err(format!(
                 "{producer} published no artifact named '{name}'{in_run}. It published: {names}."
             ));

@@ -344,11 +344,8 @@ pub(super) fn pick_worker(
             Some(format!("{} ({})", w.worker.url, info.labels.join(", ")))
         })
         .collect();
-    let up = if up.is_empty() {
-        "none".to_string()
-    } else {
-        up.join("; ")
-    };
+    let up = Some(up.join("; ")).filter(|up| !up.is_empty());
+    let up = up.unwrap_or_else(|| "none".into());
     // A label nobody has is most often a typo, of the pipedef's or of a worker's --label.
     let mut similar = vec![];
     for wanted in labels {
@@ -390,11 +387,7 @@ pub(super) fn similar_label(a: &str, b: &str) -> bool {
     if a.eq_ignore_ascii_case(b) {
         return true;
     }
-    let most = if a.chars().count().min(b.chars().count()) <= 3 {
-        1
-    } else {
-        2
-    };
+    let most = 1 + usize::from(a.chars().count().min(b.chars().count()) > 3);
     edit_distance(&a.to_lowercase(), &b.to_lowercase()) <= most
 }
 

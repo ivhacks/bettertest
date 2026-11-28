@@ -517,6 +517,18 @@ fn labels_one_typo_away_are_named() {
     assert!(similar_label("pcba-rig", "pcba_rigs"));
     assert!(!similar_label("arm", "x86"));
     assert!(!similar_label("gpu", "cpu1"));
+    // Short labels may be one letter off, longer ones two.
+    assert!(similar_label("gpu", "cpu"));
+    assert!(!similar_label("gpu", "cpx"));
+    assert!(!similar_label("gpus", "cpu"));
+    assert!(similar_label("gpus", "cpus1"));
+    assert!(similar_label("fixture", "fixtrue"));
+    assert!(!similar_label("fixture", "fxtrue1"));
+    assert_eq!(
+        picked(&BTreeMap::new(), &["gpu"]),
+        "none: no connected worker has labels gpu. Connected workers: none. The workers page \
+         shows them all."
+    );
     let up = workers(&[
         ("http://a", &["x86", "gpu"], 0, 1),
         ("http://b", &["arm"], 0, 1),
@@ -1220,6 +1232,39 @@ async fn an_artifact_names_its_file_and_its_run() {
 
     std::fs::remove_dir_all(&dir).expect("clean up");
     std::fs::remove_file(&file).expect("remove pipedef");
+}
+
+/// Asked for an artifact a task did not publish, the boss says what it did publish.
+#[tokio::test]
+async fn a_missing_artifact_lists_what_the_task_published() {
+    let pipeline = pipedef::parse(&big_pipedef(1, 1)).await.expect("parses");
+    let boss = boss(BTreeMap::new());
+    let run = (boss.db())
+        .insert_run("app", &pipeline, None, &BTreeMap::new())
+        .expect("run");
+    let task = run.stages[0].tasks[0].id;
+    boss.db()
+        .set_task_state(task, TaskState::Pass, 1)
+        .expect("pass");
+    let missing = || {
+        let found = boss.find_artifact(&run, true, "Stage0", "task_0_0", "app.rpm");
+        found.expect_err("not published")
+    };
+    assert_eq!(
+        missing(),
+        "Stage0.task_0_0 published no artifact named 'app.rpm'. It published: nothing."
+    );
+    for name in ["app.deb", "app.tar"] {
+        let artifact = Artifact {
+            name: name.into(),
+            size: 1,
+        };
+        boss.db().add_artifact(task, &artifact).expect("artifact");
+    }
+    assert_eq!(
+        missing(),
+        "Stage0.task_0_0 published no artifact named 'app.rpm'. It published: app.deb, app.tar."
+    );
 }
 
 /// A pipedef of `stages` stages of `tasks` tasks each.
