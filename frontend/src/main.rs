@@ -370,14 +370,7 @@ fn menu() -> Html {
     // A passkey for the user logged in, made by this browser's authenticator.
     let passkey = Callback::from(|_: MouseEvent| {
         spawn_local(async {
-            let added = passkey::ceremony(
-                "/api/new-passkey-options",
-                serde_json::json!({ "id": null }),
-                "/api/new-passkey",
-                true,
-            )
-            .await;
-            let said = match added {
+            let said = match passkey::ceremony(true, serde_json::json!({ "id": null })).await {
                 Ok(reply) => {
                     let reply: serde_json::Value = serde_json::from_str(&reply).unwrap_or_default();
                     let label = reply["label"].as_str().unwrap_or_default();

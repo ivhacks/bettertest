@@ -68,13 +68,7 @@ impl Component for LoginPage {
             LoginMsg::Passkey => {
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let login = passkey::ceremony(
-                        "/api/passkey-login-options",
-                        serde_json::json!({}),
-                        "/api/passkey-login",
-                        false,
-                    );
-                    match login.await {
+                    match passkey::ceremony(false, serde_json::json!({})).await {
                         Ok(_) => logged_in().await,
                         Err(e) => link.send_message(LoginMsg::Refused(e)),
                     }

@@ -27,15 +27,14 @@ extern "C" {
     async fn passkey(options: String, create: bool) -> Result<JsValue, JsValue>;
 }
 
-/// Asks the boss for options (POST `options_url` with `body`), has the browser's authenticator answer
-/// them (`create` makes a passkey, otherwise one is used), and POSTs that answer to `url` with the
-/// ceremony's id. Returns the boss's reply, or why it failed.
-pub async fn ceremony(
-    options_url: &str,
-    body: serde_json::Value,
-    url: &str,
-    create: bool,
-) -> Result<String, String> {
+/// Asks the boss for options (POSTing `body`), has the browser's authenticator answer them, and
+/// POSTs that answer back with the ceremony's id: `create` makes a passkey, otherwise one logs in.
+/// Returns the boss's reply, or why it failed.
+pub async fn ceremony(create: bool, body: serde_json::Value) -> Result<String, String> {
+    let (options_url, url) = match create {
+        true => ("/api/new-passkey-options", "/api/new-passkey"),
+        false => ("/api/passkey-login-options", "/api/passkey-login"),
+    };
     let options: serde_json::Value = crate::fetch(Request::post(options_url).json(&body)).await?;
     let public_key = options["publicKey"].to_string();
     let answer = passkey(public_key, create).await;
