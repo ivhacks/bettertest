@@ -10,6 +10,8 @@ use std::{
 // The tests of the boss's own modules, children of these so they share the helpers below.
 #[path = "artifacts.rs"]
 mod artifact_tests;
+#[path = "runs.rs"]
+mod run_tests;
 #[path = "users.rs"]
 mod user_tests;
 #[path = "workers.rs"]
