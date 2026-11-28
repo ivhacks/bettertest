@@ -147,10 +147,8 @@ impl Db {
         )?;
         for stage in &run.stages {
             let stage_id = Uuid::new_v4().to_string();
-            tx.execute(
-                "INSERT INTO stage_runs (id, pl_run_id, name) VALUES (?1, ?2, ?3)",
-                (&stage_id, run.id.to_string(), &stage.name),
-            )?;
+            let sql = "INSERT INTO stage_runs (id, pl_run_id, name) VALUES (?1, ?2, ?3)";
+            tx.execute(sql, (&stage_id, run.id.to_string(), &stage.name))?;
             for task in &stage.tasks {
                 tx.execute(
                     "INSERT INTO task_runs
@@ -179,32 +177,31 @@ impl Db {
     /// Sets a task's state at time `at`, which is when it ended if the state is a final one.
     pub fn set_task_state(&self, task: Uuid, state: TaskState, at: u64) -> rusqlite::Result<usize> {
         let ended = state.is_over().then(|| to_sql(at));
-        self.conn.execute(
-            "UPDATE task_runs SET state = ?1, ended_at = coalesce(?2, ended_at) WHERE id = ?3",
-            (state.as_str(), ended, task.to_string()),
-        )
+        let sql =
+            "UPDATE task_runs SET state = ?1, ended_at = coalesce(?2, ended_at) WHERE id = ?3";
+        self.conn
+            .execute(sql, (state.as_str(), ended, task.to_string()))
     }
 
     /// Marks a task as running on `worker` since `at`.
     pub fn start_task(&self, task: Uuid, worker: &str, at: u64) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "UPDATE task_runs SET state = 'running', worker = ?1, started_at = ?2 WHERE id = ?3",
-            (worker, to_sql(at), task.to_string()),
-        )
+        let sql =
+            "UPDATE task_runs SET state = 'running', worker = ?1, started_at = ?2 WHERE id = ?3";
+        self.conn
+            .execute(sql, (worker, to_sql(at), task.to_string()))
     }
 
     pub fn set_tests(&self, task: Uuid, tests: Tests) -> rusqlite::Result<usize> {
+        let sql = "UPDATE task_runs SET tests = ?1, tests_failed = ?2 WHERE id = ?3";
         self.conn.execute(
-            "UPDATE task_runs SET tests = ?1, tests_failed = ?2 WHERE id = ?3",
+            sql,
             (to_sql(tests.total), to_sql(tests.failed), task.to_string()),
         )
     }
 
     pub fn set_run_state(&self, run: Uuid, state: RunState) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "UPDATE pl_runs SET state = ?1 WHERE id = ?2",
-            (state.as_str(), run.to_string()),
-        )
+        let sql = "UPDATE pl_runs SET state = ?1 WHERE id = ?2";
+        self.conn.execute(sql, (state.as_str(), run.to_string()))
     }
 
     /// In one transaction: committing each line on its own takes most of the time.
@@ -272,8 +269,9 @@ impl Db {
     }
 
     pub fn add_artifact(&self, task: Uuid, artifact: &Artifact) -> rusqlite::Result<usize> {
+        let sql = "INSERT INTO task_artifacts (task_run_id, name, size) VALUES (?1, ?2, ?3)";
         self.conn.execute(
-            "INSERT INTO task_artifacts (task_run_id, name, size) VALUES (?1, ?2, ?3)",
+            sql,
             (task.to_string(), &artifact.name, to_sql(artifact.size)),
         )
     }
@@ -429,10 +427,8 @@ impl Db {
             .collect::<rusqlite::Result<_>>()?;
         for id in &ids {
             tx.execute("DELETE FROM log_lines WHERE task_run_id = ?1", [id])?;
-            tx.execute(
-                "UPDATE task_runs SET log_deleted_at = ?1 WHERE id = ?2",
-                (to_sql(now), id),
-            )?;
+            let sql = "UPDATE task_runs SET log_deleted_at = ?1 WHERE id = ?2";
+            tx.execute(sql, (to_sql(now), id))?;
         }
         tx.commit()?;
         Ok(ids.len())
@@ -450,14 +446,10 @@ impl Db {
     pub fn forget_artifacts(&mut self, tasks: &[Uuid], now: u64) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
         for task in tasks {
-            tx.execute(
-                "DELETE FROM task_artifacts WHERE task_run_id = ?1",
-                [task.to_string()],
-            )?;
-            tx.execute(
-                "UPDATE task_runs SET artifacts_deleted_at = ?1 WHERE id = ?2",
-                (to_sql(now), task.to_string()),
-            )?;
+            let task = task.to_string();
+            tx.execute("DELETE FROM task_artifacts WHERE task_run_id = ?1", [&task])?;
+            let sql = "UPDATE task_runs SET artifacts_deleted_at = ?1 WHERE id = ?2";
+            tx.execute(sql, (to_sql(now), task))?;
         }
         tx.commit()
     }
@@ -514,18 +506,14 @@ impl Db {
     ) -> rusqlite::Result<usize> {
         let data =
             serde_json::json!({ "label": label, "fingerprint": fingerprint, "expires": expires });
-        self.conn.execute(
-            "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'certificate', ?2)",
-            (user, data.to_string()),
-        )
+        let sql = "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'certificate', ?2)";
+        self.conn.execute(sql, (user, data.to_string()))
     }
 
     /// Revokes a client certificate or a passkey: from now on it logs nobody in.
     pub fn revoke_credential(&self, credential: i64) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "DELETE FROM credentials WHERE id = ?1 AND kind IN ('certificate', 'passkey')",
-            [credential],
-        )
+        let sql = "DELETE FROM credentials WHERE id = ?1 AND kind IN ('certificate', 'passkey')";
+        self.conn.execute(sql, [credential])
     }
 
     /// A user's passkeys, oldest first.
@@ -549,10 +537,8 @@ impl Db {
     ) -> rusqlite::Result<usize> {
         let data =
             serde_json::json!({ "label": label, "credential": credential, "passkey": passkey });
-        self.conn.execute(
-            "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'passkey', ?2)",
-            (user, data.to_string()),
-        )
+        let sql = "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'passkey', ?2)";
+        self.conn.execute(sql, (user, data.to_string()))
     }
 
     /// The passkey with this credential id: its row, whose it is, and webauthn-rs's record of it.
@@ -577,10 +563,9 @@ impl Db {
         credential: i64,
         passkey: &serde_json::Value,
     ) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "UPDATE credentials SET data = json_set(data, '$.passkey', json(?2)) WHERE id = ?1",
-            (credential, passkey.to_string()),
-        )
+        let sql =
+            "UPDATE credentials SET data = json_set(data, '$.passkey', json(?2)) WHERE id = ?1";
+        self.conn.execute(sql, (credential, passkey.to_string()))
     }
 
     /// The name of a user, for a passkey's label and the authenticator's prompt.
@@ -601,18 +586,14 @@ impl Db {
     }
 
     pub fn add_user(&self, name: &str, role: Role) -> rusqlite::Result<i64> {
-        self.conn.execute(
-            "INSERT INTO users (name, role) VALUES (?1, ?2)",
-            (name, role.as_str()),
-        )?;
+        let sql = "INSERT INTO users (name, role) VALUES (?1, ?2)";
+        self.conn.execute(sql, (name, role.as_str()))?;
         Ok(self.conn.last_insert_rowid())
     }
 
     pub fn set_role(&self, user: i64, role: Role) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "UPDATE users SET role = ?1 WHERE id = ?2",
-            (role.as_str(), user),
-        )
+        let sql = "UPDATE users SET role = ?1 WHERE id = ?2";
+        self.conn.execute(sql, (role.as_str(), user))
     }
 
     /// Removes a user, with their credentials and sessions. The logged-out user stays.
@@ -628,10 +609,8 @@ impl Db {
             "DELETE FROM credentials WHERE user_id = ?1 AND kind = 'password'",
             [user],
         )?;
-        tx.execute(
-            "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'password', ?2)",
-            (user, hash),
-        )?;
+        let sql = "INSERT INTO credentials (user_id, kind, data) VALUES (?1, 'password', ?2)";
+        tx.execute(sql, (user, hash))?;
         tx.commit()
     }
 
@@ -644,10 +623,8 @@ impl Db {
     }
 
     pub fn add_api_token(&self, token_hash: &str, user: i64) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "INSERT INTO api_tokens (token_hash, user_id) VALUES (?1, ?2)",
-            (token_hash, user),
-        )
+        let sql = "INSERT INTO api_tokens (token_hash, user_id) VALUES (?1, ?2)";
+        self.conn.execute(sql, (token_hash, user))
     }
 
     /// The id, name and role of the user an API token is for.
@@ -668,10 +645,8 @@ impl Db {
         user: i64,
         expires: u64,
     ) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
-            (token_hash, user, to_sql(expires)),
-        )
+        let sql = "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)";
+        self.conn.execute(sql, (token_hash, user, to_sql(expires)))
     }
 
     /// The user of an unexpired session, as (name, role, expires).
@@ -690,18 +665,14 @@ impl Db {
     }
 
     pub fn extend_session(&self, token_hash: &str, expires: u64) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "UPDATE sessions SET expires_at = ?1 WHERE token_hash = ?2",
-            (to_sql(expires), token_hash),
-        )
+        let sql = "UPDATE sessions SET expires_at = ?1 WHERE token_hash = ?2";
+        self.conn.execute(sql, (to_sql(expires), token_hash))
     }
 
     /// Ends one session, and every one that has expired by `now`.
     pub fn end_session(&self, token_hash: &str, now: u64) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "DELETE FROM sessions WHERE token_hash = ?1 OR expires_at <= ?2",
-            (token_hash, to_sql(now)),
-        )
+        let sql = "DELETE FROM sessions WHERE token_hash = ?1 OR expires_at <= ?2";
+        self.conn.execute(sql, (token_hash, to_sql(now)))
     }
 
     /// The workers the boss keeps a connection to.
@@ -727,11 +698,9 @@ impl Db {
 
     /// Records that `who` (`boss`, or a worker's url) was alive at `at`.
     pub fn heartbeat(&self, who: &str, at: u64) -> rusqlite::Result<usize> {
-        self.conn.execute(
-            "INSERT INTO heartbeats (who, at) VALUES (?1, ?2)
-             ON CONFLICT (who) DO UPDATE SET at = excluded.at",
-            (who, to_sql(at)),
-        )
+        let sql = "INSERT INTO heartbeats (who, at) VALUES (?1, ?2)
+             ON CONFLICT (who) DO UPDATE SET at = excluded.at";
+        self.conn.execute(sql, (who, to_sql(at)))
     }
 
     /// When `who` was last known to be alive.
