@@ -28,11 +28,7 @@ impl Repo {
         // Only fails for urls that cannot have credentials, which then have none to remove.
         let _ = public.set_username("");
         let _ = public.set_password(None);
-        let full_name = url
-            .path()
-            .trim_matches('/')
-            .trim_end_matches(".git")
-            .to_string();
+        let full_name = full_name(&url);
         if full_name.split('/').count() != 2 {
             return Err(format!(
                 "{public} is not a repo url like http://host/owner/name.git"
@@ -185,19 +181,8 @@ impl Repo {
         description: &str,
         link: Option<&str>,
     ) -> Result<(), String> {
-        let call = status_call(
-            &self.url,
-            &self.full_name,
-            sha,
-            context,
-            state,
-            description,
-            link,
-        )?;
-        // The token stays out of the url, which is what a failure logs.
-        let token = credential(&self.url);
-        let (user, password) = (self.url.username(), self.url.password());
-        let request = status_request(http, &call, token.as_deref(), user, password);
+        let call = status_call(&self.url, sha, context, state, description, link)?;
+        let request = status_request(http, &call, &self.url);
         client::check(call.url.as_str(), request.send().await).await?;
         Ok(())
     }
@@ -210,6 +195,11 @@ struct StatusCall {
     url: Url,
     body: serde_json::Value,
     github: bool,
+}
+
+/// owner/name, as the forge calls the repo at `url`.
+fn full_name(url: &Url) -> String {
+    url.path().trim_matches('/').trim_end_matches(".git").into()
 }
 
 /// The password of `url`, or its username when the token is the whole credential
@@ -229,25 +219,19 @@ fn is_github(url: &Url) -> bool {
 
 /// GitHub rejects a status post that has no User-Agent with 403 ("administrative rules"), before
 /// it even checks the token. The header is set on the request so a client whose default agent is
-/// empty still satisfies that rule. The token is a bearer header, never part of `call.url`.
-fn status_request(
-    http: &Client,
-    call: &StatusCall,
-    token: Option<&str>,
-    user: &str,
-    password: Option<&str>,
-) -> reqwest::RequestBuilder {
+/// empty still satisfies that rule. The credentials of `repo`, the repo's url, go in a header, never
+/// in `call.url`, which is what a failure logs.
+fn status_request(http: &Client, call: &StatusCall, repo: &Url) -> reqwest::RequestBuilder {
     let request = http.post(call.url.clone()).json(&call.body);
-    if call.github {
-        let request = request
-            .header("user-agent", "bettertest")
-            .header("accept", "application/vnd.github+json");
-        match token {
-            Some(token) => request.bearer_auth(token),
-            None => request,
-        }
-    } else {
-        request.basic_auth(user, password)
+    if !call.github {
+        return request.basic_auth(repo.username(), repo.password());
+    }
+    let request = request
+        .header("user-agent", "bettertest")
+        .header("accept", "application/vnd.github+json");
+    match credential(repo) {
+        Some(token) => request.bearer_auth(token),
+        None => request,
     }
 }
 
@@ -255,7 +239,6 @@ fn status_request(
 /// GitHub has no `warning` state and keeps at most 140 characters of description.
 fn status_call(
     repo: &Url,
-    full_name: &str,
     sha: &str,
     context: &str,
     state: &str,
@@ -263,6 +246,7 @@ fn status_call(
     link: Option<&str>,
 ) -> Result<StatusCall, String> {
     let sha = checked(sha)?;
+    let full_name = full_name(repo);
     let github = is_github(repo);
     let (mut url, path, state, description) = if github {
         let url = Url::parse("https://api.github.com/").map_err(|e| e.to_string())?;

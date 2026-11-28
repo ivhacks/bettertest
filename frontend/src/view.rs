@@ -582,15 +582,6 @@ pub struct UserActions {
 }
 
 pub fn users(users: &[User], actions: &UserActions) -> Html {
-    let UserActions {
-        change,
-        password,
-        token,
-        certificate,
-        passkey,
-        revoke,
-        remove,
-    } = actions;
     // Each with its label, and when it expires if it does.
     let credentials =
         |label: &'static str, listed: &mut dyn Iterator<Item = (i64, &String, Option<String>)>| {
@@ -598,7 +589,7 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
             .map(|(credential, label, title)| html! {
                 <span class="cert" {title}>
                     { label }
-                    <button class="small" onclick={revoke.reform(move |_| credential)}>{ "Revoke" }</button>
+                    <button class="small" onclick={actions.revoke.reform(move |_| credential)}>{ "Revoke" }</button>
                 </span>
             })
             .collect();
@@ -607,35 +598,27 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
     html! {
         <table class="users">
             <thead>
-                <tr>
-                    <th>{ "User" }</th>
-                    <th>{ "Role" }</th>
-                    <th>{ "Password" }</th>
-                    <th>{ "Certificate" }</th>
-                    <th>{ "Passkey" }</th>
-                    <th>{ "API Tokens" }</th>
-                    <th></th>
-                </tr>
+                <tr><th>{ "User" }</th><th>{ "Role" }</th><th>{ "Password" }</th><th>{ "Certificate" }</th><th>{ "Passkey" }</th><th>{ "API Tokens" }</th><th></th></tr>
             </thead>
             <tbody>
                 { for users.iter().map(|u| {
                     let id = u.id;
-                    let onchange = change.reform(move |e: yew::Event| {
+                    let onchange = actions.change.reform(move |e: yew::Event| {
                         let value = e.target_unchecked_into::<web_sys::HtmlSelectElement>().value();
                         (id, Role::parse(&value).unwrap_or(Role::None))
                     });
                     let roles = [Role::None, Role::Read, Role::Write, Role::Admin];
-                    let actions = (!u.builtin).then(|| html! {
+                    let buttons = (!u.builtin).then(|| html! {
                         <>
-                            <button class="small" onclick={password.reform(move |_| id)}>{ "Set Password" }</button>
-                            <button class="small" onclick={token.reform(move |_| id)}>{ "New Token" }</button>
+                            <button class="small" onclick={actions.password.reform(move |_| id)}>{ "Set Password" }</button>
+                            <button class="small" onclick={actions.token.reform(move |_| id)}>{ "New Token" }</button>
                             if u.certs.len() < MOST_CERTIFICATES {
-                                <button class="small" onclick={certificate.reform(move |_| id)}>{ "New Certificate" }</button>
+                                <button class="small" onclick={actions.certificate.reform(move |_| id)}>{ "New Certificate" }</button>
                             }
                             if u.keys.len() < MOST_PASSKEYS {
-                                <button class="small" onclick={passkey.reform(move |_| id)}>{ "New Passkey" }</button>
+                                <button class="small" onclick={actions.passkey.reform(move |_| id)}>{ "New Passkey" }</button>
                             }
-                            <button class="small" onclick={remove.reform(move |_| id)}>{ "Remove" }</button>
+                            <button class="small" onclick={actions.remove.reform(move |_| id)}>{ "Remove" }</button>
                         </>
                     });
                     html! {
@@ -656,7 +639,7 @@ pub fn users(users: &[User], actions: &UserActions) -> Html {
                                 { credentials("passkey", &mut u.keys.iter().map(|k| (k.id, &k.label, None))) }
                                 <td data-label="api tokens">{ match u.tokens { 0 => "-".to_string(), n => n.to_string() } }</td>
                             }
-                            <td class="actions">{ for actions }</td>
+                            <td class="actions">{ for buttons }</td>
                         </tr>
                     }
                 }) }
@@ -742,17 +725,7 @@ pub fn workers(workers: &[Worker], now: u64, forget: &Callback<String>) -> Html 
     html! {
         <table class="workers">
             <thead>
-                <tr>
-                    <th>{ "worker" }</th>
-                    <th>{ "host" }</th>
-                    <th>{ "arch" }</th>
-                    <th>{ "labels" }</th>
-                    <th>{ "version" }</th>
-                    <th>{ "busy" }</th>
-                    <th>{ "for" }</th>
-                    <th>{ "running" }</th>
-                    <th></th>
-                </tr>
+                <tr><th>{ "worker" }</th><th>{ "host" }</th><th>{ "arch" }</th><th>{ "labels" }</th><th>{ "version" }</th><th>{ "busy" }</th><th>{ "for" }</th><th>{ "running" }</th><th></th></tr>
             </thead>
             <tbody>
                 { for workers.iter().map(|w| worker_row(w, now, forget)) }

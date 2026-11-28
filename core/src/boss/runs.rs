@@ -204,19 +204,8 @@ pub(super) async fn start_run(
         }
         _ => None,
     };
-    let (source, pipeline) = load_pipeline(&boss, &name, commit.as_ref()).await?;
-    let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    let link = link(&boss, &headers, &name);
-    let run = begin_run(
-        &boss,
-        &name,
-        pipeline,
-        source,
-        commit,
-        link,
-        &BTreeMap::new(),
-    )?;
-    Ok(Json(run))
+    let loaded = load_pipeline(&boss, &name, commit.as_ref()).await?;
+    begin_run(&boss, &headers, &name, loaded, commit, BTreeMap::new()).map(Json)
 }
 
 /// Where people see pipeline `name`, as the one who called us reached us.
@@ -226,21 +215,25 @@ pub(super) fn link(boss: &Boss, headers: &HeaderMap, name: &str) -> Option<Strin
     Some(format!("{scheme}://{host}/pipeline/{name}"))
 }
 
+/// Starts a run of pipeline `name`, `loaded` as load_pipeline gives it (422 when it does not parse),
+/// at `commit`, carrying over the `carried` tasks of an earlier run. `headers` are those of the
+/// request that started it, for the link the forge shows.
 pub(super) fn begin_run(
     boss: &Shared,
+    headers: &HeaderMap,
     name: &str,
-    pipeline: Pipeline,
-    source: String,
+    (source, pipeline): (String, Result<Pipeline, String>),
     commit: Option<Commit>,
-    link: Option<String>,
-    carried: &BTreeMap<(String, String), TaskRun>,
+    carried: BTreeMap<(String, String), TaskRun>,
 ) -> Result<Run, Failure> {
+    let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let link = link(boss, headers, name);
     for url in pipeline.workers() {
         boss.enroll(url);
     }
     let run = boss
         .record(|db| {
-            let run = db.insert_run(name, &pipeline, commit, carried)?;
+            let run = db.insert_run(name, &pipeline, commit, &carried)?;
             Ok((Event::RunStarted(run.clone()), run))
         })
         .map_err(internal)?;
@@ -455,35 +448,20 @@ pub(super) async fn push_hook(
             sha: push.after.clone(),
             branch: branch.to_string(),
         };
-        let link = link(&boss, &headers, &name);
         let source = repo.show(&commit.sha, &path).await.map_err(internal)?;
-        match pipedef::parse(&source).await {
-            Ok(pipeline) => runs.push(begin_run(
-                &boss,
-                &name,
-                pipeline,
-                source,
-                Some(commit),
-                link,
-                &BTreeMap::new(),
-            )?),
-            Err(e) => {
-                eprintln!("{name} at {}: the pipedef is broken: {e}", commit.label());
-                let reported = repo
-                    .report(
-                        &boss.http,
-                        &commit.sha,
-                        &name,
-                        "failure",
-                        "the pipedef is broken",
-                        link.as_deref(),
-                    )
-                    .await;
-                if let Err(e) = reported {
-                    eprintln!("could not tell {} about it: {e}", repo.public);
-                }
+        let pipeline = pipedef::parse(&source).await;
+        if let Err(e) = &pipeline {
+            eprintln!("{name} at {}: the pipedef is broken: {e}", commit.label());
+            let link = link(&boss, &headers, &name);
+            let (http, sha, broken) = (&boss.http, &commit.sha, "the pipedef is broken");
+            let reported = repo.report(http, sha, &name, "failure", broken, link.as_deref());
+            if let Err(e) = reported.await {
+                eprintln!("could not tell {} about it: {e}", repo.public);
             }
+            continue;
         }
+        let (loaded, commit, carried) = ((source, pipeline), Some(commit), BTreeMap::new());
+        runs.push(begin_run(&boss, &headers, &name, loaded, commit, carried)?);
     }
     Ok(Json(runs))
 }
@@ -522,31 +500,19 @@ pub(super) async fn restart(
     headers: HeaderMap,
 ) -> Result<Json<Run>, Failure> {
     let mut parts = restart.split('/');
-    let id = parse_id(parts.next().unwrap_or_default())?;
+    let earlier = find_run(&boss, parts.next().unwrap_or_default())?;
     let (stage, task) = (parts.next(), parts.next());
-    let earlier = boss.db().run(id).map_err(internal)?;
-    let earlier = earlier.ok_or_else(|| not_found(format!("run {id}")))?;
     if earlier.state == RunState::Running {
         let short = earlier.short_id();
         let why = format!("run {short} is still running. Restart it once it is over.");
         return Err(conflict(why));
     }
-    let commit = earlier.commit.as_ref();
-    let (source, pipeline) = load_pipeline(&boss, &earlier.pipeline, commit).await?;
+    let name = earlier.pipeline.clone();
+    let (source, pipeline) = load_pipeline(&boss, &name, earlier.commit.as_ref()).await?;
     let pipeline = pipeline.map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
     let carried = carry_over(&earlier, &pipeline, stage, task)?;
-    let link = link(&boss, &headers, &earlier.pipeline);
-    let name = earlier.pipeline.clone();
-    let run = begin_run(
-        &boss,
-        &name,
-        pipeline,
-        source,
-        earlier.commit,
-        link,
-        &carried,
-    )?;
-    Ok(Json(run))
+    let loaded = (source, Ok(pipeline));
+    begin_run(&boss, &headers, &name, loaded, earlier.commit, carried).map(Json)
 }
 
 /// Where a restart from stage `at` (or of only its `task`) really starts. A sandbox of the
@@ -1178,9 +1144,14 @@ pub(super) async fn get_run(
     State(boss): State<Shared>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Run>, Failure> {
-    let id = parse_id(&id)?;
+    find_run(&boss, &id).map(Json)
+}
+
+/// Run `id`, which has to be a uuid the db knows.
+pub(super) fn find_run(boss: &Boss, id: &str) -> Result<Run, Failure> {
+    let id = parse_id(id)?;
     let run = boss.db().run(id).map_err(internal)?;
-    run.map(Json).ok_or_else(|| not_found(format!("run {id}")))
+    run.ok_or_else(|| not_found(format!("run {id}")))
 }
 
 /// What the views of run `id` show of it, drawn now, with the pipedef as the run's commit has it:
@@ -1189,9 +1160,7 @@ pub(super) async fn get_views(
     State(boss): State<Shared>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, Failure> {
-    let id = parse_id(&id)?;
-    let run = boss.db().run(id).map_err(internal)?;
-    let run = run.ok_or_else(|| not_found(format!("run {id}")))?;
+    let run = find_run(&boss, &id)?;
     let broken = |e| (StatusCode::UNPROCESSABLE_ENTITY, e);
     let source = load_source(&boss, &run.pipeline, run.commit.as_ref()).await?;
     let log = |task| boss.db().log(task).map(log_text).map_err(|e| e.to_string());
@@ -1220,9 +1189,8 @@ pub(super) async fn get_source(
     State(boss): State<Shared>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, Failure> {
-    let id = parse_id(&id)?;
-    let run = boss.db().run(id).map_err(internal)?;
-    let run = run.ok_or_else(|| not_found(format!("run {id}")))?;
+    let run = find_run(&boss, &id)?;
+    let id = run.id;
     let commit = run
         .commit
         .ok_or_else(|| not_found(format!("commit: run {id} tests none")))?;

@@ -122,12 +122,8 @@ impl Component for UsersPage {
             UsersMsg::NewCertificate(id) => {
                 self.notice = None;
                 let request = Request::post("/api/new-certificate").json(&json!({ "id": id }));
-                load(
-                    ctx.link(),
-                    request,
-                    UsersMsg::CertificateMade,
-                    UsersMsg::Notice,
-                );
+                let made = UsersMsg::CertificateMade;
+                load(ctx.link(), request, made, UsersMsg::Notice);
                 return false;
             }
             UsersMsg::CertificateMade(made) => {
@@ -138,13 +134,7 @@ impl Component for UsersPage {
                 self.notice = None;
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let added = passkey::ceremony(
-                        "/api/new-passkey-options",
-                        json!({ "id": id }),
-                        "/api/new-passkey",
-                        true,
-                    );
-                    if let Err(e) = added.await {
+                    if let Err(e) = passkey::ceremony(true, json!({ "id": id })).await {
                         link.send_message(UsersMsg::Notice(e));
                     }
                     link.send_message(UsersMsg::Load);

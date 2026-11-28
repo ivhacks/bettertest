@@ -201,7 +201,7 @@ impl Vms {
         // the shutdown and the ssh session dies with the guest. Dropping that wait kills ssh,
         // and a signal on that session can cancel the reboot before it happens.
         let reboot = Command::new(tools::path("ssh")?)
-            .args(SSH_OPTIONS)
+            .args(SSH_OPTIONS.split_whitespace())
             .arg("-i")
             .arg(&key)
             .arg("-p")
@@ -330,20 +330,8 @@ runcmd:
 
 /// Ignore ~/.ssh/config, agents and known_hosts: the vm is brand new and only our key works. The
 /// python library passes the same options.
-const SSH_OPTIONS: [&str; 12] = [
-    "-F",
-    "/dev/null",
-    "-o",
-    "IdentitiesOnly=yes",
-    "-o",
-    "IdentityAgent=none",
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "LogLevel=ERROR",
-];
+const SSH_OPTIONS: &str = "-F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR";
 
 fn console_tail(console: &Path) -> String {
     let text = console_excerpt(&fs::read_to_string(console).unwrap_or_default());

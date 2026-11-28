@@ -8,7 +8,6 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    body::Body,
     extract::{ConnectInfo, FromRef, Multipart, Path, State, multipart::MultipartError},
     http::{StatusCode, header},
     response::{
@@ -42,7 +41,6 @@ use tokio_stream::{
     StreamExt,
     wrappers::{ReceiverStream, WatchStream},
 };
-use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 pub const LISTEN_PORT: u16 = 7358;
@@ -387,29 +385,10 @@ async fn load_image(url: &str) -> Result<String, Failure> {
         return Ok(name);
     }
 
-    let mut response = download(url).await.map_err(internal)?;
-    let mut load = Command::new("docker")
-        .arg("load")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| internal(format!("could not run docker: {e}")))?;
-    let Some(mut stdin) = load.stdin.take() else {
-        return Err(internal("docker load has no stdin"));
-    };
-    while let Some(chunk) = response.chunk().await.map_err(internal)? {
-        stdin.write_all(&chunk).await.map_err(internal)?;
-    }
-    drop(stdin);
-    let finished = load.wait_with_output().await.map_err(internal)?;
-    if !finished.status.success() {
-        return Err(internal(String::from_utf8_lossy(&finished.stderr)));
-    }
-
+    let response = download(url).await.map_err(internal)?;
+    let load = feed(response, url, Command::new("docker").arg("load")).await;
+    let stdout = load.map_err(internal)?;
     // docker load prints "Loaded image: <name>", or "Loaded image ID: <id>" for untagged images.
-    let stdout = String::from_utf8_lossy(&finished.stdout);
     let Some(loaded) = stdout.lines().find_map(|line| {
         line.strip_prefix("Loaded image: ")
             .or_else(|| line.strip_prefix("Loaded image ID: "))
@@ -433,7 +412,7 @@ async fn check_out(
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
-    let mut response = request
+    let response = request
         .send()
         .await
         .map_err(|e| format!("could not download {url}: {}", client::why(&e)))?;
@@ -442,35 +421,43 @@ async fn check_out(
         let why = response.text().await.unwrap_or_default();
         return Err(format!("could not download {url}: {status} {why}"));
     }
-    let mut tar = Command::new("tar")
-        .args(["-x", "-C"])
-        .arg(dir)
+    let mut tar = Command::new("tar");
+    tar.args(["-x", "-C"]).arg(dir);
+    let unpacked = feed(response, url, &mut tar).await;
+    unpacked
+        .map(drop)
+        .map_err(|e| format!("could not unpack {url}: {e}"))
+}
+
+/// Streams the body of `response`, from `url`, into `command` and waits for it to end. Ok is what it
+/// printed; Err is its complaint, or what else went wrong.
+async fn feed(
+    mut response: reqwest::Response,
+    url: &str,
+    command: &mut Command,
+) -> Result<String, String> {
+    let program = command.as_std().get_program().display().to_string();
+    let mut child = command
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("could not run tar: {e}"))?;
-    let Some(mut stdin) = tar.stdin.take() else {
-        return Err("tar has no stdin".into());
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(format!("{program} has no stdin"));
     };
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("lost connection to {url}: {}", client::why(&e)))?
-    {
-        stdin
-            .write_all(&chunk)
-            .await
-            .map_err(|e| format!("tar stopped reading: {e}"))?;
+    let lost = |e: reqwest::Error| format!("lost connection to {url}: {}", client::why(&e));
+    while let Some(chunk) = response.chunk().await.map_err(lost)? {
+        let written = stdin.write_all(&chunk).await;
+        written.map_err(|e| format!("{program} stopped reading: {e}"))?;
     }
     drop(stdin);
-    let finished = tar.wait_with_output().await.map_err(|e| e.to_string())?;
+    let finished = child.wait_with_output().await.map_err(|e| e.to_string())?;
     if !finished.status.success() {
-        let stderr = String::from_utf8_lossy(&finished.stderr);
-        return Err(format!("could not unpack {url}: {stderr}"));
+        return Err(String::from_utf8_lossy(&finished.stderr).into_owned());
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&finished.stdout).into_owned())
 }
 
 pub async fn download(url: &str) -> Result<reqwest::Response, String> {
@@ -799,12 +786,9 @@ async fn get_output(Path((id, name)): Path<(String, String)>) -> Result<Response
     };
     let path = workdir::root().map_err(internal)?;
     let path = path.join(format!("tasks/{id}/outputs/{name}"));
-    let file = tokio::fs::File::open(&path)
-        .await
+    let (length, body) = (boss::file_body(&path).await)
         .map_err(|e| (StatusCode::NOT_FOUND, format!("{}: {e}", path.display())))?;
-    let length = file.metadata().await.map_err(internal)?.len();
-    let headers = [(header::CONTENT_LENGTH, length.to_string())];
-    Ok((headers, Body::from_stream(ReaderStream::new(file))).into_response())
+    Ok(([(header::CONTENT_LENGTH, length.to_string())], body).into_response())
 }
 
 /// Sends each line of `reader` as an SSE event named `event`. Err means the receiver hung up.

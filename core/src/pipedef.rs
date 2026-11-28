@@ -14,9 +14,7 @@ pub const GLUE: &str = include_str!("../scripts/glue.py");
 
 /// The first line glue.py reads from stdin.
 pub fn library_line() -> Vec<u8> {
-    let mut line = serde_json::Value::from(LIBRARY).to_string().into_bytes();
-    line.push(b'\n');
-    line
+    format!("{}\n", Value::from(LIBRARY)).into_bytes()
 }
 
 /// What glue.py reads from stdin after the library, on one line. `target` tells run() where to
@@ -30,18 +28,15 @@ pub fn glue_stdin(
     cwd: Option<&std::path::Path>,
     run: Option<&Run>,
 ) -> Vec<u8> {
-    let mut line = serde_json::json!({
+    let line = serde_json::json!({
         "pipedef": pipedef,
         "target": target,
         "files": files,
         "task": task,
         "cwd": cwd,
         "run": run,
-    })
-    .to_string()
-    .into_bytes();
-    line.push(b'\n');
-    line
+    });
+    format!("{line}\n").into_bytes()
 }
 
 /// glue.py, started to do `command` with the pipedef, its pipes ready to talk to.
@@ -62,9 +57,8 @@ pub async fn parse(pipedef: &str) -> Result<Pipeline, String> {
     let Some(mut stdin) = child.stdin.take() else {
         return Err("python3 has no stdin".into());
     };
-    let mut input = library_line();
     let line = glue_stdin(pipedef, Value::Null, Value::Null, None, None, None);
-    input.extend(line);
+    let input = [library_line(), line].concat();
     stdin
         .write_all(&input)
         .await
@@ -104,9 +98,8 @@ pub async fn views(
     else {
         return Err("python3 has no pipes".into());
     };
-    let mut input = library_line();
     let line = glue_stdin(pipedef, Value::Null, Value::Null, None, None, Some(run));
-    input.extend(line);
+    let input = [library_line(), line].concat();
     // Owning stdin, this closes it once done, which ends a python still waiting for an answer.
     let talk = async move {
         let failed = |e: std::io::Error| format!("python3 failed: {e}");

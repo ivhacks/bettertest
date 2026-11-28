@@ -309,7 +309,7 @@ pub struct Me {
     pub logged_in: bool,
 }
 
-/// A row of the users page: a user and how many ways of logging in of each kind it has.
+/// A row of the users page: a user and the ways it logs in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct User {
     pub id: i64,
@@ -318,8 +318,6 @@ pub struct User {
     // The logged-out user: always there, its role the only thing about it to change.
     pub builtin: bool,
     pub passwords: u32,
-    pub certificates: u32,
-    pub passkeys: u32,
     // API tokens, for scripts and curl.
     pub tokens: u32,
     // Its client certificates, for certificate login.

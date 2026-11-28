@@ -517,6 +517,18 @@ fn labels_one_typo_away_are_named() {
     assert!(similar_label("pcba-rig", "pcba_rigs"));
     assert!(!similar_label("arm", "x86"));
     assert!(!similar_label("gpu", "cpu1"));
+    // Short labels may be one letter off, longer ones two.
+    assert!(similar_label("gpu", "cpu"));
+    assert!(!similar_label("gpu", "cpx"));
+    assert!(!similar_label("gpus", "cpu"));
+    assert!(similar_label("gpus", "cpus1"));
+    assert!(similar_label("fixture", "fixtrue"));
+    assert!(!similar_label("fixture", "fxtrue1"));
+    assert_eq!(
+        picked(&BTreeMap::new(), &["gpu"]),
+        "none: no connected worker has labels gpu. Connected workers: none. The workers page \
+         shows them all."
+    );
     let up = workers(&[
         ("http://a", &["x86", "gpu"], 0, 1),
         ("http://b", &["arm"], 0, 1),
@@ -909,8 +921,9 @@ async fn a_run_cut_short_by_a_restarting_worker_goes_on_and_passes() {
     let url = worker_hanging_once(2, calls.clone()).await;
     let (boss, pipeline, source) = two_stages_on(&url).await;
     let mut events = boss.events.subscribe();
-    let none = BTreeMap::new();
-    let run = begin_run(&boss, "app", pipeline, source, None, None, &none).expect("run");
+    let loaded = (source, Ok(pipeline));
+    let headers = HeaderMap::new();
+    let run = begin_run(&boss, &headers, "app", loaded, None, BTreeMap::new()).expect("run");
     // Second.twice is running when the worker says it is stopping.
     let running = async {
         loop {
@@ -1183,9 +1196,7 @@ async fn an_artifact_names_its_file_and_its_run() {
     assert_eq!(header(&download, "content-length").as_deref(), Some("3"));
 
     let path = [name.as_str(), "latest", "Stage0", "task_0_0", "app.deb"].map(str::to_string);
-    let (pipeline, latest, stage, task_name, file_name) = path.into();
-    let path = AxumPath((pipeline, latest, stage, task_name, file_name));
-    let fetched = artifacts::get_pipeline_artifact(State(boss.clone()), path)
+    let fetched = artifacts::get_pipeline_artifact(State(boss.clone()), AxumPath(path))
         .await
         .expect("fetch");
     let id = run.id.to_string();
@@ -1198,8 +1209,62 @@ async fn an_artifact_names_its_file_and_its_run() {
         .await
         .unwrap();
     assert_eq!(body, "deb");
+
+    // The same through the router, which fills the handler's path from the url's five parts.
+    let router = Router::new()
+        .route(
+            "/api/pipeline/{name}/run/{run}/artifact/{stage}/{task}/{artifact}",
+            get(artifacts::get_pipeline_artifact),
+        )
+        .with_state(boss.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    spawn(async move { axum::serve(listener, router).await });
+    let url =
+        format!("http://{address}/api/pipeline/{name}/run/latest/artifact/Stage0/task_0_0/app.deb");
+    let served = reqwest::get(&url).await.expect("get");
+    assert_eq!(served.status(), StatusCode::OK);
+    assert_eq!(
+        served.headers()["bettertest-run"].to_str().unwrap(),
+        id.as_str()
+    );
+    assert_eq!(served.text().await.unwrap(), "deb");
+
     std::fs::remove_dir_all(&dir).expect("clean up");
     std::fs::remove_file(&file).expect("remove pipedef");
+}
+
+/// Asked for an artifact a task did not publish, the boss says what it did publish.
+#[tokio::test]
+async fn a_missing_artifact_lists_what_the_task_published() {
+    let pipeline = pipedef::parse(&big_pipedef(1, 1)).await.expect("parses");
+    let boss = boss(BTreeMap::new());
+    let run = (boss.db())
+        .insert_run("app", &pipeline, None, &BTreeMap::new())
+        .expect("run");
+    let task = run.stages[0].tasks[0].id;
+    boss.db()
+        .set_task_state(task, TaskState::Pass, 1)
+        .expect("pass");
+    let missing = || {
+        let found = boss.find_artifact(&run, true, "Stage0", "task_0_0", "app.rpm");
+        found.expect_err("not published")
+    };
+    assert_eq!(
+        missing(),
+        "Stage0.task_0_0 published no artifact named 'app.rpm'. It published: nothing."
+    );
+    for name in ["app.deb", "app.tar"] {
+        let artifact = Artifact {
+            name: name.into(),
+            size: 1,
+        };
+        boss.db().add_artifact(task, &artifact).expect("artifact");
+    }
+    assert_eq!(
+        missing(),
+        "Stage0.task_0_0 published no artifact named 'app.rpm'. It published: app.deb, app.tar."
+    );
 }
 
 /// A pipedef of `stages` stages of `tasks` tasks each.
@@ -1463,6 +1528,11 @@ fn install_arch_is_x86_64_or_aarch64() {
     );
     assert!(download_arch(Some("arch=arm64")).is_err());
     assert!(download_arch(Some("arch=x86_64&arch=aarch64")).is_err());
+    assert!(download_arch(Some("arch=x86_64&arch=x86_64")).is_err());
+    assert_eq!(download_arch(Some("")).unwrap(), "x86_64");
+    assert_eq!(download_arch(Some("arch&x=1")).unwrap(), "x86_64");
+    assert!(download_arch(Some("arch=")).is_err());
+    assert!(download_arch(Some("arch=aarch64=x")).is_err());
     assert!(binary_file("../etc/passwd").is_none());
     assert!(
         binary_file("bettertest-x86_64")

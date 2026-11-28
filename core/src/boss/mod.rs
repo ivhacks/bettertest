@@ -155,10 +155,7 @@ pub async fn entry(
             return Err(format!("{} is not a file", path.display()).into());
         };
         if !valid_pipeline_name(&name) {
-            let path = path.display();
-            return Err(
-                format!("rename {path}: pipedef names are letters, digits, '-' and '_'").into(),
-            );
+            return Err(format!("rename {}: {NAMES}", path.display()).into());
         }
         if let Some(Pipedef::File(other)) = names.insert(name.clone(), Pipedef::File(path.clone()))
         {
@@ -489,6 +486,9 @@ impl Wire {
     }
 }
 
+/// What valid_pipeline_name lets through, for whoever named one it does not.
+const NAMES: &str = "pipedef names are letters, digits, '-' and '_'";
+
 /// Pipeline names end up in URLs.
 fn valid_pipeline_name(name: &str) -> bool {
     !name.is_empty()
@@ -518,23 +518,12 @@ fn binary_file(name: &str) -> Option<PathBuf> {
 /// `x86_64` when the query says nothing. `aarch64` is the other accepted value. Anything else is
 /// refused: the choice is written into a shell script.
 fn download_arch(query: Option<&str>) -> Result<&'static str, &'static str> {
-    let Some(query) = query.filter(|query| !query.is_empty()) else {
-        return Ok("x86_64");
-    };
-    let mut chosen = None;
-    for pair in query.split('&') {
-        let Some(("arch", value)) = pair.split_once('=') else {
-            continue;
-        };
-        if chosen.is_some() {
-            return Err("arch is x86_64 or aarch64");
-        }
-        chosen = Some(value);
-    }
-    match chosen {
-        None | Some("x86_64") => Ok("x86_64"),
-        Some("aarch64") => Ok("aarch64"),
-        Some(_) => Err("arch is x86_64 or aarch64"),
+    let pairs = query.into_iter().flat_map(|query| query.split('&'));
+    let mut chosen = pairs.filter_map(|pair| pair.strip_prefix("arch="));
+    match (chosen.next(), chosen.next()) {
+        (None | Some("x86_64"), None) => Ok("x86_64"),
+        (Some("aarch64"), None) => Ok("aarch64"),
+        _ => Err("arch is x86_64 or aarch64"),
     }
 }
 
@@ -601,22 +590,23 @@ async fn download_binary(AxumPath(name): AxumPath<String>) -> Result<Response, F
     let Some(path) = binary_file(&name) else {
         return Err(not_found("such binary"));
     };
-    let file = tokio::fs::File::open(&path)
-        .await
-        .map_err(|e| match e.kind() {
-            ErrorKind::NotFound => not_found(format!("{name} in {DL_DIR}")),
-            _ => internal(e),
-        })?;
-    let length = file.metadata().await.map_err(internal)?.len();
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-            (header::CACHE_CONTROL, "no-cache".to_string()),
-            (header::CONTENT_LENGTH, length.to_string()),
-        ],
-        Body::from_stream(ReaderStream::new(file)),
-    )
-        .into_response())
+    let (length, body) = file_body(&path).await.map_err(|e| match e.kind() {
+        ErrorKind::NotFound => not_found(format!("{name} in {DL_DIR}")),
+        _ => internal(e),
+    })?;
+    let headers = [
+        (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+        (header::CACHE_CONTROL, "no-cache".to_string()),
+        (header::CONTENT_LENGTH, length.to_string()),
+    ];
+    Ok((headers, body).into_response())
+}
+
+/// The file at `path` as a response body, streamed, and its length.
+pub(crate) async fn file_body(path: &std::path::Path) -> std::io::Result<(u64, Body)> {
+    let file = tokio::fs::File::open(path).await?;
+    let length = file.metadata().await?.len();
+    Ok((length, Body::from_stream(ReaderStream::new(file))))
 }
 
 /// There is no landing page: `/` is the first pipeline's page. It is served here rather than
@@ -765,10 +755,7 @@ impl Boss {
             let mut pipedefs = lock(&self.pipedefs);
             for (name, path) in found {
                 if !valid_pipeline_name(&name) {
-                    eprintln!(
-                        "{} has {path}: pipedef names are letters, digits, '-' and '_'",
-                        repo.public
-                    );
+                    eprintln!("{} has {path}: {NAMES}", repo.public);
                     continue;
                 }
                 match pipedefs.get(&name) {
@@ -802,17 +789,9 @@ impl Boss {
         let (Some(commit), Some(repo)) = (&run.commit, self.repos.get(repo)) else {
             return;
         };
-        let reported = repo
-            .report(
-                &self.http,
-                &commit.sha,
-                &run.pipeline,
-                state,
-                description,
-                link,
-            )
-            .await;
-        if let Err(e) = reported {
+        let (http, sha, pipeline) = (&self.http, &commit.sha, &run.pipeline);
+        let reported = repo.report(http, sha, pipeline, state, description, link);
+        if let Err(e) = reported.await {
             eprintln!("could not tell {} about run {}: {e}", repo.public, run.id);
         }
     }
