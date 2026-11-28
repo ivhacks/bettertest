@@ -99,3 +99,42 @@ fn test_counts_land_on_their_task() {
     assert_eq!(snapshot.task.tests, Some(tests));
     assert_eq!(snapshot.run.stages[0].tasks[0].tests, Some(tests));
 }
+
+#[test]
+fn workers_stay_sorted_by_url_one_each() {
+    let worker = |url: &str, since| Worker {
+        url: url.into(),
+        info: None,
+        since,
+        problem: None,
+        tasks: vec![],
+    };
+    let mut snapshot = WorkersSnapshot {
+        now: 0,
+        workers: vec![worker("http://b", 0), worker("http://d", 0)],
+    };
+    let urls = |s: &WorkersSnapshot| -> Vec<(String, u64)> {
+        s.workers.iter().map(|w| (w.url.clone(), w.since)).collect()
+    };
+    for (url, since) in [
+        ("http://c", 1),
+        ("http://a", 2),
+        ("http://e", 3),
+        ("http://d", 4),
+    ] {
+        snapshot.apply(&Event::Worker(worker(url, since)));
+    }
+    let want = [
+        ("http://a", 2),
+        ("http://b", 0),
+        ("http://c", 1),
+        ("http://d", 4),
+        ("http://e", 3),
+    ];
+    assert_eq!(urls(&snapshot), want.map(|(u, s)| (u.to_string(), s)));
+    snapshot.apply(&Event::WorkerForgotten {
+        url: "http://c".into(),
+    });
+    assert_eq!(snapshot.workers.len(), 4);
+    assert!(snapshot.workers.iter().all(|w| w.url != "http://c"));
+}

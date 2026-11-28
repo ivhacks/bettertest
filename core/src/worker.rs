@@ -449,8 +449,7 @@ async fn check_out(
         return Err(format!("could not download {url}: {status} {why}"));
     }
     let mut tar = Command::new("tar")
-        .arg("-x")
-        .arg("-C")
+        .args(["-x", "-C"])
         .arg(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -610,6 +609,7 @@ async fn start_task(
         req.boss_port.unwrap_or(boss::LISTEN_PORT),
     );
     let boss = boss_url(&req, address)?;
+    let src = files.dir.join("src");
     if let (Some(_), Some(boss), Some(run)) = (&req.commit, &boss, &req.run) {
         let mut http = reqwest::Client::builder();
         if let Some(name) = &req.boss_name {
@@ -617,14 +617,10 @@ async fn start_task(
         }
         let http = http.build().map_err(internal)?;
         let url = format!("{boss}/api/run/{run}/source.tar");
-        check_out(
-            &http,
-            &url,
-            req.boss_token.as_deref(),
-            &files.dir.join("src"),
-        )
-        .await
-        .map_err(internal)?;
+        let token = req.boss_token.as_deref();
+        check_out(&http, &url, token, &src)
+            .await
+            .map_err(internal)?;
     }
 
     let ready = lock(&shared.ready).pop();
@@ -660,7 +656,6 @@ async fn start_task(
         "run": req.run,
     });
     let task = Some((req.stage.as_str(), req.task.as_str()));
-    let src = files.dir.join("src");
     let payload = pipedef::glue_stdin(&req.pipedef, target, task_files, task, Some(&src), None);
 
     let (tx, rx) = mpsc::channel::<Event>(64);
@@ -703,11 +698,8 @@ async fn start_task(
         };
         for name in published {
             let artifact = format!("{}/{name}", files.id);
-            if tx
-                .send(Event::default().event("artifact").data(artifact))
-                .await
-                .is_err()
-            {
+            let event = Event::default().event("artifact").data(artifact);
+            if tx.send(event).await.is_err() {
                 return;
             }
         }
@@ -715,9 +707,8 @@ async fn start_task(
         if let Ok(tests) = fs::read_to_string(files.dir.join("tests")) {
             let _ = tx.send(Event::default().event("tests").data(tests)).await;
         }
-        let _ = tx
-            .send(Event::default().event("exit").data(code.to_string()))
-            .await;
+        let exit = Event::default().event("exit").data(code.to_string());
+        let _ = tx.send(exit).await;
         // Dropping `files` removes them, so wait until the caller has what it wants.
         tx.closed().await;
     });

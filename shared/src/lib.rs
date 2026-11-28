@@ -595,14 +595,9 @@ impl WorkersSnapshot {
     pub fn apply(&mut self, event: &Event) {
         match event {
             Event::Worker(worker) => {
-                match self.workers.binary_search_by(|w| w.url.cmp(&worker.url)) {
-                    Ok(found) => {
-                        if let Some(w) = self.workers.get_mut(found) {
-                            *w = worker.clone();
-                        }
-                    }
-                    Err(at) => self.workers.insert(at, worker.clone()),
-                }
+                self.workers.retain(|w| w.url != worker.url);
+                let at = self.workers.partition_point(|w| w.url < worker.url);
+                self.workers.insert(at, worker.clone());
             }
             Event::WorkerForgotten { url } => self.workers.retain(|w| w.url != *url),
             _ => {}

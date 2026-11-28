@@ -303,9 +303,7 @@ async fn start_task(
         let body = sent.text().await.unwrap_or_default();
         return Err(StartError::Busy(format!("{url} said 409 Conflict: {body}")));
     }
-    let mut response = check_response(&url, sent)
-        .await
-        .map_err(StartError::Failed)?;
+    let mut response = check_response(&url, sent).await?;
 
     let mut events = SseDecoder::default();
     let mut cancelled = io.cancelled();

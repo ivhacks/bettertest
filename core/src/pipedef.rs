@@ -47,9 +47,7 @@ pub fn glue_stdin(
 /// glue.py, started to do `command` with the pipedef, its pipes ready to talk to.
 fn glue(command: &str) -> Result<Child, String> {
     Command::new("python3")
-        .arg("-c")
-        .arg(GLUE)
-        .arg(command)
+        .args(["-c", GLUE, command])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

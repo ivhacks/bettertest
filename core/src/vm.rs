@@ -38,6 +38,7 @@ const EMULATED_BOOT_TIMEOUT: Duration = Duration::from_secs(1800);
 const EMULATED_KERNEL_ARGS: &str =
     "systemd.default_device_timeout_sec=900 systemd.default_timeout_start_sec=900";
 
+#[derive(Default)]
 pub struct Vms {
     // Where this worker listens, so a vm can call back at 10.0.2.2.
     pub port: u16,
@@ -64,9 +65,7 @@ impl Vms {
     pub fn new(port: u16) -> Self {
         Self {
             port,
-            cloud_init: Mutex::new(HashMap::new()),
-            waiting: Mutex::new(HashMap::new()),
-            running: Mutex::new(HashMap::new()),
+            ..Self::default()
         }
     }
 
@@ -76,24 +75,20 @@ impl Vms {
         let arch = arch.unwrap_or(NATIVE);
         let qemu = qemu(arch)?;
         let base = cached_image(image_url).await?;
-        // The guest reads this off its own disk, before systemd starts the mount that would fail.
-        if arch != NATIVE {
+        let timeout = if arch == NATIVE {
+            NATIVE_BOOT_TIMEOUT
+        } else {
+            // The guest reads this off its disk, before systemd starts the mount that would fail.
             let image = base.clone();
-            match tokio::task::spawn_blocking(move || ensure_emulated_cmdline(&image)).await {
-                Ok(result) => result?,
-                Err(_) => return Err("could not prepare the emulated vm image".to_string()),
-            }
-        }
+            tokio::task::spawn_blocking(move || ensure_emulated_cmdline(&image))
+                .await
+                .map_err(|_| "could not prepare the emulated vm image".to_string())??;
+            EMULATED_BOOT_TIMEOUT
+        };
         let id = Uuid::new_v4().simple().to_string();
         // 0777 so the next unix user's worker can clean it up if this worker dies.
         let dir = workdir::dir("vms").map_err(|e| e.to_string())?.join(&id);
         workdir::shared_dir(&dir).map_err(|e| e.to_string())?;
-
-        let timeout = if arch == NATIVE {
-            NATIVE_BOOT_TIMEOUT
-        } else {
-            EMULATED_BOOT_TIMEOUT
-        };
         match self.boot(&id, &dir, &base, qemu, timeout).await {
             Ok(vm) => {
                 lock(&self.running).insert(id.clone(), vm);
@@ -119,9 +114,7 @@ impl Vms {
         let key = dir.join("key");
         worker::output(
             Command::new(tools::path("ssh-keygen")?)
-                .arg("-q")
-                .args(["-t", "ed25519", "-N", ""])
-                .arg("-f")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
                 .arg(&key),
         )
         .await?;
@@ -165,18 +158,14 @@ impl Vms {
             .arg(format!("file:{}", console.display()))
             .arg("-drive")
             .arg(format!("file={},if=virtio", disk.display()))
-            .args([
-                "-netdev",
-                &format!("user,id=net,hostfwd=tcp:127.0.0.1:{ssh_port}-:22"),
-            ])
+            .arg("-netdev")
+            .arg(format!("user,id=net,hostfwd=tcp:127.0.0.1:{ssh_port}-:22"))
             .args(["-device", "virtio-net-pci,netdev=net"])
             // TCG has no hardware rng. cloud-init and sshd wait on /dev/random without this.
             .args(["-device", "virtio-rng-pci"])
             // Tells cloud-init to fetch user-data and meta-data from the worker.
-            .args([
-                "-smbios",
-                &format!("type=1,serial=ds=nocloud-net;s={host}/"),
-            ])
+            .arg("-smbios")
+            .arg(format!("type=1,serial=ds=nocloud-net;s={host}/"))
             .arg("-pidfile")
             .arg(dir.join("qemu.pid"))
             .stdin(Stdio::null())
@@ -215,35 +204,22 @@ impl Vms {
             .args(SSH_OPTIONS)
             .arg("-i")
             .arg(&key)
-            .args([
-                "-p",
-                &ssh_port.to_string(),
-                "bt@127.0.0.1",
-                "sudo systemctl reboot --no-block",
-            ])
+            .arg("-p")
+            .arg(ssh_port.to_string())
+            .args(["bt@127.0.0.1", "sudo systemctl reboot --no-block"])
             .stdin(Stdio::null())
             .output();
-        let output = match tokio::time::timeout(Duration::from_secs(60), reboot).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => return Err(format!("could not run ssh to reboot vm {id}: {e}")),
-            Err(_) => {
-                return Err(format!(
-                    "vm {id} did not accept reboot within 60s (ssh did not return)"
-                ));
-            }
-        };
+        let late = format!("vm {id} did not accept reboot within 60s (ssh did not return)");
+        let output = (tokio::time::timeout(Duration::from_secs(60), reboot).await)
+            .map_err(|_| late)?
+            .map_err(|e| format!("could not run ssh to reboot vm {id}: {e}"))?;
         if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
-            let detail = detail.trim();
-            let detail = if detail.is_empty() {
-                String::new()
-            } else {
-                format!("\n{detail}")
-            };
-            return Err(format!(
-                "vm {id} did not reboot: ssh exited {}{detail}",
-                output.status
-            ));
+            let mut why = format!("vm {id} did not reboot: ssh exited {}", output.status);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.trim().is_empty() {
+                why = format!("{why}\n{}", stderr.trim());
+            }
+            return Err(why);
         }
         tokio::select! {
             _ = booted => Ok(()),
@@ -372,11 +348,8 @@ const SSH_OPTIONS: [&str; 12] = [
 ];
 
 fn console_tail(console: &Path) -> String {
-    let text = fs::read_to_string(console).unwrap_or_default();
-    format!(
-        "\nlast lines of the vm console:\n{}",
-        console_excerpt(&text)
-    )
+    let text = console_excerpt(&fs::read_to_string(console).unwrap_or_default());
+    format!("\nlast lines of the vm console:\n{text}")
 }
 
 /// AppArmor logs one line per profile. On a slow boot those lines are the whole tail, and the
