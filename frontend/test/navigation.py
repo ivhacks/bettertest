@@ -6,6 +6,8 @@
   `released` fade once let go.
 - A page left stays up. Going back to the workers, users, settings or pipeline page paints what it
   showed before any request goes out, and its main is never empty or without that content.
+- Each of those pages fits a 320px phone without anything scrolling sideways, and its tables span
+  a 1280px screen.
 
 Chromium, and WebKit as an iPhone sees it. The boss is shell.py's stand-in, with a logged-in user
 (so the account is the menu's button), a worker and a user. Like shell.py, it runs in Playwright's
@@ -198,6 +200,43 @@ def test_a_page_comes_back_before_any_request(browser, base, device):
         context.close()
 
 
+# Anything on the page that scrolls sideways: the page itself, or a region of it.
+SIDEWAYS = """() => [document.scrollingElement, ...document.querySelectorAll('body *')]
+    .filter((e) => e.checkVisibility() && e.scrollWidth > e.clientWidth
+        && (e === document.scrollingElement || ['auto', 'scroll'].includes(getComputedStyle(e).overflowX)))
+    .map((e) => `${e.tagName.toLowerCase()}.${e.className} is ${e.scrollWidth}px in ${e.clientWidth}px`)"""
+
+# How much of main's width each table's rows take (a table made a block is wide, its rows not).
+# The run grid is a CSS grid, held to the width by pipeline_page.py.
+FILLED = """() => [...document.querySelectorAll('main table:not(.grid)')].filter((t) => t.checkVisibility()).map((t) => {
+    const main = getComputedStyle(t.closest('main'));
+    const room = t.closest('main').clientWidth - parseFloat(main.paddingLeft) - parseFloat(main.paddingRight);
+    const widest = Math.max(...[...t.rows].map((row) => row.getBoundingClientRect().width));
+    return [t.className, widest / room];
+})"""
+
+
+def test_pages_fit_and_fill_the_width(browser, base, device):
+    """From a phone to a desktop, no page scrolls sideways, any part of it either, and on a wide
+    screen the tables span the page rather than float in a corner of it."""
+    failures = []
+    for width in [320, 390, 1280]:
+        context = browser.new_context(**{**device, "viewport": {"width": width, "height": 800}})
+        page = context.new_page()
+        for name, (_, path, selector) in PAGES.items():
+            page.goto(base + path)
+            page.wait_for_selector(selector)
+            failures += [f"{width}px {name}: {s}" for s in page.evaluate(SIDEWAYS)]
+            if width > 640:
+                failures += [
+                    f"{width}px {name}: table.{table} takes {share:.0%} of the width"
+                    for table, share in page.evaluate(FILLED)
+                    if share < 0.99
+                ]
+        context.close()
+    assert not failures, "\n".join(failures)
+
+
 def main():
     if shell.dist_stale():
         raise SystemExit(
@@ -215,7 +254,12 @@ def main():
             # An iPhone's screen, but a mouse: hover is what the test is about.
             iphone = {"viewport": {"width": 390, "height": 800}, "user_agent": playwright.devices["iPhone 15"]["user_agent"]}
             try:
-                for test in [test_header_icons_are_one_control, test_a_page_comes_back_before_any_request]:
+                tests = [
+                    test_header_icons_are_one_control,
+                    test_a_page_comes_back_before_any_request,
+                    test_pages_fit_and_fill_the_width,
+                ]
+                for test in tests:
                     for engine, device in [("chromium", desktop), ("webkit", iphone)]:
                         browser = chromium if engine == "chromium" else webkit
                         try:

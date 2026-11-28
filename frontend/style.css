@@ -221,12 +221,17 @@ button.small {
 
 button:hover,
 button:focus-visible,
-.icon:hover,
-.icon:focus-visible,
 .cell a:hover,
 .cell a:focus-visible {
     outline: none;
     background: color-mix(in srgb, var(--fill), #ffffff 22%);
+}
+
+/* Its outline is the text's color, so it shows on a white ground as well as on black. */
+.icon:hover,
+.icon:focus-visible {
+    outline: none;
+    background: color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 button:active,
@@ -566,16 +571,12 @@ input:focus {
     border-color: var(--highlight);
 }
 
-/* A little too wide, they scroll sideways on their own. On a phone, see below, each row is a block
-   of labelled values instead, so no text is cut off. */
-.workers,
-.users {
-    display: block;
-    overflow-x: auto;
-}
-
+/* As wide as the page, their cells wrapping rather than scrolling it sideways. On a phone, see
+   below, each row is a block of labelled values instead, so no text is cut off. */
 :is(.workers, .users, .results) {
+    width: 100%;
     border-collapse: collapse;
+    overflow-wrap: anywhere;
 }
 
 :is(.workers, .users, .results) th {
@@ -713,6 +714,12 @@ input:focus {
 
 /* Settings */
 
+/* Lines of prose a reader can follow across, however wide the screen. */
+.https,
+.settings {
+    max-width: 720px;
+}
+
 .https {
     margin-top: 32px;
 }
@@ -739,8 +746,9 @@ input:focus {
     gap: 12px;
 }
 
+/* Room for "forever", the placeholder, beside the number input's arrows. */
 .settings input {
-    width: 90px;
+    width: 130px;
 }
 
 .hint,
@@ -749,7 +757,8 @@ input:focus {
     color: var(--muted);
 }
 
-.saved {
+.saved,
+main > .hint {
     margin-top: 12px;
 }
 
@@ -760,11 +769,11 @@ input:focus {
     font-size: 14px;
 }
 
-.users .actions {
-    white-space: nowrap;
+/* They wrap onto more lines where the page is too narrow for one. */
+.users .actions button {
+    margin: 3px 6px 3px 0;
 }
 
-.users .actions button + button,
 .users .cert button {
     margin-left: 6px;
 }
