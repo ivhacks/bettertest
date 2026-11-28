@@ -1237,13 +1237,8 @@ pub(super) async fn task_events(
         }))
     };
     let wanted = |snapshot: &TaskSnapshot, event: &Event| match event {
-        Event::TaskStarted { task, .. }
-        | Event::TaskState { task, .. }
-        | Event::TaskTests { task, .. }
-        | Event::Log { task, .. }
-        | Event::Artifact { task, .. } => *task == snapshot.task.id,
         Event::RunFinished { run, .. } => *run == snapshot.run.id,
-        Event::RunStarted(_) | Event::Worker(_) | Event::WorkerForgotten { .. } => false,
+        _ => event.task() == Some(snapshot.task.id),
     };
     live(boss, &headers, snapshot, wanted)
 }

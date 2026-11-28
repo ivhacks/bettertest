@@ -490,10 +490,19 @@ impl Event {
             | Event::TaskState { pipeline, run, .. }
             | Event::TaskTests { pipeline, run, .. }
             | Event::RunFinished { pipeline, run, .. } => Some((pipeline, *run)),
-            Event::Log { .. }
-            | Event::Artifact { .. }
-            | Event::Worker(_)
-            | Event::WorkerForgotten { .. } => None,
+            _ => None,
+        }
+    }
+
+    /// The task the event is about, if it is about one.
+    pub fn task(&self) -> Option<Uuid> {
+        match self {
+            Event::TaskStarted { task, .. }
+            | Event::TaskState { task, .. }
+            | Event::TaskTests { task, .. }
+            | Event::Log { task, .. }
+            | Event::Artifact { task, .. } => Some(*task),
+            _ => None,
         }
     }
 }
@@ -510,19 +519,15 @@ impl Run {
     }
 
     pub fn apply(&mut self, event: &Event) {
-        match event {
-            Event::TaskStarted { run, task, .. }
-            | Event::TaskState { run, task, .. }
-            | Event::TaskTests { run, task, .. }
-                if *run == self.id =>
-            {
-                let mut tasks = self.stages.iter_mut().flat_map(|s| &mut s.tasks);
-                if let Some(t) = tasks.find(|t| t.id == *task) {
-                    t.apply(event);
-                }
-            }
-            Event::RunFinished { run, state, .. } if *run == self.id => self.state = *state,
-            _ => {}
+        if event.run().is_none_or(|(_, run)| run != self.id) {
+            return;
+        }
+        if let Event::RunFinished { state, .. } = event {
+            self.state = *state;
+        }
+        let mut tasks = self.stages.iter_mut().flat_map(|s| &mut s.tasks);
+        if let Some(t) = tasks.find(|t| Some(t.id) == event.task()) {
+            t.apply(event);
         }
     }
 
@@ -585,12 +590,13 @@ impl PipelineSnapshot {
 impl TaskSnapshot {
     pub fn apply(&mut self, event: &Event) {
         self.run.apply(event);
+        if event.task() != Some(self.task.id) {
+            return;
+        }
         match event {
-            Event::TaskStarted { task, .. }
-            | Event::TaskState { task, .. }
-            | Event::TaskTests { task, .. }
-                if *task == self.task.id =>
-            {
+            Event::Log { line, .. } => self.lines.push(line.clone()),
+            Event::Artifact { artifact, .. } => self.artifacts.push(artifact.clone()),
+            _ => {
                 self.task.apply(event);
                 // Put back to pending: its artifacts are gone, and a carried task's log was another's.
                 if self.task.state == TaskState::Pending {
@@ -600,11 +606,6 @@ impl TaskSnapshot {
                     }
                 }
             }
-            Event::Log { task, line } if *task == self.task.id => self.lines.push(line.clone()),
-            Event::Artifact { task, artifact } if *task == self.task.id => {
-                self.artifacts.push(artifact.clone())
-            }
-            _ => {}
         }
     }
 }
